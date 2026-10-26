@@ -165,12 +165,13 @@ See the [CUDA patch index](engine/nvfp4/patches/README.md) for scope and tests.
 
 These patches build the full-model engine (`--weights full`). Upstream TensorFold already serves Drama 3. Each patch
 below adds one feature that stays off until you pass its flag, so a server started without them answers as
-upstream does. The exceptions are the first two and one request-level feature: batched prefill is on by default
+upstream does. The exceptions are the first two and two request-level features: batched prefill is on by default
 (`TF_DRAMA_PREFILL_ROWS=1` restores upstream's single-row prefill), the replay fix is a bug fix, and per-request
-`temperature`, `top_p`, `top_k` and `seed` (0013/0014) need no launch flag. A request without those fields is
-answered as upstream answers it; upstream refuses them with a 400, and these patches serve them. The CUDA NVFP4
-series (0002) and the Metal NVFP4 series (0004, 0005) carry the same request-level feature. The patches stack and
-apply in order; each one's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
+`temperature`, `top_p`, `top_k` and `seed` (0013/0014) and speaker tags 1 to 15 (0015) need no launch flag. A
+request without those fields or tags is answered as upstream answers it; upstream refuses them with a 400, and
+these patches serve them. The CUDA NVFP4 series (0002, 0003) and the Metal NVFP4 series (0004-0006) carry the same
+two request-level features. The patches stack and apply in order; each one's notes are in the engine tree's
+`CHANGELOG.md` or `docs/`.
 
 | Patch | Adds | Opt in with | Upstream |
 |---|---|---|---|

@@ -123,7 +123,9 @@ the license's Section III(c), which needs a separate license from Fish Audio.
 
 `POST /v1/audio/speech` takes `model` (`fishaudio/drama-3`), `input` (at most 4096 characters), `voice`
 (`default`, or a name loaded with `--voices`), `response_format` (`wav` or `pcm`) and `stream` (`true` needs
-`pcm`). Request-supplied references and other synthesis modifiers are refused. `GET /v1/voices` lists the voices.
+`pcm`). Optional `temperature`, `top_p`, `top_k` and exact integer `seed` select
+request-local sampling; see [ranges, defaults and redraw behavior](recipe/README-sampling.md).
+Other synthesis modifiers are refused. `GET /v1/voices` lists the voices.
 The Linux CUDA NVFP4 engine accepts its encoder's `drama3-voice` catalogs and request `references`
 as codec codes (not audio). The Mac NVFP4 engine instead uses attested `drama3-http-voice/1`
 catalogs and refuses request-supplied references; see the [Mac voice commands](recipe/README-macos.md#attested-reference-voices).
@@ -157,11 +159,14 @@ See the [CUDA patch index](engine/nvfp4/patches/README.md) for scope and tests.
 
 ### Full-model engine
 
-The patches build the full-model engine (`--weights full`). Upstream TensorFold already serves Drama 3. Each patch
+These patches build the full-model engine (`--weights full`). Upstream TensorFold already serves Drama 3. Each patch
 below adds one feature that stays off until you pass its flag, so a server started without them answers as
-upstream does. The exceptions are the first two: batched prefill is on by default (`TF_DRAMA_PREFILL_ROWS=1`
-restores upstream's single-row prefill) and the replay fix is a bug fix. The patches stack and apply in order;
-each one's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
+upstream does. The exceptions are the first two and one request-level feature: batched prefill is on by default
+(`TF_DRAMA_PREFILL_ROWS=1` restores upstream's single-row prefill), the replay fix is a bug fix, and per-request
+`temperature`, `top_p`, `top_k` and `seed` (0013/0014) need no launch flag. A request without those fields is
+answered as upstream answers it; upstream refuses them with a 400, and these patches serve them. The CUDA NVFP4
+series (0002) and the Metal NVFP4 series (0004, 0005) carry the same request-level feature. The patches stack and
+apply in order; each one's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 
 | Patch | Adds | Opt in with | Upstream |
 |---|---|---|---|
@@ -177,6 +182,8 @@ each one's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 | 0010 (K6) | Whole replies that stopped short of their text are drawn again | `--short-reply-ratio`, `--short-reply-chars-per-s` | [#1161](https://github.com/ashhart/TensorFold/pull/1161) |
 | 0011 (K8) | A whole reply is drawn once more when a phrase opens far above the others | `--register-redraw-st`, `--register-redraw-high`, `--register-high-hz` | [#1162](https://github.com/ashhart/TensorFold/pull/1162) |
 | 0012 | One bounded reference-prefix snapshot per Metal lane, with exact identity and safe invalidation | none (automatic) | [#1237](https://github.com/ashhart/TensorFold/pull/1237) |
+| 0013 | Request-local speech sampling and exact integer seeds | HTTP `temperature`, `top_p`, `top_k`, `seed` | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
+| 0014 | Parsed-JSON floating boundary documentation and regressions | none (tests/docs) | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
 
 `drama3-voice`, a tool that writes attested voice files for `--voices`, is proposed upstream in
 [#1153](https://github.com/ashhart/TensorFold/pull/1153); it is not part of this series.

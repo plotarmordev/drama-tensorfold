@@ -14,6 +14,10 @@ engine loads are under the Fish Audio Community License v1.0 and are downloaded 
 Linux `--weights nvfp4` uses the separate [CUDA NVFP4 series](../nvfp4/patches/README.md).
 All profiles require an exact manifest-to-patch match before applying anything.
 
+Full-model patches 0013/0014 add [request sampling controls](../../recipe/README-sampling.md)
+and document the existing JSON floating-point boundary. They backport
+[TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) without moving the pin.
+
 Patch 0012 is corrected in place: it owns one reusable Metal recurrent-state snapshot per lane,
 invalidates incompatible live KV before prefill, and uses the prompt builder's exact invariant
 boundary including tower lookahead. It preserves uncached chunk cuts and CUDA execution.
@@ -32,6 +36,8 @@ It does not change the full-model series above or the CUDA NVFP4 pin.
 | [`0001-drama3-metal-nvfp4-cfg.patch`](../nvfp4/macos/patches/0001-drama3-metal-nvfp4-cfg.patch) | Packed NVFP4 experts, compact routing, native reference CFG and registered numerical contracts | [TensorFold #1268](https://github.com/ashhart/TensorFold/pull/1268) |
 | [`0002-shared-gate-stress-regression.patch`](../nvfp4/macos/patches/0002-shared-gate-stress-regression.patch) | Test-only correction that distinguishes reduced-precision accumulation after sigmoid; no kernel or tolerance change | [TensorFold #1268](https://github.com/ashhart/TensorFold/pull/1268) |
 | [`0003-shared-cli-extension-point.patch`](../nvfp4/macos/patches/0003-shared-cli-extension-point.patch) | Group CFG flags beside voice selection without occupying shared CLI-table extension points; no parsing or numerical change | [TensorFold #1268](https://github.com/ashhart/TensorFold/pull/1268) |
+| [`0004-speech-sampling-controls.patch`](../nvfp4/macos/patches/0004-speech-sampling-controls.patch) | Request sampling parameters and exact seeds, retaining CFG rows | [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) |
+| [`0005-sampling-json-boundaries.patch`](../nvfp4/macos/patches/0005-sampling-json-boundaries.patch) | Parsed-JSON floating boundary documentation and regressions | [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) |
 
 The [Mac qualification receipt](../../results/macos-nvfp4.json) separates observed GPU/model results,
 the initial failed fixture and focused correction, and the final CPU-only CLI integration build.

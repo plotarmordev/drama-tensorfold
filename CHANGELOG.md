@@ -22,6 +22,9 @@
 
 ### Added
 
+- Per-request HTTP speech `temperature`, `top_p`, `top_k` and exact unsigned 64-bit
+  `seed` on all pinned profiles, with strict validation and propagation through
+  streaming, references and redraws. Omitted/null values retain existing defaults.
 - A checksummed CUDA NVFP4 engine patch series without changing its pinned upstream or weights.
   Model-free build tests exercise real patch application, selection on Linux/macOS, corruption
   refusal, repeat builds and preservation of modified checkouts. Manifests must cover each

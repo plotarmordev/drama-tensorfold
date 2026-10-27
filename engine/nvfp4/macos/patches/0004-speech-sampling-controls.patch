@@ -1,0 +1,539 @@
+From 43367973c989ff8d19a6d8ffa2669c4a530bee80 Mon Sep 17 00:00:00 2001
+From: Mauvis Ledford <20738+krunkosaurus@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 11:48:10 +0800
+Subject: [PATCH] server: expose per-request speech sampling controls
+
+---
+ CHANGELOG.md                              |   2 +
+ README.md                                 |   4 +-
+ docs/speech-redraws.md                    |  10 +-
+ docs/speech-sampling.md                   |  47 ++++++++
+ zig/src/server/root.zig                   |   1 +
+ zig/src/server/speech.zig                 |  23 ++--
+ zig/src/server/speech_register_test.zig   |  28 +++++
+ zig/src/server/speech_sampling.zig        |  57 +++++++++
+ zig/src/server/speech_sampling_test.zig   | 140 ++++++++++++++++++++++
+ zig/src/server/speech_stream_test.zig     |   3 +
+ zig/src/server/speech_unmeasured_test.zig |   2 +-
+ 11 files changed, 302 insertions(+), 15 deletions(-)
+ create mode 100644 docs/speech-sampling.md
+ create mode 100644 zig/src/server/speech_sampling.zig
+ create mode 100644 zig/src/server/speech_sampling_test.zig
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 50a2c7ad..4f62fc5d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
+ 
+ ## Unreleased
+ 
++- Drama speech requests accept `temperature`, `top_p`, `top_k` (1 through 64) and exact unsigned 64-bit `seed` values. Whole replies, streams, catalog voices and redraws retain the requested settings; omitted or null fields keep the existing defaults. Explicit seeds advance by the attempt number for redraws. See [speech sampling](docs/speech-sampling.md).
++
+ - Drama 3 on Metal reads the pruned NVFP4 checkpoint's packed E2M1 experts, block-16 E4M3 scales and F32 global scales without requantizing or expanding the experts. Routing masks dropped original IDs before softmax and maps selected IDs to compact slots. The full FP8-expert path retains its existing arithmetic.
+ - Metal Drama speech supports opt-in semantic classifier-free guidance with shared weights and independent conditional/unconditional backbone state. `--cfg-gamma`, `--cfg-allow-request-gamma`, `--cfg-force-guided` and `--cfg-batched` preserve builtin unguided voices, validate request gamma, and reset guidance on cancellation or reference changes. Paired mode submits both states in one command buffer, not a vectorized GEMM; admission includes the extra state. CUDA guidance is not enabled by this change.
+ 
+diff --git a/README.md b/README.md
+index cf69ddec..92896199 100644
+--- a/README.md
++++ b/README.md
+@@ -178,7 +178,7 @@ Conversions are explicitly marked: their upstream weights need the linked conver
+ | Step-5-Preview, converted affine | `hf download stepfun-ai/Step-5-Preview --local-dir ~/models/step5-preview-fp8` | One 256 GB Mac; text 166.9 GiB, MTP adds 2.5 GiB and vision 3.7 GiB. | [Convert and serve](docs/recipes/step-5-preview.md). The documented 256 GB setup serves converted affine weights; converting the upstream FP8 download needs Python and mlx. |
+ | Kolibri-1, block FP8 (research) | `tensorfold pull Aleph-Alpha/Kolibri-1@e52eb4627d11516b0c01de49210ab5a4e4061444` | One NVIDIA GPU; GB10 measured; 74 GB checkpoint. | [Kolibri](docs/recipes/kolibri-1.md). Text only; copy drafts, no EAGLE-3/neural drafter. |
+ | Liquid AI d1-3B, decisions | Not documented yet. | Native CUDA; RAM minimum not published. | [API section below](#serve-flags). `/v1/systemone` and `/v1/decisions`. |
+-| Fish Audio Drama 3, speech | Not documented yet. | Native Metal or CUDA; GB10 measured. | [Release audio instructions](CHANGELOG.md#110). `/v1/audio/speech`; checkpoint and `codec.pth` required. |
++| Fish Audio Drama 3, speech | Not documented yet. | Native Metal or CUDA; GB10 measured. | [Release audio instructions](CHANGELOG.md#110). `/v1/audio/speech` with [sampling controls](docs/speech-sampling.md); checkpoint and `codec.pth` required. |
+ | Drama 3 pruned NVFP4, speech | `hf download plotarmordev/drama-3-NVFP4-Pruned --revision 494db08481db952f834b2241bce63fb3dfa72554 --local-dir drama-3-NVFP4-Pruned` | Native Metal; roughly 21 GiB checkpoint plus runtime state. Not a minimum-RAM or cross-backend quality claim. | Packed experts, BF16 dense/tower weights and FP32 accumulation; no conversion. Use `serve drama-3-NVFP4-Pruned --cfg-gamma 1.5 --cfg-batched` with an attested catalog voice. |
+ 
+ ### GLM-5.3: one machine or two?
+@@ -298,7 +298,7 @@ The binary's `capabilities --json` response lists its supported flags and platfo
+ | `--silence-onset-voiced-s SECONDS` | Drama speech only: the voiced seconds below which `--silence-onset-s` applies; required with it, with no default. Calibrate on public or built-in speech. |
+ | `--silence-mid-s SECONDS` | Drama speech only: with the silence guard on, finish as `silence` when end of speech falls in a run this long below the floor, after the explicit voiced minimum. Whole replies carry the decimal `X-Silence-Mid-Trips` count, including zero. Must be below `--silence-seconds` and paired with `--silence-mid-min-voiced-s`. Unset by default: off. |
+ | `--silence-mid-min-voiced-s SECONDS` | Required with `--silence-mid-s`: positive finite cumulative voiced duration before the mid rule applies, including equality. No default; calibrate with the other silence thresholds. |
+-| `--silence-redraws N` | Drama speech only: draw a whole reply the silence guard ended again, up to N times, as seed salt + k; N of 1 or more needs the guard. Unset by default: off, as is 0; streams are never redrawn. See [speech redraws](docs/speech-redraws.md). |
++| `--silence-redraws N` | Drama speech only: draw a whole reply the silence guard ended again, up to N times, as seed salt + k or explicit request seed + k; N of 1 or more needs the guard. Unset by default: off, as is 0; streams are never redrawn. See [speech redraws](docs/speech-redraws.md). |
+ | `--silence-redraw-budget-s SECONDS` | Start a redraw only while elapsed time plus the last take's duration fits; a request's `X-Deadline-S` can lower it. No default budget. |
+ | `--silence-redraw-controls LIST` | Redraws speak the input filtered to the listed controls, as `--allowed-controls` filters; an empty list removes every control. |
+ | `--short-reply-ratio R` | Also redraw a whole reply that finished `stop` with less audio than R (above 0, below 1) of its text's expected length; needs `--silence-redraws` and `--short-reply-chars-per-s`. No default. |
+diff --git a/docs/speech-redraws.md b/docs/speech-redraws.md
+index 19e55165..24673a68 100644
+--- a/docs/speech-redraws.md
++++ b/docs/speech-redraws.md
+@@ -12,12 +12,18 @@ enabled silence guard; `--silence-redraw-controls` and the
+ 
+ ## Seeds
+ 
+-Redraw k (1 to N) seeds its prompt with `TENSORFOLD_SEED_SALT` plus k; the first
++Without an explicit request `seed`, redraw k (1 to N) seeds its prompt with `TENSORFOLD_SEED_SALT` plus k; the first
+ take keeps the stock seed, salt plus 0. Redraws are therefore deterministic. With
+ the same prompt, redraw k under salt s is the same draw as the first take under
+ salt s + k, so a sweep over salts should space compared salts more than N apart,
+ or N + 1 with the register guard.
+ 
++An explicit request `seed` instead uses that exact integer for the first take
++and seed + k modulo 2^64 for each redraw, counting both silence and register
++attempts. Requested `temperature`, `top_p` and `top_k` remain in effect through
++all redraws and control filtering; see [speech sampling](speech-sampling.md).
++The seed rule does not make timing-based redraw budgets deterministic.
++
+ ## Budget
+ 
+ A redraw starts only when t + d fits the budget, where t is the time since the
+@@ -119,7 +125,7 @@ below 8 kHz, all-zero audio, and takes with fewer than two retained phrases are
+ not measured. A measured take with no qualifying jump counts as zero.
+ The detector is not Praat's analysis: its values can differ from Praat's.
+ 
+-A take that trips is drawn once more, as the next seed, salt + k after any
++A take that trips is drawn once more, using the next seed under the [seed rule](#seeds) after any
+ silence redraws, if t + d fits the budget. The redraw is sent only if it does not
+ end as `silence` and has a strictly smaller jump; ties retain the first take.
+ A `length` redraw can replace a `stop` take. An unmeasured redraw can win only
+diff --git a/docs/speech-sampling.md b/docs/speech-sampling.md
+new file mode 100644
+index 00000000..b60515c9
+--- /dev/null
++++ b/docs/speech-sampling.md
+@@ -0,0 +1,47 @@
++# Speech sampling
++
++`POST /v1/audio/speech` accepts these optional fields for Drama 3. Omission or
++`null` keeps the existing default for that field. They apply to WAV replies,
++whole PCM replies, streamed PCM and catalog voices.
++
++| Field | Accepted JSON value | Default |
++| --- | --- | --- |
++| `temperature` | A finite number at least 0, within the `f32` range. A positive value must remain positive when converted to `f32`. | `1` |
++| `top_p` | A finite number greater than 0 and at most 1, still greater than 0 after conversion to `f32`. | `0.9` |
++| `top_k` | An integer from 1 through 64. | `30` |
++| `seed` | An integer from 0 through 18446744073709551615. | The existing hash of the prompt and `TENSORFOLD_SEED_SALT`. |
++
++Numbers encoded as strings and booleans are refused. `top_k` and `seed` must
++use integer JSON syntax: `30.0` and `1e3` are refused. Seeds are parsed as exact
++64-bit unsigned integers, including values above 9007199254740991; clients
++whose JSON number type loses precision must preserve the integer when encoding
++the request. Invalid fields return HTTP 400 before submission to the engine.
++
++```sh
++curl http://127.0.0.1:8080/v1/audio/speech \
++  -H 'Content-Type: application/json' \
++  -d '{"model":"local-model","input":"Hello there.","temperature":0.8,"top_p":0.9,"top_k":30,"seed":42}' \
++  --output speech.wav
++```
++
++The route passes these settings to the native sampler. On Metal and CUDA, `temperature`
++of 0 or `top_k` of 1 selects its existing greedy path, which bypasses repetition
++aware sampling (RAS). Other runtimes may handle repetition differently; matching
++fields and seeds do not promise identical audio across backends or checkpoints.
++The HTTP limit of 64 candidates fits both native Metal and CUDA admission.
++
++An explicit `seed` is used exactly for the first take. If configured
++[speech redraws](speech-redraws.md) admit another take, its seed is the original
++seed plus the take's attempt number (1, 2, ...), wrapping modulo 2^64. This
++number includes both silence and register redraws. All takes keep the requested
++sampling values, including when controls are stripped or a reference prompt is
++rebuilt. With no seed, the existing prompt hash and server salt plus attempt
++number are unchanged. Streams keep their existing no-redraw behavior.
++
++Seed selection is deterministic. The final take can still change if timing or
++request deadlines admit a different number of redraws.
++
++The API design references the public
++[Sogni-AI/drama3-mlx generation interface](https://github.com/Sogni-AI/drama3-mlx/blob/ecc235039ccd5f982f66a6982184f57432354ab4/drama3_mlx/model.py#L79).
++TensorFold's parsing and request propagation are an independent implementation;
++this does not change the native sampling algorithms.
+diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
+index 3fdd321a..4d46119e 100644
+--- a/zig/src/server/root.zig
++++ b/zig/src/server/root.zig
+@@ -53,6 +53,7 @@ test {
+     _ = @import("drama_cfg.zig");
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_cfg_test.zig");
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_stream_test.zig"); // over a Unix socket pair
++    if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_sampling_test.zig");
+     _ = @import("drama_voice_tool.zig");
+     _ = @import("speech_redraw.zig");
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_redraw_test.zig"); // over a Unix socket pair
+diff --git a/zig/src/server/speech.zig b/zig/src/server/speech.zig
+index 2897cd0e..07b75904 100644
+--- a/zig/src/server/speech.zig
++++ b/zig/src/server/speech.zig
+@@ -10,6 +10,7 @@ const openai = @import("openai.zig");
+ const pyrepr = @import("pyrepr.zig");
+ const reply_text = @import("reply_text.zig");
+ const drama_prompt = @import("drama_prompt.zig");
++const speech_sampling = @import("speech_sampling.zig");
+ const speech_redraw = @import("speech_redraw.zig");
+ const speech_register = @import("speech_register_log.zig");
+ const drama_cfg = @import("drama_cfg.zig");
+@@ -30,7 +31,7 @@ pub const max_input_chars = 4096;
+ const served_fields = [_][]const u8{ "model", "input", "voice", "speaker", "response_format" };
+ 
+ /// The rest of the speech protocol's fields: synthesis modifiers and references this route does not honor.
+-const modifier_fields = [_][]const u8{ "speed", "task_type", "language", "instructions", "ref_audio", "ref_text", "references", "x_vector_only_mode", "stream_codec_output", "suppress_bootstrap_silence", "token_count", "duration_tokens", "initial_codec_chunk_frames", "max_new_tokens", "temperature", "top_p", "top_k", "repetition_penalty", "seed", "stage_params" };
++const modifier_fields = [_][]const u8{ "speed", "task_type", "language", "instructions", "ref_audio", "ref_text", "references", "x_vector_only_mode", "stream_codec_output", "suppress_bootstrap_silence", "token_count", "duration_tokens", "initial_codec_chunk_frames", "max_new_tokens", "repetition_penalty", "stage_params" };
+ 
+ pub const Format = enum {
+     wav,
+@@ -44,7 +45,7 @@ pub const Format = enum {
+     }
+ };
+ 
+-const Plan = struct { input: []const u8, prompt: []const u32, frames: ?[]const [11]i32 = null, refs: []const @import("drama_prompt").Reference = &.{}, reference_rows: u32 = 0, seed: u64, format: Format, stream: bool, budget_s: ?f64 = null };
++const Plan = struct { input: []const u8, prompt: []const u32, frames: ?[]const [11]i32 = null, refs: []const @import("drama_prompt").Reference = &.{}, reference_rows: u32 = 0, sampling: speech_sampling.Options, format: Format, stream: bool, budget_s: ?f64 = null };
+ 
+ /// One whole take: its audio, why it ended, and whether it ended in a mid-utterance silence.
+ const Take = struct { pcm: []f32, reason: api.Reason, silence_mid: bool = false, trip: bool = false, jump: ?f64 = null };
+@@ -89,6 +90,8 @@ fn checkFields(cx: *Cx, body: Value) errors.Refused!void {
+             if (value == .null or (value == .string and std.mem.eql(u8, value.string, "audio"))) continue;
+             if (value == .string and std.mem.eql(u8, value.string, "sse")) return cx.refuse("stream_format sse is not supported by this model");
+             return cx.refuse("stream_format must be one of: audio, sse");
++        } else if (speech_sampling.isField(key)) {
++            continue; // validated together before building the prompt
+         } else if (listed(&modifier_fields, key)) {
+             if (value != .null) return cx.fail(.request, "{s} is not supported by this model", .{key});
+         } else return cx.fail(.request, "unknown speech request field: {s}", .{key});
+@@ -107,6 +110,7 @@ fn responseFormat(cx: *Cx, value: []const u8) errors.Refused!Format {
+ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused!Plan {
+     if (raw != .object) return cx.refuse("speech request body must be a JSON object");
+     try checkFields(cx, raw);
++    const sampling = try speech_sampling.parse(cx, raw);
+     const model = raw.strField("model") orelse return cx.fail(.request, "model is required: send {s}", .{srv.config.served_name});
+     if (!listed(srv.config.model_ids, model))
+         return cx.fail(.request, "model {s} is not served here: send {s}", .{ try pyrepr.repr(cx.a, .{ .string = model }), srv.config.served_name });
+@@ -125,9 +129,9 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
+             return cx.fail(.request, drama_prompt.error_prefix ++ " unknown voice {s}; see /v1/voices", .{name});
+         return cx.fail(.request, drama_prompt.error_prefix ++ " unknown voice {s}; only the default voice is supported", .{name});
+     };
+-    if (try @import("drama_voice.zig").requestPrompt(cx, srv.text, sp, input, refs)) |made| return .{ .input = input, .prompt = made.prompt, .frames = made.frames, .refs = refs, .reference_rows = made.reference_rows, .seed = api.seedFor(made.prompt, srv.config.seed_salt), .format = format, .stream = stream };
++    if (try @import("drama_voice.zig").requestPrompt(cx, srv.text, sp, input, refs)) |made| return .{ .input = input, .prompt = made.prompt, .frames = made.frames, .refs = refs, .reference_rows = made.reference_rows, .sampling = sampling, .format = format, .stream = stream };
+     const prompt = try promptOf(srv, cx, sp, input);
+-    return .{ .input = input, .prompt = prompt, .seed = api.seedFor(prompt, srv.config.seed_salt), .format = format, .stream = stream };
++    return .{ .input = input, .prompt = prompt, .sampling = sampling, .format = format, .stream = stream };
+ }
+ 
+ /// The prompt ids of a valid UTF-8 input, refused when it cannot be spoken or is too long.
+@@ -167,11 +171,11 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         .frames = frames,
+         .pcm = pcm,
+         .result = &result,
+-        .seed = plan.seed,
++        .seed = plan.sampling.seedFor(plan.prompt, srv.config.seed_salt, 0),
+         .max_frames = sp.max_frames,
+-        .temperature = drama_prompt.temperature,
+-        .top_p = drama_prompt.top_p,
+-        .top_k = drama_prompt.top_k,
++        .temperature = plan.sampling.temperature,
++        .top_p = plan.sampling.top_p,
++        .top_k = plan.sampling.top_k,
+         .stream = plan.stream,
+         .reference_rows = plan.reference_rows,
+         .unconditioned = guided.rows,
+@@ -250,7 +254,7 @@ fn redraw(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, p
+         const preserved = if (held) |h| h.pcm.ptr else take.pcm.ptr;
+         next.pcm = if (preserved == first.pcm.ptr) spare.* else first.pcm;
+         next.result = &result;
+-        next.seed = api.seedFor(next.prompt, srv.config.seed_salt +% @as(i64, @intCast(k)));
++        next.seed = plan.sampling.seedFor(next.prompt, srv.config.seed_salt, k);
+         var box: Mailbox = .{ .io = srv.io, .gpa = srv.gpa };
+         defer box.deinit();
+         const engine_id = srv.next_id.fetchAdd(1, .monotonic);
+@@ -540,7 +544,6 @@ test "fields: unknown ones are refused even when null, modifiers when set" {
+         .{ "{\"model\": \"m\", \"input\": \"hi\", \"stream\": \"yes\"}", "stream must be a boolean" },
+         .{ "{\"model\": \"m\", \"input\": \"hi\", \"stream_format\": \"sse\"}", "stream_format sse is not supported by this model" },
+         .{ "{\"model\": \"m\", \"input\": \"hi\", \"stream_format\": \"mp3\"}", "stream_format must be one of: audio, sse" },
+-        .{ "{\"model\": \"m\", \"input\": \"hi\", \"temperature\": 0.7}", "temperature is not supported by this model" },
+         .{ "{\"model\": \"m\", \"input\": \"hi\", \"ref_audio\": \"x.wav\"}", "ref_audio is not supported by this model" },
+         .{ "{\"model\": \"m\", \"input\": 3}", "input must be a string" },
+         .{ "{\"model\": null, \"input\": \"hi\"}", "model must be a string" },
+diff --git a/zig/src/server/speech_register_test.zig b/zig/src/server/speech_register_test.zig
+index 71255370..17e32fe2 100644
+--- a/zig/src/server/speech_register_test.zig
++++ b/zig/src/server/speech_register_test.zig
+@@ -166,6 +166,34 @@ test "the register guard measures the take silence redraws leave, and off sends
+     try expectSent(a, &.{ high, flat }, &.{}, .{}, "X-Deadline-S: soon\r\n", 0, 1);
+ }
+ 
++test "speech sampling: silence then register redraws retain parameters and advance the explicit seed" {
++    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const high = try tones(a, 44100, &reply(130, 330));
++    const flat = try tones(a, 44100, &reply(130, 127));
++    const n = [_]usize{flat.len};
++    var script: harness.Script = .{ .steps = &n, .audio = &.{ flat, high, flat }, .reasons = &.{ .silence, .stop, .stop }, .max_frames = @intCast(n[0] / harness.frame + 1), .inline_ = true };
++    var s: harness.Served = undefined;
++    const cfg: @import("root.zig").Config = .{ .served_name = "m", .model_ids = &.{"m"}, .redraw = .{ .max = 1, .register = rule } };
++    const body = "{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\",\"temperature\":0.5,\"top_p\":0.75,\"top_k\":8,\"seed\":9007199254740993}";
++    try s.open(&script, cfg, "", "HTTP/1.1", body, 2000);
++    defer s.deinit();
++    {
++        defer s.join(&script);
++        _ = try s.readHead();
++        _ = try s.readRest();
++    }
++    try harness.expectHeader(s.got.items, "HTTP/1.1 200");
++    try harness.expectHeader(s.got.items, "X-Silence-Redraws: 1");
++    try harness.expectHeader(s.got.items, "X-Register-Redraws: 1");
++    try std.testing.expectEqual(@as(usize, 3), script.takes);
++    for (0..script.takes) |k| {
++        try std.testing.expectEqual(@as(u64, 9007199254740993) + k, script.seeds[k]);
++        try std.testing.expectEqualDeep(harness.Sampling{ .temperature = 0.5, .top_p = 0.75, .top_k = 8 }, script.sampling[k]);
++    }
++}
++
+ test "register metadata counts admission not selection and latches trips even without budget" {
+     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+     defer arena.deinit();
+diff --git a/zig/src/server/speech_sampling.zig b/zig/src/server/speech_sampling.zig
+new file mode 100644
+index 00000000..ef0d7777
+--- /dev/null
++++ b/zig/src/server/speech_sampling.zig
+@@ -0,0 +1,57 @@
++//! Request-local Drama sampling, checked before a speech request reaches the engine.
++const std = @import("std");
++const api = @import("engine_api");
++const Value = @import("json").Value;
++const errors = @import("errors.zig");
++const defaults = @import("drama_prompt.zig");
++
++pub const Options = struct {
++    temperature: f32 = defaults.temperature,
++    top_p: f32 = defaults.top_p,
++    top_k: u32 = defaults.top_k,
++    seed: ?u64 = null,
++
++    pub fn seedFor(o: Options, prompt: []const u32, salt: i64, attempt: usize) u64 {
++        if (o.seed) |seed| return seed +% @as(u64, @intCast(attempt));
++        return api.seedFor(prompt, salt +% @as(i64, @intCast(attempt)));
++    }
++};
++
++pub fn isField(key: []const u8) bool {
++    for ([_][]const u8{ "temperature", "top_p", "top_k", "seed" }) |name|
++        if (std.mem.eql(u8, key, name)) return true;
++    return false;
++}
++
++pub fn parse(cx: *errors.Cx, body: Value) errors.Refused!Options {
++    var out: Options = .{};
++    if (body.field("temperature")) |value|
++        out.temperature = try number(cx, value, std.math.floatMax(f32), "temperature must be a finite nonnegative f32 number");
++    if (body.field("top_p")) |value| {
++        out.top_p = try number(cx, value, 1, "top_p must be a finite f32 number greater than 0 and at most 1");
++        if (out.top_p == 0) return cx.refuse("top_p must be greater than 0");
++    }
++    if (body.field("top_k")) |value| {
++        const message = "top_k must be an integer from 1 through 64";
++        if (value != .int) return cx.refuse(message);
++        const n = std.fmt.parseInt(u32, value.int, 10) catch return cx.refuse(message);
++        if (n == 0 or n > 64) return cx.refuse(message);
++        out.top_k = n;
++    }
++    if (body.field("seed")) |value| {
++        const message = "seed must be an integer from 0 through 18446744073709551615";
++        if (value != .int) return cx.refuse(message);
++        out.seed = std.fmt.parseInt(u64, value.int, 10) catch return cx.refuse(message);
++    }
++    return out;
++}
++
++/// Check the JSON range before narrowing, then reject positive values that would become zero.
++fn number(cx: *errors.Cx, value: Value, max: f64, message: []const u8) errors.Refused!f32 {
++    if (value != .int and value != .float) return cx.refuse(message);
++    const n = value.float64() orelse return cx.refuse(message);
++    if (!std.math.isFinite(n) or n < 0 or n > max) return cx.refuse(message);
++    const narrowed: f32 = @floatCast(n);
++    if (n > 0 and narrowed == 0) return cx.refuse(message);
++    return narrowed;
++}
+diff --git a/zig/src/server/speech_sampling_test.zig b/zig/src/server/speech_sampling_test.zig
+new file mode 100644
+index 00000000..7d7b3212
+--- /dev/null
++++ b/zig/src/server/speech_sampling_test.zig
+@@ -0,0 +1,140 @@
++//! Speech sampling controls through the HTTP route and its scripted engine.
++const std = @import("std");
++const api = @import("engine_api");
++const server = @import("root.zig");
++const harness = @import("speech_stream_test.zig");
++const drama_prompt = @import("drama_prompt.zig");
++const drama_allow = @import("drama_allow.zig");
++const gpa = std.testing.allocator;
++const config: server.Config = .{ .served_name = "m", .model_ids = &.{"m"}, .seed_salt = 17 };
++const defaults: harness.Sampling = .{ .temperature = 1, .top_p = 0.9, .top_k = 30 };
++
++fn exchange(script: *harness.Script, cfg: server.Config, body: []const u8) ![]u8 {
++    var s: harness.Served = undefined;
++    try s.open(script, cfg, "", "HTTP/1.1", body, 2000);
++    defer s.deinit();
++    defer s.join(script);
++    _ = try s.readHead();
++    _ = try s.readRest();
++    return gpa.dupe(u8, s.got.items);
++}
++
++fn promptSeed(text: []const u8, attempt: i64) !u64 {
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    var bytes: harness.Bytes = .{};
++    const prompt = try drama_prompt.encode(arena.allocator(), bytes.text(), text);
++    return api.seedFor(prompt, config.seed_salt +% attempt);
++}
++
++fn expectDraw(script: *const harness.Script, index: usize, sampling: harness.Sampling, seed: u64) !void {
++    try std.testing.expectEqualDeep(sampling, script.sampling[index]);
++    try std.testing.expectEqual(seed, script.seeds[index]);
++}
++
++test "speech sampling: omitted and null controls retain default parameters and PCM" {
++    const bodies = [_][]const u8{
++        "{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\"}",
++        "{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\",\"temperature\":null,\"top_p\":null,\"top_k\":null,\"seed\":null}",
++    };
++    var first: ?[]u8 = null;
++    defer if (first) |pcm| gpa.free(pcm);
++    for (bodies) |body| {
++        var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true };
++        const reply = try exchange(&script, config, body);
++        defer gpa.free(reply);
++        try harness.expectHeader(reply, "HTTP/1.1 200");
++        try std.testing.expectEqual(@as(usize, 1), script.takes);
++        try expectDraw(&script, 0, defaults, try promptSeed("hi", 0));
++        const pcm = reply[(std.mem.indexOf(u8, reply, "\r\n\r\n").? + 4)..];
++        if (first) |before| try std.testing.expectEqualSlices(u8, before, pcm) else first = try gpa.dupe(u8, pcm);
++    }
++}
++
++test "speech sampling: custom parameters and exact integer seeds reach whole and streamed requests" {
++    const cases = [_]struct { fields: []const u8, sampling: harness.Sampling, seed: u64 }{
++        .{ .fields = "\"temperature\":1.25,\"top_p\":0.8,\"top_k\":64,\"seed\":9007199254740993", .sampling = .{ .temperature = 1.25, .top_p = 0.8, .top_k = 64 }, .seed = 9007199254740993 },
++        .{ .fields = "\"temperature\":0,\"top_p\":1,\"top_k\":1,\"seed\":0", .sampling = .{ .temperature = 0, .top_p = 1, .top_k = 1 }, .seed = 0 },
++        .{ .fields = "\"seed\":18446744073709551615", .sampling = defaults, .seed = std.math.maxInt(u64) },
++        .{ .fields = "\"temperature\":0.5", .sampling = .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, .seed = try promptSeed("hi", 0) },
++        .{ .fields = "\"temperature\":3.4028234663852886e38,\"top_p\":1e-45", .sampling = .{ .temperature = std.math.floatMax(f32), .top_p = 1e-45, .top_k = 30 }, .seed = try promptSeed("hi", 0) },
++    };
++    for (cases) |case| for ([_]bool{ false, true }) |stream| {
++        const body = try std.fmt.allocPrint(gpa, "{{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\",\"stream\":{s},{s}}}", .{ if (stream) "true" else "false", case.fields });
++        defer gpa.free(body);
++        var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true };
++        const reply = try exchange(&script, config, body);
++        defer gpa.free(reply);
++        try harness.expectHeader(reply, "HTTP/1.1 200");
++        if (stream) try harness.expectHeader(reply, "Transfer-Encoding: chunked");
++        try std.testing.expectEqual(@as(usize, 1), script.takes);
++        try expectDraw(&script, 0, case.sampling, case.seed);
++    };
++}
++
++test "speech sampling: invalid controls fail before any engine submission" {
++    const fields = [_][]const u8{
++        "\"temperature\":true",           "\"temperature\":\"1\"", "\"temperature\":[]",            "\"temperature\":{}",
++        "\"temperature\":-1",             "\"temperature\":NaN",   "\"temperature\":Infinity",      "\"temperature\":1e39",
++        "\"temperature\":1e-100",         "\"top_p\":false",       "\"top_p\":\"0.9\"",             "\"top_p\":0",
++        "\"top_p\":-0.1",                 "\"top_p\":1.00000001",  "\"top_p\":NaN",                 "\"top_p\":1e-100",
++        "\"top_p\":Infinity",             "\"top_k\":true",        "\"top_k\":\"30\"",              "\"top_k\":1.5",
++        "\"top_k\":30.0",                 "\"top_k\":0",           "\"top_k\":-1",                  "\"top_k\":65",
++        "\"top_k\":18446744073709551616", "\"seed\":true",         "\"seed\":\"1\"",                "\"seed\":1.5",
++        "\"seed\":1.0",                   "\"seed\":-1",           "\"seed\":18446744073709551616", "\"seed\":NaN",
++    };
++    for (fields) |field| {
++        const body = try std.fmt.allocPrint(gpa, "{{\"model\":\"m\",\"input\":\"hi\",{s}}}", .{field});
++        defer gpa.free(body);
++        var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true };
++        const reply = try exchange(&script, config, body);
++        defer gpa.free(reply);
++        try harness.expectHeader(reply, "HTTP/1.1 400");
++        try std.testing.expectEqual(@as(usize, 0), script.takes);
++    }
++}
++
++test "speech sampling: references and re-prompts retain overrides and wrap explicit retry seeds" {
++    const codes = [_][10]i32{.{ 7, 1, 2, 3, 4, 5, 6, 7, 8, 9 }};
++    const refs = [_]@import("drama_prompt").Reference{.{ .transcript = "A small cloud passes.", .codes = &codes }};
++    const voices = [_]@import("drama_voice.zig").Voice{.{ .name = "tone", .references = &refs }};
++    var cfg = config;
++    cfg.redraw = .{ .max = 2, .controls = try drama_allow.parse("sighs") };
++    for ([_]bool{ false, true }) |referenced| {
++        var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true, .reasons = &.{ .silence, .silence, .stop }, .voices = &voices };
++        const body = try std.fmt.allocPrint(gpa, "{{\"model\":\"m\",\"input\":\"hi [sighs] [laughs] there\",\"voice\":\"{s}\",\"temperature\":0.5,\"top_p\":0.75,\"top_k\":8,\"seed\":18446744073709551615}}", .{if (referenced) "tone" else "default"});
++        defer gpa.free(body);
++        const reply = try exchange(&script, cfg, body);
++        defer gpa.free(reply);
++        try harness.expectHeader(reply, "HTTP/1.1 200");
++        try std.testing.expectEqual(@as(usize, 3), script.takes);
++        for ([_]u64{ std.math.maxInt(u64), 0, 1 }, 0..) |seed, k|
++            try expectDraw(&script, k, .{ .temperature = 0.5, .top_p = 0.75, .top_k = 8 }, seed);
++        try std.testing.expectEqual(referenced, script.reference_rows[0] > 0);
++    }
++}
++
++test "speech sampling: no seed keeps prompt-keyed redraws after stripping controls" {
++    var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true, .reasons = &.{ .silence, .stop } };
++    var cfg = config;
++    cfg.redraw = .{ .max = 1, .controls = try drama_allow.parse("sighs") };
++    const reply = try exchange(&script, cfg, "{\"model\":\"m\",\"input\":\"hi [sighs] [laughs] there\",\"temperature\":0.5}");
++    defer gpa.free(reply);
++    try harness.expectHeader(reply, "HTTP/1.1 200");
++    try std.testing.expectEqual(@as(usize, 2), script.takes);
++    const sampling: harness.Sampling = .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 };
++    try expectDraw(&script, 0, sampling, try promptSeed("hi [sighs] [laughs] there", 0));
++    try expectDraw(&script, 1, sampling, try promptSeed("hi [sighs] there", 1));
++}
++
++test "speech sampling: a silenced stream retains controls and does not redraw" {
++    var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true, .reason = .silence };
++    var cfg = config;
++    cfg.redraw = .{ .max = 2 };
++    const reply = try exchange(&script, cfg, "{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\",\"stream\":true,\"temperature\":0.5,\"seed\":2}");
++    defer gpa.free(reply);
++    try harness.expectHeader(reply, "HTTP/1.1 200");
++    try harness.expectHeader(reply, "X-Finish-Reason: silence");
++    try std.testing.expectEqual(@as(usize, 1), script.takes);
++    try expectDraw(&script, 0, .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, 2);
++}
+diff --git a/zig/src/server/speech_stream_test.zig b/zig/src/server/speech_stream_test.zig
+index 647167e3..72339b0c 100644
+--- a/zig/src/server/speech_stream_test.zig
++++ b/zig/src/server/speech_stream_test.zig
+@@ -9,6 +9,7 @@ const Conn = @import("http_conn.zig").Conn;
+ 
+ pub const frame = 2048;
+ const gpa = std.testing.allocator;
++pub const Sampling = struct { temperature: f32, top_p: f32, top_k: u32 };
+ 
+ /// Publishes steps of 0.5 / (take + 1), then finishes: inside submit (`inline_`), else on a thread that may `hold`.
+ pub const Script = struct {
+@@ -32,6 +33,7 @@ pub const Script = struct {
+     cancelled: std.atomic.Value(bool) = .init(false),
+     thread: ?std.Thread = null,
+     seeds: [4]u64 = undefined,
++    sampling: [4]Sampling = undefined,
+     reference_rows: [4]u32 = undefined,
+     takes: usize = 0,
+     voices: []const @import("drama_voice.zig").Voice = &.{},
+@@ -61,6 +63,7 @@ pub const Script = struct {
+         }
+         const take = e.takes;
+         e.seeds[take] = request.seed;
++        e.sampling[take] = .{ .temperature = request.temperature, .top_p = request.top_p, .top_k = request.top_k };
+         e.reference_rows[take] = request.reference_rows;
+         e.takes += 1;
+         if (e.inline_) return run(e, id, request, sink, take);
+diff --git a/zig/src/server/speech_unmeasured_test.zig b/zig/src/server/speech_unmeasured_test.zig
+index 0ffbd52c..23a47807 100644
+--- a/zig/src/server/speech_unmeasured_test.zig
++++ b/zig/src/server/speech_unmeasured_test.zig
+@@ -29,7 +29,7 @@ pub fn check(comptime redraw: anytype) !void {
+         capture.len = 0;
+         var pcm = [_]f32{sample};
+         var metadata: Metadata = .{ .enabled = false, .register_on = true };
+-        const take = redraw(&srv, &conn, &cx, "register-test", .{ .sample_rate = 44100, .frame_length = 2048, .max_frames = 1024, .max_prompt_tokens = 4096 }, .{ .input = "hi", .prompt = &.{}, .seed = 0, .format = .pcm, .stream = false }, 0, undefined, 0, .{ .pcm = &pcm, .reason = .stop }, &spare, &metadata).?;
++        const take = redraw(&srv, &conn, &cx, "register-test", .{ .sample_rate = 44100, .frame_length = 2048, .max_frames = 1024, .max_prompt_tokens = 4096 }, .{ .input = "hi", .prompt = &.{}, .sampling = .{ .seed = 0 }, .format = .pcm, .stream = false }, 0, undefined, 0, .{ .pcm = &pcm, .reason = .stop }, &spare, &metadata).?;
+         try std.testing.expect(take.jump == null);
+         try std.testing.expect(take.pcm.ptr == &pcm);
+         try std.testing.expect(!metadata.register_tripped and !metadata.register_redrawn);
+-- 
+2.46.0
+

@@ -1,0 +1,90 @@
+From 2af18fbabc5a7655f36a8fc16441a4055945da84 Mon Sep 17 00:00:00 2001
+From: Mauvis Ledford <20738+krunkosaurus@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 11:54:45 +0800
+Subject: [PATCH] tests: cover parsed JSON sampling float boundaries
+
+---
+ docs/speech-sampling.md                 |  7 +++++++
+ zig/src/server/speech_sampling.zig      |  2 +-
+ zig/src/server/speech_sampling_test.zig | 27 +++++++++++++++++--------
+ 3 files changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/docs/speech-sampling.md b/docs/speech-sampling.md
+index b60515c9..29f6474e 100644
+--- a/docs/speech-sampling.md
++++ b/docs/speech-sampling.md
+@@ -17,6 +17,13 @@ use integer JSON syntax: `30.0` and `1e3` are refused. Seeds are parsed as exact
+ whose JSON number type loses precision must preserve the integer when encoding
+ the request. Invalid fields return HTTP 400 before submission to the engine.
+ 
++For `temperature` and `top_p`, the JSON parser first produces an `f64` value;
++the bounds above apply to that value and its conversion to `f32`. Extremely
++small floating literals such as `1e-400` and `-1e-400` already become zero in
++that parser, so both request temperature 0; they are refused for `top_p`.
++A positive parsed value such as `1e-100` is refused if it becomes zero only
++when narrowed to `f32`.
++
+ ```sh
+ curl http://127.0.0.1:8080/v1/audio/speech \
+   -H 'Content-Type: application/json' \
+diff --git a/zig/src/server/speech_sampling.zig b/zig/src/server/speech_sampling.zig
+index ef0d7777..ca9b5320 100644
+--- a/zig/src/server/speech_sampling.zig
++++ b/zig/src/server/speech_sampling.zig
+@@ -46,7 +46,7 @@ pub fn parse(cx: *errors.Cx, body: Value) errors.Refused!Options {
+     return out;
+ }
+ 
+-/// Check the JSON range before narrowing, then reject positive values that would become zero.
++/// Check the parsed f64 range before narrowing, then reject positive values that would become zero.
+ fn number(cx: *errors.Cx, value: Value, max: f64, message: []const u8) errors.Refused!f32 {
+     if (value != .int and value != .float) return cx.refuse(message);
+     const n = value.float64() orelse return cx.refuse(message);
+diff --git a/zig/src/server/speech_sampling_test.zig b/zig/src/server/speech_sampling_test.zig
+index 7d7b3212..8029a75d 100644
+--- a/zig/src/server/speech_sampling_test.zig
++++ b/zig/src/server/speech_sampling_test.zig
+@@ -57,6 +57,8 @@ test "speech sampling: custom parameters and exact integer seeds reach whole and
+         .{ .fields = "\"temperature\":0,\"top_p\":1,\"top_k\":1,\"seed\":0", .sampling = .{ .temperature = 0, .top_p = 1, .top_k = 1 }, .seed = 0 },
+         .{ .fields = "\"seed\":18446744073709551615", .sampling = defaults, .seed = std.math.maxInt(u64) },
+         .{ .fields = "\"temperature\":0.5", .sampling = .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, .seed = try promptSeed("hi", 0) },
++        .{ .fields = "\"temperature\":1e-400", .sampling = .{ .temperature = 0, .top_p = 0.9, .top_k = 30 }, .seed = try promptSeed("hi", 0) },
++        .{ .fields = "\"temperature\":-1e-400", .sampling = .{ .temperature = -0.0, .top_p = 0.9, .top_k = 30 }, .seed = try promptSeed("hi", 0) },
+         .{ .fields = "\"temperature\":3.4028234663852886e38,\"top_p\":1e-45", .sampling = .{ .temperature = std.math.floatMax(f32), .top_p = 1e-45, .top_k = 30 }, .seed = try promptSeed("hi", 0) },
+     };
+     for (cases) |case| for ([_]bool{ false, true }) |stream| {
+@@ -74,14 +76,23 @@ test "speech sampling: custom parameters and exact integer seeds reach whole and
+ 
+ test "speech sampling: invalid controls fail before any engine submission" {
+     const fields = [_][]const u8{
+-        "\"temperature\":true",           "\"temperature\":\"1\"", "\"temperature\":[]",            "\"temperature\":{}",
+-        "\"temperature\":-1",             "\"temperature\":NaN",   "\"temperature\":Infinity",      "\"temperature\":1e39",
+-        "\"temperature\":1e-100",         "\"top_p\":false",       "\"top_p\":\"0.9\"",             "\"top_p\":0",
+-        "\"top_p\":-0.1",                 "\"top_p\":1.00000001",  "\"top_p\":NaN",                 "\"top_p\":1e-100",
+-        "\"top_p\":Infinity",             "\"top_k\":true",        "\"top_k\":\"30\"",              "\"top_k\":1.5",
+-        "\"top_k\":30.0",                 "\"top_k\":0",           "\"top_k\":-1",                  "\"top_k\":65",
+-        "\"top_k\":18446744073709551616", "\"seed\":true",         "\"seed\":\"1\"",                "\"seed\":1.5",
+-        "\"seed\":1.0",                   "\"seed\":-1",           "\"seed\":18446744073709551616", "\"seed\":NaN",
++        "\"top_p\":1e-400",               "\"top_p\":-1e-400",
++        "\"temperature\":true",           "\"temperature\":\"1\"",
++        "\"temperature\":[]",             "\"temperature\":{}",
++        "\"temperature\":-1",             "\"temperature\":NaN",
++        "\"temperature\":Infinity",       "\"temperature\":1e39",
++        "\"temperature\":1e-100",         "\"top_p\":false",
++        "\"top_p\":\"0.9\"",              "\"top_p\":0",
++        "\"top_p\":-0.1",                 "\"top_p\":1.00000001",
++        "\"top_p\":NaN",                  "\"top_p\":1e-100",
++        "\"top_p\":Infinity",             "\"top_k\":true",
++        "\"top_k\":\"30\"",               "\"top_k\":1.5",
++        "\"top_k\":30.0",                 "\"top_k\":0",
++        "\"top_k\":-1",                   "\"top_k\":65",
++        "\"top_k\":18446744073709551616", "\"seed\":true",
++        "\"seed\":\"1\"",                 "\"seed\":1.5",
++        "\"seed\":1.0",                   "\"seed\":-1",
++        "\"seed\":18446744073709551616",  "\"seed\":NaN",
+     };
+     for (fields) |field| {
+         const body = try std.fmt.allocPrint(gpa, "{{\"model\":\"m\",\"input\":\"hi\",{s}}}", .{field});
+-- 
+2.46.0
+

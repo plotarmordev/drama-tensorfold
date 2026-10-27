@@ -7,6 +7,11 @@ selected patch exactly once, verifies its digest, then applies the series.
 | Patch | Scope | Source PR |
 |---|---|---|
 | `0001-protected-speech-chunks.patch` | Protected markup and CJK long-form boundaries; test fixture drain ordering | [TensorFold #5](https://github.com/plotarmordev/TensorFold/pull/5) |
+| `0002-speech-sampling-controls.patch` | Request sampling through whole/streamed, reference, CFG and long-form redraw paths | [TensorFold #6](https://github.com/plotarmordev/TensorFold/pull/6) |
+
+Patch 0002 adds [request sampling](../../../recipe/README-sampling.md). Each
+long-form segment starts with the supplied seed; its retries add their own
+attempt number. Omitted seeds retain the existing per-segment prompt hash.
 
 Protected constructs are complete model special tokens, balanced bracketed
 spans and correctly nested, exact-name ASCII tags without attributes. Unclosed

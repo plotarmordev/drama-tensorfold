@@ -1,3 +1,5 @@
 f282318f0e8dae43b19d1fa93ec05691696a0352eaeac41f9ffc334690d8b388  0001-drama3-metal-nvfp4-cfg.patch
 0a68a3b66da1991f1a04980cb6958e4acc8856a88efdbe1fe10adc6df588cfc8  0002-shared-gate-stress-regression.patch
 794a5b6008487ec705cadb098eb1c15737da743aee0855b610510506a0ce38db  0003-shared-cli-extension-point.patch
+c9c1406dc344ab359693b03584184119569ad05c686606d2f4c976eb667ce54d  0004-speech-sampling-controls.patch
+158ac17113ca3ffd04706782189a14706d4c63e343e40b81af287bae1b55cefc  0005-sampling-json-boundaries.patch

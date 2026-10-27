@@ -1,5 +1,5 @@
-# The engine `scripts/build-engine.sh --weights nvfp4` builds, unpatched: the only engine that loads the NVFP4
-# pruned weights (plotarmordev/drama-3-NVFP4-Pruned). Commit b1f4b9b4 on branch drama-nvfp4 of the TensorFold fork;
+# The CUDA engine base for `scripts/build-engine.sh --weights nvfp4`, followed by patches/.
+# Commit b1f4b9b4 on branch drama-nvfp4 of the TensorFold fork loads the NVFP4 pruned weights;
 # results/full-vs-quant-01 measured the same source (v1.0.11-193-g70dec469; the two differ in comments and test
 # wording only).
 TENSORFOLD_REPOSITORY=https://github.com/plotarmordev/TensorFold.git

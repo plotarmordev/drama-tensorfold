@@ -26,7 +26,7 @@
 
 [TensorFold](https://github.com/ashhart/TensorFold) runs Drama 3 natively since v1.1.0. This repository pins
 upstream TensorFold and adds a small series of opt-in patches for the full model. NVFP4 retains its
-measured CUDA engine pin and uses a separate upstream pin plus Metal patches on Mac. It builds the engine
+measured CUDA engine pin with a checksummed patch series and uses a separate upstream pin plus Metal patches on Mac. It builds the engine
 and starts a local speech server with an OpenAI-style `/v1/audio/speech` route, whole or streamed.
 
 **Built with Fish Audio.** The model weights are not in this repository; the launcher downloads them from
@@ -64,7 +64,8 @@ For the full model, write `--weights full` in both commands.
 The first start downloads the weights at the revision pinned in [`recipe/sources.json`](recipe/sources.json),
 into `drama-3-NVFP4-Pruned/` or `drama-3/`. Every start checks them against [`recipe/checksums`](recipe/checksums)
 and refuses missing or changed files; for the 21 GiB NVFP4 weights that takes about 11 seconds on a GB10.
-On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTREAM) and serves with
+On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTREAM) plus
+[`engine/nvfp4/patches`](engine/nvfp4/patches) and serves with
 guidance γ 1.5 and batched guidance, as measured; a `--cfg-gamma` of your own after `--` replaces both.
 On Mac it builds [`engine/nvfp4/macos/UPSTREAM`](engine/nvfp4/macos/UPSTREAM) plus its patch series.
 Metal's `--cfg-batched` pairs independent states in one command buffer, not a vectorized GEMM.
@@ -138,6 +139,23 @@ Guidance-enabled replies carry the configured γ in `X-Cfg-Gamma`; builtin voice
 </details>
 
 ## The patches
+
+### CUDA NVFP4 long speech
+
+The CUDA NVFP4 patch series preserves delivery markup when `--long-form` splits a request.
+Paired tags such as `<whisper>…</whisper>`, bracketed cues and special tokens stay whole;
+Chinese/Japanese sentence and clause punctuation are recognized. A topic-shift mark inside a
+protected span does not create a cut. Plain English without these spans retains its existing cuts.
+
+`--long-form-chars` remains a code-point target, with one exception: an indivisible protected span
+may exceed it. The engine's prompt, segment-count and generated-frame limits still apply.
+The full-model and Metal NVFP4 engines do not expose this legacy long-form route.
+
+The behavioral reference is [Sogni-AI/drama3-mlx's chunking](https://github.com/Sogni-AI/drama3-mlx/blob/ecc235039ccd5f982f66a6982184f57432354ab4/drama3_mlx/chunking.py).
+The native patch extends TensorFold's own implementation; it does not copy that Fish-licensed source.
+See the [CUDA patch index](engine/nvfp4/patches/README.md) for scope and tests.
+
+### Full-model engine
 
 The patches build the full-model engine (`--weights full`). Upstream TensorFold already serves Drama 3. Each patch
 below adds one feature that stays off until you pass its flag, so a server started without them answers as

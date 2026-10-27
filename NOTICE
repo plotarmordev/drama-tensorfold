@@ -4,8 +4,8 @@ Copyright 2026 plotarmordev
 License
 -------
 All code in this repository is licensed under the Apache License, Version 2.0 (LICENSE). That covers the recipe,
-scripts, benchmark and qualification tools, results, documentation and the engine patches in engine/patches/
-and engine/nvfp4/macos/patches/.
+scripts, benchmark and qualification tools, results, documentation and the engine patches in engine/patches/,
+engine/nvfp4/patches/ and engine/nvfp4/macos/patches/.
 
 TensorFold
 ----------
@@ -13,8 +13,9 @@ The engine patches apply to TensorFold (https://github.com/ashhart/TensorFold), 
 Apache License, Version 2.0. scripts/build-engine.sh clones TensorFold at the commit pinned in engine/UPSTREAM
 and applies the patches with `git am`. On Linux, --weights nvfp4 instead clones the TensorFold fork
 https://github.com/plotarmordev/TensorFold at the commit pinned in engine/nvfp4/UPSTREAM, also Apache-2.0,
-and applies no patches. On Darwin, --weights nvfp4 uses upstream TensorFold at engine/nvfp4/macos/UPSTREAM
-and applies the ordered patches in engine/nvfp4/macos/patches/.
+and applies the ordered patches in engine/nvfp4/patches/ after checking their SHA256SUMS manifest. On Darwin,
+--weights nvfp4 uses upstream TensorFold at engine/nvfp4/macos/UPSTREAM and applies the ordered patches in
+engine/nvfp4/macos/patches/.
 
 The patches modify TensorFold files. They add opt-in serving features and Drama 3 fixes: new files under
 zig/src/server/, zig/src/core/, zig/src/native/, zig/kernels/metal/, zig/tests/, docs/ and tools/zig/,

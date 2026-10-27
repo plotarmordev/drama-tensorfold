@@ -11,6 +11,9 @@ engine loads are under the Fish Audio Community License v1.0 and are downloaded 
 
 `SHA256SUMS` pins every patch.
 
+Linux `--weights nvfp4` uses the separate [CUDA NVFP4 series](../nvfp4/patches/README.md).
+All profiles require an exact manifest-to-patch match before applying anything.
+
 Patch 0012 is corrected in place: it owns one reusable Metal recurrent-state snapshot per lane,
 invalidates incompatible live KV before prefill, and uses the prompt builder's exact invariant
 boundary including tower lookahead. It preserves uncached chunk cuts and CUDA execution.

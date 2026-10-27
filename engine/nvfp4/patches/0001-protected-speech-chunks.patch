@@ -1,0 +1,733 @@
+From 3babff305c51109c99d250033e3ce632edce7127 Mon Sep 17 00:00:00 2001
+From: Mauvis Ledford <20738+krunkosaurus@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 11:58:30 +0800
+Subject: [PATCH] server: preserve controls in long-form speech chunks
+
+Keep complete special tokens, bracketed cues and nested paired tags intact across sentence, clause, space and code-point splitting. Protect topic-shift preprocessing and recognize CJK boundaries without changing prompt or frame ceilings.
+
+Exercise exact whole and streamed prompt segments, oversized spans, malformed controls and redraws. Drain inherited socket fixtures before joining so CPU validation completes on macOS.
+
+Refs: https://github.com/plotarmordev/drama-tensorfold/issues/25
+---
+ CHANGELOG.md                            |   1 +
+ docs/drama-voices.md                    |  14 +--
+ zig/src/server/cli_speech.zig           |   2 +-
+ zig/src/server/drama_joins.zig          |  11 +-
+ zig/src/server/drama_long.zig           | 122 ++++++++++++++++++----
+ zig/src/server/drama_shift.zig          |  20 +++-
+ zig/src/server/drama_spans.zig          | 128 ++++++++++++++++++++++++
+ zig/src/server/speech_long.zig          |   2 +-
+ zig/src/server/speech_long_test.zig     |  55 +++++++++-
+ zig/src/server/speech_mid_test.zig      |   2 +-
+ zig/src/server/speech_redraw_test.zig   |  10 +-
+ zig/src/server/speech_register_test.zig |   3 +-
+ zig/src/server/speech_stream_test.zig   |   4 +-
+ 13 files changed, 332 insertions(+), 42 deletions(-)
+ create mode 100644 zig/src/server/drama_spans.zig
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2af98ce5..5dd216c0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
+ 
+ ## Unreleased
+ 
++- speech: long-form Drama 3 splits preserve complete special tokens, bracketed cues and nested paired direction tags, even when one span exceeds the character target. CJK punctuation supplies sentence and clause boundaries without requiring spaces, and topic-shift markers inside protected spans cannot split them. Existing input, prompt-token, segment and frame limits still apply ([docs](docs/drama-voices.md#long-form-replies)).
+ - speech: Drama 3's DAC activation planes are bounded by the decode chunk and causal halo rather than the utterance limit. QKV history retains absolute frame indexing and attention tile boundaries. `zig build drama-codec-chunk` builds `oracle/bin/tf-drama-codec-chunk CHECKPOINT`, a GPU byte-equality gate against the original full-plane layout; the trace diagnostic explicitly retains that reference layout.
+ - speech: `--silence-mid-s S` (CUDA; 0 for off, or 3 to below 10; default 0) ends a Drama 3 synthesis as `silence` when its end of speech comes inside S seconds or more below -40 dBFS after 1 s or more voiced: a reply that fell silent mid-way and stopped there, its last words never spoken, as one 4-bit take did after a 9.0 s hole. Holes that recover are left alone, since a client that shortens pauses never plays them, and a reply the frame cap stops is not judged. Such a draw is redrawn under the silence redraws' rules, a long-form segment in place, and whole replies count the draws it ended in `X-Silence-Mid-Trips`. Replayed at S = 3 over 2272 draws in the engine's frame accounting, it ended 15 of the 2047 that the 10 s rule left alone; all 8 with a text to judge by had lost words, and none of them had spoken in full. With S = 0 replies are as before ([docs](docs/drama-voices.md#holes-that-end-a-reply))
+ - speech: `--register-redraw-st R` (0 to 24, default 0: off) draws a whole Drama 3 reply once more when a phrase after the first opens R semitones or more above the median of its other phrase openings with `--register-redraw-high F` percent (default 20) of its voiced frames over `--register-high-hz H` (default 210), the thin, high phrase that sounds stitched into a reply. The redraw starts only if t + d fits the silence redraws' budget and `X-Deadline-S`, and the draw with the smaller jump is sent, never one that ended in silence or short; a tie keeps the first. Replies carry `X-Register-Trip` and `X-Register-Redraws`; streams and multi-segment long-form replies are not measured, and a draw with a NaN or infinite sample fails the reply before any measure. The measure ports the numpy one it was calibrated with: on 77 takes it decided every trip the same way at R = 4, F = 20, H = 210 (evidence on that corpus, not exact parity at every threshold; those settings tripped 6 of 51 replies of a day's use), at about 1.2 ms per second of audio. With R = 0 replies are as before ([docs](docs/drama-voices.md#register-redraws))
+diff --git a/docs/drama-voices.md b/docs/drama-voices.md
+index e27e7e70..2ee8d2a9 100644
+--- a/docs/drama-voices.md
++++ b/docs/drama-voices.md
+@@ -304,19 +304,21 @@ tensorfold serve DRAMA3_DIR --voices voices/ --default-voice NAME --long-form
+ 
+ With `--long-form`, a speech input longer than `--long-form-chars` (default 500 code points) is spoken in segments instead of in one synthesis. Each segment hears the segments before it: the earlier segments' text and generated codes are added as references after the request's references and the voice's, with the latest last. This follows the way Fish's long-form inference keeps earlier segments in context.
+ 
+-- **Segments.** The input is cut into the fewest segments that fit the limit, with cuts only at sentence ends (`.` `!` `?` `…` followed by white space, keeping closing quotes and brackets, and line breaks).
++- **Segments.** The input is cut into the fewest segments that fit the character target, with cuts at sentence ends (`.` `!` `?` `…` followed by white space; `。` `！` `？` `；` without needing white space), keeping closing quotes and brackets, and at line breaks.
+   - Among the cuts that give that many segments, the server picks the most balanced lengths, and prefers a cut where the text turns.
+   - The text turns at a blank line, after a question, or where the next sentence opens a new move: it starts with So, Okay, OK, Now, Right, Anyway, Also, Next, Finally, But or Here's, or with a number and "thing"/"things" (One thing, Two things, 3 things).
+   - A turn wins over a cut that is up to about 15% of a segment better balanced.
+-  - Only a sentence longer than the limit is cut inside, at `;` `:` `,`, then at spaces, then anywhere.
++  - Only a sentence longer than the target is cut inside, at `;` `:` `,` before white space or `，` `：` `、`, then at spaces, then between code points.
++  - A complete `<|...|>` token, balanced `[...]` cue or correctly nested `<name>...</name>` span stays whole. Simple tag names start with an ASCII letter and contain letters, digits, `_` or `-`; names match exactly, and attributes are not parsed. Nested spans stay with their outer span; adjacent controls remain separate. An unclosed or crossed delimiter is ordinary text, while complete spans inside or after it still stay whole.
++  - An indivisible span may exceed the character target; other text retains the target. Input, prompt-token, frame and segment-count limits still apply. The splitter preserves the original text and never inserts or reopens tags.
+ - **History.** `--long-form-history K` (0 to 3, default 1) sets how many earlier segments a segment hears. The oldest is dropped when the prompt would exceed the engine's prompt limit.
+ - **Joins.**
+   - **Pause.** At each join, the silence already there is measured: the end of one segment plus the start of the next, in 10 ms frames below -42 dBFS. Only the shortfall to the boundary's target is added, never cutting existing silence. Targets:
+-    - `.` or `!`: 0.42 s
++    - `.` `!` `。` `！` or `；`: 0.42 s
+     - `…` or `...`: 0.55 s
+     - a turn (a question, or a sentence opening a new move): 0.60 s
+     - a blank line: 0.70 s
+-    - a cut inside a sentence (at `,` `;` `:` or a space): 0.20 s
++    - a cut inside a sentence (at `,` `;` `:` `，` `：` `、` or a space): 0.20 s
+   - **Room tone.** The added pause is copied from the earlier segment's quietest 100 ms in its last second, played back and forth. It is digital silence when that segment has no quiet tail.
+   - **Level.** A segment whose speech level (the median dBFS of its frames at or above -42 dBFS) is more than 1.5 dB from the median of the earlier segments gets one constant gain. The gain brings it to 1.5 dB, is at most 3 dB either way, and never raises a peak past 0.99.
+ - **Seeds.** Each segment's seed comes from its own prompt rows, as a single synthesis's does.
+@@ -337,9 +339,9 @@ tensorfold serve DRAMA3_DIR --voices voices/ --default-voice NAME --long-form --
+ 
+ A client marks a topic shift with `¶` (U+00B6), sent as ` ¶ `. A caller's wrapper writes one for each blank line it collapses. With `--shift-pause-s T` (0 to 3 seconds, default 0: off; needs `--long-form`), the reply pauses for at least T seconds at each mark, and says where those pauses are.
+ 
+-- **Marks.** A mark counts only after `.` `!` `?` or `…` (closing quotes and brackets may sit between), and only with words on both sides of it. Here a word means a Unicode letter or number (general category L or N, so `次へ`, `Été` and `２` count, while `！！！`, `×` and `€` do not), outside `[…]` and `<…>` controls, between the mark and the last cut and between it and the next mark. A cue may open the text after a mark (`done. ¶ [curious] Should I…`), but a mark followed by punctuation, symbols or cues alone does not count. Several marks in a row count as one. Every other mark is dropped, and the server logs how many. Every mark, with the white space after it, is removed before anything else reads the input. The tokenizer, the long-form history, a plain redraw's text and the short-reply rule's character count never see one.
++- **Marks.** A mark counts only after `.` `!` `?` `…` `。` `！` `？` or `；` (closing quotes and brackets may sit between), and only with words on both sides of it. Here a word means a Unicode letter or number (general category L or N, so `次へ`, `Été` and `２` count, while `！！！`, `×` and `€` do not), outside `[…]` and `<…>` controls, between the mark and the last cut and between it and the next mark. A cue may open the text after a mark (`done. ¶ [curious] Should I…`), but a mark followed by punctuation, symbols or cues alone does not count. Marks inside an indivisible control span do not force a cut. Several marks in a row count as one. Every other mark is dropped, and the server logs how many. Every mark, with the white space after it, is removed before anything else reads the input. The tokenizer, the long-form history, a plain redraw's text and the short-reply rule's character count never see one.
+ - **Cues that trail a sentence.** Put the mark after the sentence's end and before a cue that trails it: `nights in a row now. ¶ [small laugh] The calendar`. The cue then opens the next segment. Written after the cue (`now. [small laugh] ¶`), the mark follows `]`, not a sentence end, so it is dropped.
+-- **Cuts.** Each mark that counts cuts a long-form segment there, even in an input short enough for one segment. The text between marks is split as long-form splits any input, and the segment cap still applies.
++- **Cuts.** Each mark that counts cuts a long-form segment there, even in an input short enough for one segment. The text between marks is split as long-form splits any input, including the indivisible-span exception to the character target.
+ - **Pauses.** At a mark's join, the silent 10 ms frames around the join (under -42 dBFS, counted on the reply's own grid from its first sample, as a client's pacing counts them) are made to last at least T seconds. Quiet already there counts, and is never cut. The fill is added, then measured in the audio as sent. If the crossfades or the grid leave it short, more room tone goes in its middle until it is long enough. The fill is room tone: the quietest silent 100 ms (but not digital silence, under -90 dBFS) of the earlier segment's last second. Failing that it comes from all audio earlier in the reply, then from the next segment. If none of these has one, it is noise at -65 dBFS, never zeros. Its samples are kept 6 dB under the floor, so every 10 ms of it is silent. The fill fades in from the earlier segment's last samples and out into the next segment's first samples, each over 15 ms at equal power. Both segments are mirrored at their seams, so neither segment's own audio changes.
+ - **`X-Pause-Spans: s1-e1,s2-e2,…`** lists one span per mark the reply reached, as sample offsets into the audio exactly as sent (start inclusive, end exclusive, ascending). A span runs from the start of the earlier segment's trailing quiet to the end of the next segment's leading quiet, fill included, and always contains the silent frames measured around the join, so it holds at least T seconds of them. With `stream: true` the spans come as a trailer, declared next to `X-Long-Form-Segments`. The header is absent when there are no spans.
+ - **Redraws.** Redraws work per segment as usual. The spans are measured on each segment's final take, so they always describe the audio delivered. Segments under 200 characters fall outside the short-reply rule, and only the silence guard covers them.
+diff --git a/zig/src/server/cli_speech.zig b/zig/src/server/cli_speech.zig
+index a60cac35..113c6f1e 100644
+--- a/zig/src/server/cli_speech.zig
++++ b/zig/src/server/cli_speech.zig
+@@ -47,7 +47,7 @@ pub fn flag(a: Allocator, out: *cli.Args, name: []const u8, v: []const u8, u: *c
+     const is = std.mem.eql;
+     if (is(u8, name, "--voices")) out.voices = v else if (is(u8, name, "--default-voice")) out.default_voice = v else if (is(u8, name, "--long-form")) out.long_form = true else if (is(u8, name, "--long-form-chars")) {
+         const n = try cli.int(u, a, name, v);
+-        if (n < 1 or n > 4096) return cli.fail(u, a, "argument --long-form-chars: characters a segment holds, from 1 to 4096: '{s}'", .{v});
++        if (n < 1 or n > 4096) return cli.fail(u, a, "argument --long-form-chars: target characters a segment holds, from 1 to 4096: '{s}'", .{v});
+         out.long_form_chars = @intCast(n);
+         out.long_form_set = true;
+     } else if (is(u8, name, "--long-form-history")) {
+diff --git a/zig/src/server/drama_joins.zig b/zig/src/server/drama_joins.zig
+index 912eaf2a..57ee88ff 100644
+--- a/zig/src/server/drama_joins.zig
++++ b/zig/src/server/drama_joins.zig
+@@ -39,16 +39,23 @@ pub fn boundary(left: []const u8, gap: []const u8, right: []const u8) Boundary {
+         const at = lastStart(left[0..end]);
+         const cp = std.unicode.utf8Decode(left[at..end]) catch break;
+         switch (cp) {
+-            '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb => end = at,
++            '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb, 0x300d, 0x300f, 0x3011, 0xff09 => end = at,
+             0x2026 => return .ellipsis,
+             '.' => return if (std.mem.endsWith(u8, left[0..end], "...")) .ellipsis else .sentence,
+-            '!' => return .sentence,
++            '!', 0x3002, 0xff01, 0xff1b => return .sentence,
+             else => break,
+         }
+     }
+     return if (std.mem.indexOfAny(u8, gap, "\n\r") != null) .sentence else .clause;
+ }
+ 
++test "CJK punctuation selects sentence, question and clause joins" {
++    for ([_][]const u8{ "\u{4f60}\u{597d}\u{3002}", "\u{4f60}\u{597d}\u{ff01}\u{300d}", "\u{4f60}\u{597d}\u{ff1b}" }) |left|
++        try std.testing.expectEqual(Boundary.sentence, boundary(left, "", "\u{4e16}\u{754c}"));
++    try std.testing.expectEqual(Boundary.topic, boundary("\u{4f60}\u{597d}\u{ff1f}\u{300d}", "", "\u{4e16}\u{754c}"));
++    try std.testing.expectEqual(Boundary.clause, boundary("\u{4f60}\u{597d}\u{ff0c}", "", "\u{4e16}\u{754c}"));
++}
++
+ /// The start of the last code point of valid UTF-8 `text`.
+ fn lastStart(text: []const u8) usize {
+     var at = text.len - 1;
+diff --git a/zig/src/server/drama_long.zig b/zig/src/server/drama_long.zig
+index 77d0aff1..e87207bc 100644
+--- a/zig/src/server/drama_long.zig
++++ b/zig/src/server/drama_long.zig
+@@ -1,10 +1,11 @@
+ //! Drama 3 long-form speech: an input cut at sentence ends into segments, each spoken after hearing those before it.
+ const std = @import("std");
+ const drama_prompt = @import("drama_prompt.zig");
++const drama_spans = @import("drama_spans.zig");
+ const Reference = drama_prompt.Reference;
+ const Allocator = std.mem.Allocator;
+ 
+-/// --long-form's segments of at most `chars`, each hearing `history` before it; --shift-pause-s: seconds at each `¶`.
++/// --long-form's character target; indivisible controls may exceed it. `history` sets earlier segments heard.
+ pub const Options = struct { chars: u32 = 500, history: u8 = 1, shift_pause_s: f32 = 0 };
+ 
+ pub const max_history = 3;
+@@ -14,13 +15,17 @@ pub const max_frames = 6000;
+ 
+ /// Where text may be cut, coarsest first.
+ const Level = enum { sentence, clause, space, any };
++const Protection = struct { base: [*]const u8, spans: []const drama_spans.Span };
+ 
+-/// The input's segments: the fewest that fit `chars`, balanced, ending where the text turns (see `balance`).
++/// Balanced slices targeting `chars`, without cutting controls; an oversized control stays whole in its own slice.
+ pub fn split(a: Allocator, input: []const u8, chars: u32) Allocator.Error![]const []const u8 {
++    const spans = try drama_spans.collect(a, input);
++    defer a.free(spans);
++    const protection: Protection = .{ .base = input.ptr, .spans = spans };
+     var out: std.ArrayList([]const u8) = .empty;
+     var run: std.ArrayList([]const u8) = .empty;
+     var at: usize = 0;
+-    while (nextPiece(input, &at, .sentence, chars)) |piece| {
++    while (nextPiece(input, &at, .sentence, chars, protection)) |piece| {
+         if (count(piece) <= chars) {
+             try run.append(a, piece);
+             continue;
+@@ -28,7 +33,7 @@ pub fn split(a: Allocator, input: []const u8, chars: u32) Allocator.Error![]cons
+         try balance(a, &out, run.items, chars);
+         run.clearRetainingCapacity();
+         // a sentence over `chars` is cut at ``; : ,``, then spaces, then anywhere, into segments of its own
+-        try pack(a, &out, piece, .clause, chars);
++        try pack(a, &out, piece, .clause, chars, protection);
+     }
+     try balance(a, &out, run.items, chars);
+     return out.items;
+@@ -106,15 +111,17 @@ pub fn gapBetween(left: []const u8, right: []const u8) []const u8 {
+     return left.ptr[left.len .. @intFromPtr(right.ptr) - @intFromPtr(left.ptr)];
+ }
+ 
+-/// Packs `text`'s pieces at `level` greedily into segments of at most `chars`; a longer piece is cut one level finer.
+-fn pack(a: Allocator, out: *std.ArrayList([]const u8), text: []const u8, level: Level, chars: u32) Allocator.Error!void {
++/// Packs free text within `chars`; the final level emits an oversized protected atom without splitting it.
++fn pack(a: Allocator, out: *std.ArrayList([]const u8), text: []const u8, level: Level, chars: u32, protection: Protection) Allocator.Error!void {
+     var current: ?[]const u8 = null;
+     var at: usize = 0;
+-    while (nextPiece(text, &at, level, chars)) |piece| {
++    while (nextPiece(text, &at, level, chars, protection)) |piece| {
+         if (count(piece) > chars) {
+             if (current) |c| try out.append(a, c);
+             current = null;
+-            try pack(a, out, piece, @fromBackingInt(@intCast(@backingInt(level) + 1)), chars);
++            if (level == .any) {
++                try out.append(a, piece);
++            } else try pack(a, out, piece, @fromBackingInt(@intCast(@backingInt(level) + 1)), chars, protection);
+         } else if (current) |c| {
+             const joined = c.ptr[0 .. @intFromPtr(piece.ptr) + piece.len - @intFromPtr(c.ptr)];
+             if (count(joined) <= chars) {
+@@ -139,10 +146,11 @@ pub fn turns(left: []const u8, gap: []const u8, right: []const u8) bool {
+ 
+ /// `text` ends in a question mark, closing quotes and brackets aside.
+ pub fn question(text: []const u8) bool {
+-    return lastMark(text) == '?';
++    const cp = lastMark(text);
++    return cp == '?' or cp == 0xff1f;
+ }
+ 
+-/// `text`, trailing white space, closing quotes and brackets aside, ends in `.` `!` `?` or `…`.
++/// `text`, trailing white space and closing quotes/brackets aside, ends in ASCII or CJK sentence punctuation.
+ pub fn endsSentence(text: []const u8) bool {
+     return terminal(lastMark(trim(text)) orelse return false);
+ }
+@@ -200,14 +208,18 @@ fn count(text: []const u8) usize {
+     return std.unicode.utf8CountCodepoints(text) catch unreachable;
+ }
+ 
+-/// Ends a sentence when followed by white space or the end; closing quotes and brackets stay with it.
++/// ASCII or CJK sentence punctuation; ASCII additionally needs white space or the end at the split point.
+ fn terminal(cp: u21) bool {
+-    return cp == '.' or cp == '!' or cp == '?' or cp == 0x2026;
++    return cp == '.' or cp == '!' or cp == '?' or cp == 0x2026 or cjkTerminal(cp);
++}
++
++fn cjkTerminal(cp: u21) bool {
++    return cp == 0x3002 or cp == 0xff01 or cp == 0xff1f or cp == 0xff1b;
+ }
+ 
+ fn closer(cp: u21) bool {
+     return switch (cp) {
+-        '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb => true,
++        '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb, 0x300d, 0x300f, 0x3011, 0xff09 => true,
+         else => false,
+     };
+ }
+@@ -217,10 +229,10 @@ fn newline(cp: u21) bool {
+ }
+ 
+ /// The next non-empty piece of `text` from `at.*`, trimmed of white space, with `at.*` moved past it.
+-fn nextPiece(text: []const u8, at: *usize, level: Level, chars: u32) ?[]const u8 {
++fn nextPiece(text: []const u8, at: *usize, level: Level, chars: u32, protection: Protection) ?[]const u8 {
+     while (at.* < text.len) {
+         const begin = at.*;
+-        const end = cut(text, begin, level, chars);
++        const end = cut(text, begin, level, chars, protection);
+         at.* = end;
+         const piece = trim(text[begin..end]);
+         if (piece.len > 0) return piece;
+@@ -229,25 +241,45 @@ fn nextPiece(text: []const u8, at: *usize, level: Level, chars: u32) ?[]const u8
+ }
+ 
+ /// Where the piece starting at `begin` ends (its cut point, or the end of `text`).
+-fn cut(text: []const u8, begin: usize, level: Level, chars: u32) usize {
++fn cut(text: []const u8, begin: usize, level: Level, chars: u32, protection: Protection) usize {
+     var it = std.unicode.Utf8View.initUnchecked(text[begin..]).iterator();
+     var seen: usize = 0;
+-    while (it.nextCodepoint()) |cp| {
++    const offset = @intFromPtr(text.ptr) - @intFromPtr(protection.base);
++    var atom: usize = 0;
++    while (atom < protection.spans.len and protection.spans[atom].end <= offset + begin) atom += 1;
++    while (it.i < text.len - begin) {
++        const here = begin + it.i;
++        if (atom < protection.spans.len and protection.spans[atom].start == offset + here) {
++            const end = protection.spans[atom].end - offset;
++            const n = count(text[here..end]);
++            if (level == .any and seen > 0 and seen + n > chars) return here;
++            seen += n;
++            it.i = end - begin;
++            atom += 1;
++            if (level == .any and seen >= chars) return end;
++            continue;
++        }
++        const cp = it.nextCodepoint().?;
+         seen += 1;
+         switch (level) {
+             .sentence => {
+                 if (newline(cp)) return begin + it.i;
+                 if (!terminal(cp)) continue;
+                 var after = it;
++                var cjk = cjkTerminal(cp);
+                 while (after.peek(1).len > 0) {
+                     const next = std.unicode.utf8Decode(after.peek(1)) catch unreachable;
+                     if (!terminal(next) and !closer(next)) break;
++                    cjk = cjk or cjkTerminal(next);
+                     _ = after.nextCodepoint();
+                 }
+                 it = after;
+-                if (endsWord(text[begin..], it.i)) return begin + it.i;
++                if (cjk or endsWord(text[begin..], it.i)) return begin + it.i;
++            },
++            .clause => {
++                const cjk = cp == 0xff0c or cp == 0xff1a or cp == 0x3001;
++                if (cjk or ((cp == ';' or cp == ':' or cp == ',') and endsWord(text[begin..], it.i))) return begin + it.i;
+             },
+-            .clause => if ((cp == ';' or cp == ':' or cp == ',') and endsWord(text[begin..], it.i)) return begin + it.i,
+             .space => if (drama_prompt.isWhiteSpace(cp)) return begin + it.i,
+             .any => if (seen == chars) return begin + it.i,
+         }
+@@ -388,7 +420,7 @@ test "no segment is ever longer than the limit, and there are never more than ne
+         var greedy: usize = 0;
+         var current: usize = 0;
+         var at: usize = 0;
+-        while (nextPiece(text.items, &at, .sentence, chars)) |piece| {
++        while (nextPiece(text.items, &at, .sentence, chars, .{ .base = text.items.ptr, .spans = &.{} })) |piece| {
+             const n = count(piece);
+             if (current > 0 and current + 1 + n <= chars) current += 1 + n else {
+                 greedy += 1;
+@@ -408,6 +440,56 @@ test "a sentence longer than the limit is cut at clause marks, then spaces, then
+     try expectSplit("\u{3042}\u{3044}\u{3046}\u{3048}\u{304a}", 2, &.{ "\u{3042}\u{3044}", "\u{3046}\u{3048}", "\u{304a}" });
+ }
+ 
++test "protected chunks keep a paired direction whole when it exceeds the target" {
++    const input = "<whisper>One. Two. Three.</whisper>";
++    for ([_]u32{ 1, 20, input.len - 1, input.len }) |chars| try expectSplit(input, chars, &.{input});
++    try expectSplit("AB" ++ input ++ "CD", 2, &.{ "AB", input, "CD" });
++    try expectSplit("[laughs softly] Hello.", 10, &.{ "[laughs softly]", "Hello." });
++    try expectSplit("[laughs][pause]", 1, &.{ "[laughs]", "[pause]" });
++    try expectSplit("<|speaker:0|> ab", 1, &.{ "<|speaker:0|>", "a", "b" });
++}
++
++test "protected chunks preserve nested spans and recover after malformed openers" {
++    const nested = "<soft>One. <whisper>Two.</whisper> [pause] Three.</soft>";
++    try expectSplit(nested ++ " After.", 10, &.{ nested, "After." });
++    try expectSplit("<soft>one. two.", 10, &.{ "<soft>one.", "two." });
++    try expectSplit("[open <soft>Quiet.</soft>", 5, &.{ "[open", "<soft>Quiet.</soft>" });
++    try expectSplit("[outer [inner] tail] End.", 5, &.{ "[outer [inner] tail]", "End." });
++}
++
++test "protected chunks stay in the original input and only indivisible spans may exceed the target" {
++    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const input = "ab<soft>\u{4e59}\u{4e19}\u{4e01}\u{3002}</soft>cd [laughs softly] ef";
++    const spans = try drama_spans.collect(a, input);
++    for ([_]u32{ 1, 2, 7, 20 }) |chars| {
++        const got = try split(a, input, chars);
++        var end: usize = 0;
++        for (got) |segment| {
++            const start = @intFromPtr(segment.ptr) - @intFromPtr(input.ptr);
++            try std.testing.expect(start >= end and start + segment.len <= input.len);
++            try std.testing.expectEqual(@as(usize, 0), trim(input[end..start]).len);
++            end = start + segment.len;
++            if (count(segment) > chars) {
++                const whole = for (spans) |atom| {
++                    if (start == atom.start and end == atom.end) break true;
++                } else false;
++                try std.testing.expect(whole);
++            }
++        }
++        try std.testing.expectEqual(@as(usize, 0), trim(input[end..]).len);
++    }
++}
++
++test "CJK sentence and clause punctuation does not need a following space" {
++    try expectSplit("\u{4f60}\u{597d}\u{3002}\u{4e16}\u{754c}\u{ff01}\u{518d}\u{89c1}\u{ff1f}\u{7ed3}\u{675f}\u{3002}", 6, &.{ "\u{4f60}\u{597d}\u{3002}\u{4e16}\u{754c}\u{ff01}", "\u{518d}\u{89c1}\u{ff1f}\u{7ed3}\u{675f}\u{3002}" });
++    try expectSplit("\u{7532}\u{4e59}\u{ff0c}\u{4e19}\u{4e01}\u{3001}\u{620a}\u{5df1}\u{ff1a}\u{5e9a}\u{8f9b}\u{3002}", 5, &.{ "\u{7532}\u{4e59}\u{ff0c}", "\u{4e19}\u{4e01}\u{3001}", "\u{620a}\u{5df1}\u{ff1a}", "\u{5e9a}\u{8f9b}\u{3002}" });
++    try expectSplit("\u{300c}\u{7532}\u{3002}\u{300d}\u{4e59}\u{ff1b}\u{4e19}\u{ff01}", 4, &.{ "\u{300c}\u{7532}\u{3002}\u{300d}", "\u{4e59}\u{ff1b}\u{4e19}\u{ff01}" });
++    try expectSplit("\u{7532}.\u{ff1f}\u{4e59}\u{3002}", 4, &.{ "\u{7532}.\u{ff1f}", "\u{4e59}\u{3002}" });
++    try std.testing.expect(question("\u{4f60}\u{597d}\u{ff1f}\u{300d}"));
++}
++
+ test "the segments header lists where each segment after the first starts, and its largest value fits its buffer" {
+     var buf: [segments_header_max]u8 = undefined;
+     try std.testing.expectEqualStrings("3;2048,6144", segmentsHeader(&buf, &.{ 0, 2048, 6144 }));
+diff --git a/zig/src/server/drama_shift.zig b/zig/src/server/drama_shift.zig
+index 7171ac3a..43fda1b3 100644
+--- a/zig/src/server/drama_shift.zig
++++ b/zig/src/server/drama_shift.zig
+@@ -2,6 +2,7 @@
+ const std = @import("std");
+ const drama_prompt = @import("drama_prompt.zig");
+ const drama_long = @import("drama_long.zig");
++const drama_spans = @import("drama_spans.zig");
+ const drama_joins = @import("drama_joins.zig");
+ const unicode = @import("tokenizer").unicode;
+ const Allocator = std.mem.Allocator;
+@@ -15,6 +16,9 @@ pub const Marked = struct { text: []const u8, cuts: []const usize = &.{}, droppe
+ /// `input` without its marks and the white space after each; with `honour`, its cuts (`read`'s rule, in the docs).
+ pub fn read(a: Allocator, input: []const u8, honour: bool) Allocator.Error!Marked {
+     if (std.mem.indexOf(u8, input, mark) == null) return .{ .text = input };
++    const protected = if (honour) try drama_spans.collect(a, input) else &.{};
++    defer if (honour) a.free(protected);
++    var atom: usize = 0;
+     var text: std.ArrayList(u8) = .empty;
+     var cuts: std.ArrayList(usize) = .empty;
+     var dropped: usize = 0;
+@@ -28,6 +32,11 @@ pub fn read(a: Allocator, input: []const u8, honour: bool) Allocator.Error!Marke
+             at = afterWhiteSpace(input, at + mark.len);
+         }
+         if (!honour) continue;
++        while (atom < protected.len and protected[atom].end <= found) atom += 1;
++        if (atom < protected.len and protected[atom].start < found) {
++            dropped += marks;
++            continue;
++        }
+         // the segments either side: from the cut before, and up to the next mark
+         const before = text.items[if (cuts.items.len > 0) cuts.items[cuts.items.len - 1] else 0..];
+         const after = input[at .. std.mem.indexOfPos(u8, input, at, mark) orelse input.len];
+@@ -64,7 +73,7 @@ fn hasWords(text: []const u8) bool {
+ /// A long-form input's segments, and `shifts[i]` (empty without a cut): a mark stands right before segment i.
+ pub const Segments = struct { segments: []const []const u8, shifts: []const bool = &.{} };
+ 
+-/// `marked`'s segments of at most `chars`.
++/// `marked`'s segments targeting `chars`, keeping indivisible controls whole.
+ pub fn split(a: Allocator, marked: Marked, chars: u32) Allocator.Error!Segments {
+     if (marked.cuts.len == 0) return .{ .segments = try drama_long.split(a, marked.text, chars) };
+     var segments: std.ArrayList([]const u8) = .empty;
+@@ -210,6 +219,15 @@ test "a mark needs words on both sides: punctuation or cues alone are no segment
+     try expectRead("One. \u{b6} [small laugh] Two.", "One. [small laugh] Two.", &.{5}, 0);
+ }
+ 
++test "topic shifts never cut protected spans, but a following ordinary shift still counts" {
++    try expectRead("<whisper>One. \u{b6} Two.</whisper>", "<whisper>One. Two.</whisper>", &.{}, 1);
++    try expectRead("[laughs. \u{b6} softly] End.", "[laughs. softly] End.", &.{}, 1);
++    const before = "<soft>One. <whisper>Two. Three.</whisper></soft> End. ";
++    try expectRead("<soft>One. <whisper>Two. \u{b6} Three.</whisper></soft> End. \u{b6} Next.", before ++ "Next.", &.{before.len}, 1);
++    try expectRead("<unclosed>One. \u{b6} Two.", "<unclosed>One. Two.", &.{15}, 0);
++    try expectRead("\u{4f60}\u{597d}\u{3002}\u{b6}\u{4e16}\u{754c}\u{3002}", "\u{4f60}\u{597d}\u{3002}\u{4e16}\u{754c}\u{3002}", &.{9}, 0);
++}
++
+ test "words are Unicode letters and numbers; full-width punctuation and symbols are none" {
+     // full-width marks, math and currency signs, an emoji, Latin-1's inverted marks
+     for ([_][]const u8{ "\u{ff01}\u{ff01}\u{ff01}", "\u{d7}", "\u{20ac} \u{2192}", "\u{1f600}", "\u{bf}\u{a1}", "\u{3002}\u{300c}\u{300d}" }) |rest| {
+diff --git a/zig/src/server/drama_spans.zig b/zig/src/server/drama_spans.zig
+new file mode 100644
+index 00000000..86905d1d
+--- /dev/null
++++ b/zig/src/server/drama_spans.zig
+@@ -0,0 +1,128 @@
++//! Indivisible speech text: special tokens, balanced brackets and correctly nested paired tags.
++const std = @import("std");
++const Allocator = std.mem.Allocator;
++
++pub const Span = struct { start: usize, end: usize };
++const Tag = struct { start: usize, end: usize, name: []const u8, closing: bool };
++
++/// Sorted, disjoint byte ranges; adjacent controls remain separate atoms and all bytes stay in the caller's input.
++pub fn collect(a: Allocator, input: []const u8) Allocator.Error![]Span {
++    var atoms: std.ArrayList(Span) = .empty;
++    defer atoms.deinit(a);
++    var brackets: std.ArrayList(usize) = .empty;
++    defer brackets.deinit(a);
++    var i: usize = 0;
++    while (i < input.len) {
++        if (specialEnd(input, i)) |end| {
++            try atoms.append(a, .{ .start = i, .end = end });
++            i = end;
++            continue;
++        }
++        if (input[i] == '[') try brackets.append(a, i) else if (input[i] == ']') {
++            if (brackets.pop()) |start| try atoms.append(a, .{ .start = start, .end = i + 1 });
++        }
++        i += 1;
++    }
++    merge(&atoms);
++
++    var spans: std.ArrayList(Span) = .empty;
++    errdefer spans.deinit(a);
++    try spans.appendSlice(a, atoms.items);
++    var tags: std.ArrayList(Tag) = .empty;
++    defer tags.deinit(a);
++    var atom: usize = 0;
++    i = 0;
++    while (i < input.len) {
++        if (atom < atoms.items.len and i == atoms.items[atom].start) {
++            i = atoms.items[atom].end;
++            atom += 1;
++            continue;
++        }
++        if (tagAt(input, i)) |tag| {
++            if (!tag.closing) {
++                try tags.append(a, tag);
++            } else if (tags.pop()) |open| {
++                if (std.mem.eql(u8, open.name, tag.name)) {
++                    try spans.append(a, .{ .start = open.start, .end = tag.end });
++                } else tags.clearRetainingCapacity();
++            }
++            i = tag.end;
++        } else i += 1;
++    }
++    merge(&spans);
++    return spans.toOwnedSlice(a);
++}
++
++fn specialEnd(input: []const u8, start: usize) ?usize {
++    if (!std.mem.startsWith(u8, input[start..], "<|")) return null;
++    var i = start + 2;
++    while (i < input.len and input[i] != '|' and input[i] != '>') : (i += 1) {
++        if (input[i] == '<') return null;
++    }
++    return if (std.mem.startsWith(u8, input[i..], "|>")) i + 2 else null;
++}
++
++fn tagAt(input: []const u8, start: usize) ?Tag {
++    if (input[start] != '<') return null;
++    var i = start + 1;
++    const closing = i < input.len and input[i] == '/';
++    if (closing) i += 1;
++    const first = i;
++    if (i == input.len or !std.ascii.isAlphabetic(input[i])) return null;
++    i += 1;
++    while (i < input.len and (std.ascii.isAlphanumeric(input[i]) or input[i] == '_' or input[i] == '-')) i += 1;
++    if (i == input.len or input[i] != '>') return null;
++    return .{ .start = start, .end = i + 1, .name = input[first..i], .closing = closing };
++}
++
++fn before(_: void, left: Span, right: Span) bool {
++    return left.start < right.start or (left.start == right.start and left.end > right.end);
++}
++
++fn merge(spans: *std.ArrayList(Span)) void {
++    std.mem.sort(Span, spans.items, {}, before);
++    var n: usize = 0;
++    for (spans.items) |span| {
++        if (n > 0 and span.start < spans.items[n - 1].end) {
++            spans.items[n - 1].end = @max(spans.items[n - 1].end, span.end);
++        } else {
++            spans.items[n] = span;
++            n += 1;
++        }
++    }
++    spans.shrinkRetainingCapacity(n);
++}
++
++fn expectSpans(input: []const u8, want: []const []const u8) !void {
++    const spans = try collect(std.testing.allocator, input);
++    defer std.testing.allocator.free(spans);
++    try std.testing.expectEqual(want.len, spans.len);
++    for (spans, want) |span, expected| try std.testing.expectEqualStrings(expected, input[span.start..span.end]);
++    for (spans, 0..) |span, i| {
++        try std.testing.expect(span.start < span.end and span.end <= input.len);
++        if (i > 0) try std.testing.expect(spans[i - 1].end <= span.start);
++    }
++}
++
++test "special tokens and adjacent or nested bracketed cues are indivisible" {
++    try expectSpans("A <|speaker:0|> [soft laugh][pause] B", &.{ "<|speaker:0|>", "[soft laugh]", "[pause]" });
++    try expectSpans("[outer [inner] tail] [next]", &.{ "[outer [inner] tail]", "[next]" });
++    try expectSpans("[<|speaker:0|> [pause]]", &.{"[<|speaker:0|> [pause]]"});
++    try expectSpans("<|a|b|> <|x> <|unterminated", &.{});
++}
++
++test "paired tags nest by exact name and ignore tag-shaped text inside bracketed cues" {
++    const nested = "<whisper>One. <soft>Two.</soft> <whisper>Three.</whisper></whisper>";
++    try expectSpans(nested ++ " <slow>Four.</slow>", &.{ nested, "<slow>Four.</slow>" });
++    try expectSpans("<whisper>[literal </other>] Quiet.</whisper>", &.{"<whisper>[literal </other>] Quiet.</whisper>"});
++    try expectSpans("<tone-1>\u{4f60}\u{597d}\u{3002}</tone-1>", &.{"<tone-1>\u{4f60}\u{597d}\u{3002}</tone-1>"});
++}
++
++test "unclosed and crossed controls do not hide subsequent valid controls" {
++    try expectSpans("[unclosed [pause] <soft>Hi.</soft>", &.{ "[pause]", "<soft>Hi.</soft>" });
++    try expectSpans("<unclosed><soft>Hi.</soft>", &.{"<soft>Hi.</soft>"});
++    try expectSpans("<soft><whisper>Hi.</soft> Bye.</whisper> <slow>End.</slow>", &.{"<slow>End.</slow>"});
++    try expectSpans("<soft>Hi.</SOFT> <soft >Hi.</soft> <1>Hi.</1>", &.{});
++    try expectSpans("<|unclosed <soft>Hi.</soft>", &.{"<soft>Hi.</soft>"});
++    try expectSpans("2 < 3; a > b; [] [unfinished", &.{"[]"});
++}
+diff --git a/zig/src/server/speech_long.zig b/zig/src/server/speech_long.zig
+index b174cf8a..619e0f79 100644
+--- a/zig/src/server/speech_long.zig
++++ b/zig/src/server/speech_long.zig
+@@ -44,7 +44,7 @@ pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marke
+     const segments = split.segments;
+     if (segments.len <= 1) return null;
+     if (segments.len > drama_long.max_segments)
+-        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments of at most {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
++        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments targeting {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
+     for (segments) |segment| {
+         if (try drama_prompt.problem(cx.a, segment)) |message| return cx.refuse(message);
+         const rows = drama_prompt.promptRows(cx.a, srv.text, segment, references) catch |e| return switch (e) {
+diff --git a/zig/src/server/speech_long_test.zig b/zig/src/server/speech_long_test.zig
+index e0d850b4..8fb9a7ba 100644
+--- a/zig/src/server/speech_long_test.zig
++++ b/zig/src/server/speech_long_test.zig
+@@ -110,9 +110,10 @@ pub fn body(a: std.mem.Allocator, input: []const u8, stream: bool) ![]const u8 {
+ fn serve(t: *Turns, cfg: server.Config, request: []const u8) !struct { s: *Served, head: []const u8 } {
+     const s = try gpa.create(Served);
+     try s.startWith(t.engine(), cfg, "HTTP/1.1", request, 2000);
+-    const head = try s.readHead();
++    const head_len = (try s.readHead()).len;
++    _ = try s.readRest(); // drain before joining: a whole reply can outgrow the socket's buffers
+     s.route.join();
+-    return .{ .s = s, .head = head };
++    return .{ .s = s, .head = s.got.items[0..head_len] };
+ }
+ 
+ pub fn done(s: *Served) void {
+@@ -338,7 +339,7 @@ test "more than 12 segments are refused before any synthesis" {
+     const r = try serve(&t, config(.{ .chars = 20 }), try body(a, try sentences(a, 13), false));
+     defer done(r.s);
+     try std.testing.expect(std.mem.indexOf(u8, r.head, " 400 ") != null);
+-    try std.testing.expect(std.mem.indexOf(u8, try r.s.readRest(), "Drama 3 request: a long-form input in 13 segments of at most 20 characters exceeds the maximum of 12 segments") != null);
++    try std.testing.expect(std.mem.indexOf(u8, try r.s.readRest(), "Drama 3 request: a long-form input in 13 segments targeting 20 characters exceeds the maximum of 12 segments") != null);
+     try std.testing.expectEqual(@as(usize, 0), t.seen);
+ }
+ 
+@@ -383,3 +384,51 @@ test "a failure after the first segment ends a stream incomplete and a whole rep
+         }
+     }
+ }
++
++test "protected controls reach whole and streamed speech requests without a split inside them" {
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    const a = arena.allocator();
++    var text: harness.Bytes = .{};
++    const cases = [_]struct { input: []const u8, first: []const u8, second: []const u8, chars: u32 }{
++        .{ .input = "<whisper>One. Two. Three.</whisper> After.", .first = "<whisper>One. Two. Three.</whisper>", .second = "After.", .chars = 20 },
++        .{ .input = "[laughs softly] Hello.", .first = "[laughs softly]", .second = "Hello.", .chars = 10 },
++        .{ .input = "<whisper>One. \u{b6} Two.</whisper> After.", .first = "<whisper>One. Two.</whisper>", .second = "After.", .chars = 20 },
++    };
++    for (cases) |case| for ([_]bool{ false, true }) |stream| {
++        var t: Turns = .{ .turns = &.{ .{ .frames = 3 }, .{ .frames = 4 } } };
++        defer t.deinit();
++        const options: drama_long.Options = .{ .chars = case.chars, .history = 0, .shift_pause_s = 0.5 };
++        const r = try serve(&t, config(options), try body(a, case.input, stream));
++        defer done(r.s);
++        try std.testing.expect(std.mem.indexOf(u8, r.head, "HTTP/1.1 200") != null);
++        const rest = try r.s.readRest();
++        try std.testing.expect(rest.len > 0);
++        try std.testing.expectEqual(@as(usize, 2), t.seen);
++        for ([_][]const u8{ case.first, case.second }, t.prompts.items) |segment, prompt|
++            try std.testing.expectEqualSlices(u32, try drama_prompt.encode(a, text.text(), segment), prompt);
++        try std.testing.expectEqualSlices(bool, &.{ stream, false }, t.streamed.items);
++        const metadata = if (stream) rest else r.s.got.items[0..r.head.len];
++        try std.testing.expect(std.mem.indexOf(u8, metadata, "X-Long-Form-Segments: 2;") != null);
++        try std.testing.expect(std.mem.indexOf(u8, metadata, "X-Pause-Spans:") == null);
++        if (stream) try std.testing.expect(std.mem.endsWith(u8, rest, "\r\n\r\n"));
++    };
++}
++
++test "an indivisible span above the character target still obeys the engine prompt ceiling" {
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    const a = arena.allocator();
++    var text: harness.Bytes = .{};
++    const span = "<whisper>One. Two. Three.</whisper>";
++    const ceiling: u32 = @intCast((try drama_prompt.encode(a, text.text(), span)).len - 1);
++    for ([_][]const u8{ span, span ++ " After." }) |input| {
++        var t: Turns = .{ .turns = &.{}, .max_prompt = ceiling };
++        defer t.deinit();
++        const r = try serve(&t, config(.{ .chars = 1 }), try body(a, input, false));
++        defer done(r.s);
++        try std.testing.expect(std.mem.indexOf(u8, r.head, "HTTP/1.1 400") != null);
++        try std.testing.expect(std.mem.indexOf(u8, try r.s.readRest(), "exceeds the maximum allowed length") != null);
++        try std.testing.expectEqual(@as(usize, 0), t.seen);
++    }
++}
+diff --git a/zig/src/server/speech_mid_test.zig b/zig/src/server/speech_mid_test.zig
+index 6ce2c377..88f19a7c 100644
+--- a/zig/src/server/speech_mid_test.zig
++++ b/zig/src/server/speech_mid_test.zig
+@@ -25,8 +25,8 @@ fn serve(t: *Turns, cfg: server.Config, deadline: ?[]const u8, request: []const
+     const first = if (deadline) |d| try std.fmt.bufPrint(&line, "POST /v1/audio/speech HTTP/1.1\r\nX-Deadline-S: {s}", .{d}) else "POST /v1/audio/speech HTTP/1.1";
+     try s.open(t.engine(), cfg, first, request, 2000);
+     _ = try s.readHead();
+-    s.route.join();
+     _ = try s.readRest();
++    s.route.join();
+     // read whole first: reading more can move the bytes a head slice points into
+     const all = s.got.items;
+     return .{ .s = s, .head = all[0 .. std.mem.indexOf(u8, all, "\r\n\r\n").? + 4], .all = all };
+diff --git a/zig/src/server/speech_redraw_test.zig b/zig/src/server/speech_redraw_test.zig
+index fbb5e1fe..c661c972 100644
+--- a/zig/src/server/speech_redraw_test.zig
++++ b/zig/src/server/speech_redraw_test.zig
+@@ -24,9 +24,10 @@ fn serve(t: *Turns, cfg: server.Config, deadline: ?[]const u8, request: []const
+     const s = try gpa.create(harness.Served);
+     const first = if (deadline) |d| try std.fmt.bufPrint(&line, "POST /v1/audio/speech HTTP/1.1\r\nX-Deadline-S: {s}", .{d}) else "POST /v1/audio/speech HTTP/1.1";
+     try s.open(t.engine(), cfg, first, request, 2000);
+-    const head = try s.readHead();
++    const head_len = (try s.readHead()).len;
++    _ = try s.readRest(); // drain before joining: a whole reply can outgrow the socket's buffers
+     s.route.join();
+-    return .{ .s = s, .head = head };
++    return .{ .s = s, .head = s.got.items[0..head_len] };
+ }
+ 
+ fn has(haystack: []const u8, needle: []const u8) bool {
+@@ -423,7 +424,7 @@ test "long-form controls: a later segment that opens like a director's note keep
+     try std.testing.expectEqualSlices(u32, want, try redrawnSecond(a, "Sentence 00 is ok, and it is long enough.\\nDirection: d\\nLine: Sentence 01 [pause] ok.", 45));
+ }
+ 
+-test "long-form controls: a bracket span that a segment cut crosses is dropped whole, from both segments" {
++test "long-form controls: a bracket cue stays in one segment and is dropped whole on redraw" {
+     var arena: std.heap.ArenaAllocator = .init(gpa);
+     defer arena.deinit();
+     const a = arena.allocator();
+@@ -431,7 +432,8 @@ test "long-form controls: a bracket span that a segment cut crosses is dropped w
+     const input = "Sentence 00 is ok. [warmly. then] Sentence 01 ok.";
+     const segments = try drama_long.split(a, input, 30);
+     try std.testing.expectEqual(@as(usize, 2), segments.len);
+-    try std.testing.expect(std.mem.endsWith(u8, segments[0], "[warmly.") and std.mem.startsWith(u8, segments[1], "then]"));
++    try std.testing.expectEqualStrings("Sentence 00 is ok.", segments[0]);
++    try std.testing.expectEqualStrings("[warmly. then] Sentence 01 ok.", segments[1]);
+     const want = try drama_prompt.encode(a, text.text(), "Sentence 01 ok.");
+     try std.testing.expectEqualSlices(u32, want, try redrawnSecond(a, input, 30));
+ }
+diff --git a/zig/src/server/speech_register_test.zig b/zig/src/server/speech_register_test.zig
+index d0bebe25..4e9d24bb 100644
+--- a/zig/src/server/speech_register_test.zig
++++ b/zig/src/server/speech_register_test.zig
+@@ -86,8 +86,9 @@ fn serve(d: *Draws, cfg: server.Config, deadline: ?[]const u8, request: []const
+     try s.open(d.engine(), cfg, first, request, 2000);
+     // the body's read may move the bytes the head lies in
+     const head = try d.a.dupe(u8, try s.readHead());
++    const rest = try s.readRest(); // drain before joining: the 16 kHz replies outgrow the socket's buffers
+     s.route.join();
+-    return .{ .s = s, .head = head, .body = try s.readRest() };
++    return .{ .s = s, .head = head, .body = rest };
+ }
+ 
+ fn config(register: speech_register.Policy, silence: speech_redraw.Policy) server.Config {
+diff --git a/zig/src/server/speech_stream_test.zig b/zig/src/server/speech_stream_test.zig
+index 030dd3b4..5cdcad00 100644
+--- a/zig/src/server/speech_stream_test.zig
++++ b/zig/src/server/speech_stream_test.zig
+@@ -265,8 +265,8 @@ test "audio published before the route reads it goes out as one chunk" {
+     try s.start(&script, "HTTP/1.1", stream_body, 2000);
+     defer s.deinit();
+     _ = try s.readHead();
+-    s.join(&script);
+     const rest = try s.readRest();
++    s.join(&script);
+     try std.testing.expect(std.mem.startsWith(u8, rest, "3000\r\n") and std.mem.endsWith(u8, rest, "\r\n0\r\n\r\n"));
+     try std.testing.expectEqualStrings(&pcm(3), rest["3000\r\n".len .. rest.len - "\r\n0\r\n\r\n".len]);
+ }
+@@ -305,8 +305,8 @@ test "audio cut short by the frame limit or the silence guard ends the stream wi
+         try s.start(&script, "HTTP/1.1", stream_body, 2000);
+         defer s.deinit();
+         try expectHeader(try s.readHead(), "Trailer: X-Finish-Reason\r\n");
+-        s.join(&script);
+         const rest = try s.readRest();
++        s.join(&script);
+         var buf: [64]u8 = undefined;
+         const end = try std.fmt.bufPrint(&buf, "\r\n0\r\nX-Finish-Reason: {s}\r\n\r\n", .{@tagName(reason)});
+         try std.testing.expect(std.mem.startsWith(u8, rest, "2000\r\n") and std.mem.endsWith(u8, rest, end));
+-- 
+2.46.0
+

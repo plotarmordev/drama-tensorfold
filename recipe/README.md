@@ -7,6 +7,9 @@ On Apple silicon use [`pilot_macos.py`](README-macos.md), with the same explicit
 selection and checkpoint manifests. It uses native Metal and owned process groups, not systemd.
 Its NVFP4 engine pin is separate from CUDA; the full-model pin remains unchanged.
 
+The Linux NVFP4 build applies `engine/nvfp4/patches` after its pinned base. Its long-form
+splitter keeps delivery markup intact; see [CUDA NVFP4 long speech](../README.md#cuda-nvfp4-long-speech).
+
 ```sh
 python3 recipe/pilot.py --weights nvfp4 \
   --runtime-dir "$RUNTIME_DIR" \

@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- CUDA NVFP4 long-form splitting preserves paired delivery tags, bracketed cues and special tokens,
+  including topic-shift handling, and recognizes CJK sentence/clause punctuation. An indivisible
+  protected span may exceed the character target; existing prompt and frame limits still apply.
 - Metal reference-prefill reuse now invalidates before incompatible/default prefill, compares the
   complete invariant prefix plus tower lookahead, preserves original chunk boundaries, and reuses
   one GPU-owned snapshot buffer pair per lane instead of allocating on every voice switch.
@@ -19,6 +22,10 @@
 
 ### Added
 
+- A checksummed CUDA NVFP4 engine patch series without changing its pinned upstream or weights.
+  Model-free build tests exercise real patch application, selection on Linux/macOS, corruption
+  refusal, repeat builds and preservation of modified checkouts. Manifests must cover each
+  selected patch exactly once; extra, missing and duplicate entries fail before checkout.
 - Native Apple-silicon support for the pinned NVFP4-pruned checkpoint: packed experts, compact
   original-ID routing and reference-conditioned semantic CFG, with independent backbone states.
   The Mac engine uses `engine/nvfp4/macos/UPSTREAM` and its checksum-verified patches; the existing

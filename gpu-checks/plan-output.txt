@@ -2,17 +2,13 @@ git clone $W/pr.bundle $W/root/B
 cd $W/root/B && git checkout --detach 3f44de621379bbe20f1ae6599a26465edf9dcbce
 cd $W/root/B && git worktree add --detach $W/root/A f68738ea91de74dcf8bb698a26df44b5cf078396
 cd $W/root/A && git rev-parse HEAD
+cd $W/root/B && git rev-parse HEAD
+cd $W/root/B && git rev-parse f68738ea91de74dcf8bb698a26df44b5cf078396:engine/nvfp4 3f44de621379bbe20f1ae6599a26465edf9dcbce:engine/nvfp4
+cd $W/root/B && git rev-parse f68738ea91de74dcf8bb698a26df44b5cf078396:scripts/build-engine.sh 3f44de621379bbe20f1ae6599a26465edf9dcbce:scripts/build-engine.sh
+# NVFP4: A and B pin the same engine/nvfp4 tree and their build-engine.sh differs only in the full-model empty-series exemption, so their NVFP4 builds would be identical; no NVFP4 engine is built and no NVFP4 A/B check runs.
 cd $W/root/A/engine/patches && sha256sum -c SHA256SUMS
 env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/A/scripts/build-engine.sh --weights full $W/root/build-A-full
-cd $W/root/A/engine/nvfp4/patches && sha256sum -c SHA256SUMS
-env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/A/scripts/build-engine.sh --weights nvfp4 $W/root/build-A-nvfp4
-cd $W/root/B && git rev-parse HEAD
 env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/B/scripts/build-engine.sh --weights full $W/root/build-B-full
-cd $W/root/B/engine/nvfp4/patches && sha256sum -c SHA256SUMS
-env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/B/scripts/build-engine.sh --weights nvfp4 $W/root/build-B-nvfp4
-cd $W/root/build-A-nvfp4 && git rev-parse 'HEAD^{tree}'
-cd $W/root/build-B-nvfp4 && git rev-parse 'HEAD^{tree}'
-# NVFP4: A and B pin the same engine/nvfp4 sources (UPSTREAM and patch series), so both NVFP4 builds are made only to prove their patched source trees identical; no NVFP4 A/B check runs.
 flock '<GPU_CHECK_LOCK>' -c 'python3 $W/gpu-checks/runner.py --pause-step'
 python3 $W/root/A/recipe/pilot.py --weights full --checkpoint '<GPU_CHECK_PILOT_ROOT>/checkpoint' --native-bin $W/root/build-A-full/zig-out/native/bin/tensorfold-native --library-dir '<GPU_CHECK_PILOT_ROOT>/venv/lib/python3.12/site-packages/nvidia/cu13/lib' --runtime-dir $W/root/runtime-A-full --gpu-lock '<GPU_CHECK_LOCK>' --evidence-dir $W/out/G1/full/A/default/pilot-1 --port 18795
 python3 $W/root/B/bench/corpus_capture.py http://127.0.0.1:18795 $W/out/G1/full/A/capture --passes 2
@@ -20,7 +16,6 @@ python3 $W/root/B/bench/stream_check.py --base http://127.0.0.1:18795 --model fi
 python3 $W/root/B/recipe/pilot.py --weights full --checkpoint '<GPU_CHECK_PILOT_ROOT>/checkpoint' --native-bin $W/root/build-B-full/zig-out/native/bin/tensorfold-native --library-dir '<GPU_CHECK_PILOT_ROOT>/venv/lib/python3.12/site-packages/nvidia/cu13/lib' --runtime-dir $W/root/runtime-B-full --gpu-lock '<GPU_CHECK_LOCK>' --evidence-dir $W/out/G1/full/B/default/pilot-1 --port 18795
 python3 $W/root/B/bench/corpus_capture.py http://127.0.0.1:18795 $W/out/G1/full/B/capture --passes 2
 python3 $W/root/B/bench/stream_check.py --base http://127.0.0.1:18795 --model fishaudio/drama-3 --input 'The train leaves at seven fifteen. Please bring the blue notebook.' --out $W/out/G1/full/B/stream-check.json
-python3 $W/root/B/bench/compare_gate.py $W/out/G1/full/A/capture $W/out/G1/full/A/capture $W/out/G1/full/B/capture $W/out/G1/full/gate-B.json
 python3 $W/root/B/recipe/pilot.py --weights full --checkpoint '<GPU_CHECK_PILOT_ROOT>/checkpoint' --native-bin $W/root/build-B-full/zig-out/native/bin/tensorfold-native --library-dir '<GPU_CHECK_PILOT_ROOT>/venv/lib/python3.12/site-packages/nvidia/cu13/lib' --runtime-dir $W/root/runtime-B-full --gpu-lock '<GPU_CHECK_LOCK>' --evidence-dir $W/out/synthetic/full/render/pilot-1 --port 18795
 curl --silent --show-error --max-time 900 -H 'Content-Type: application/json' --data-binary '{"model": "fishaudio/drama-3", "input": "The small boat crossed the lake.", "response_format": "pcm", "seed": 42}' http://127.0.0.1:18795/v1/audio/speech
 curl --silent --show-error --max-time 900 -H 'Content-Type: application/json' --data-binary '{"model": "fishaudio/drama-3", "input": "A bright bird landed near the window.", "response_format": "pcm", "seed": 43}' http://127.0.0.1:18795/v1/audio/speech
@@ -33,6 +28,7 @@ python3 $W/root/A/recipe/pilot.py --weights full --checkpoint '<GPU_CHECK_PILOT_
 python3 $W/root/B/bench/reference_cache_test.py --base http://127.0.0.1:18795 --voice A --other-voice B --out $W/out/G1/full/A/rc.json
 python3 $W/root/B/recipe/pilot.py --weights full --checkpoint '<GPU_CHECK_PILOT_ROOT>/checkpoint' --native-bin $W/root/build-B-full/zig-out/native/bin/tensorfold-native --library-dir '<GPU_CHECK_PILOT_ROOT>/venv/lib/python3.12/site-packages/nvidia/cu13/lib' --runtime-dir $W/root/runtime-B-full --gpu-lock '<GPU_CHECK_LOCK>' --evidence-dir $W/out/G1/full/B/reference/pilot-1 --port 18795 -- --voices $W/out/synthetic/full/catalog
 python3 $W/root/B/bench/reference_cache_test.py --base http://127.0.0.1:18795 --voice A --other-voice B --out $W/out/G1/full/B/rc.json
+python3 $W/root/B/bench/compare_gate.py $W/out/G1/full/A/capture $W/out/G1/full/A/capture $W/out/G1/full/B/capture $W/out/G1/full/gate-B.json
 python3 $W/root/A/recipe/pilot.py --weights full --checkpoint '<GPU_CHECK_PILOT_ROOT>/checkpoint' --native-bin $W/root/build-A-full/zig-out/native/bin/tensorfold-native --library-dir '<GPU_CHECK_PILOT_ROOT>/venv/lib/python3.12/site-packages/nvidia/cu13/lib' --runtime-dir $W/root/runtime-A-full --gpu-lock '<GPU_CHECK_LOCK>' --evidence-dir $W/out/G2/full/A/pilot-1 --port 18795
 curl --silent --show-error --max-time 900 -H 'Content-Type: application/json' --data-binary '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen. Please bring the blue notebook.", "response_format": "pcm", "seed": 42}' http://127.0.0.1:18795/v1/audio/speech
 curl --silent --show-error --max-time 900 -H 'Content-Type: application/json' --data-binary '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen. Please bring the blue notebook.", "response_format": "pcm", "seed": 42}' http://127.0.0.1:18795/v1/audio/speech

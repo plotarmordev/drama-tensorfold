@@ -73,15 +73,23 @@ def device_preflight():
 
 
 # PR #33 A/B. A: main f68738ea, the old full-model pin d1018b31 plus patches 0001-0015 and the CUDA NVFP4 series.
-# B: PR #33's TensorFold v1.1.9 tree (a commit cannot name its own SHA, so B is the commit whose runner and build
-# rules match this one). A and B carry the same NVFP4 engine, so only the full model is compared.
+# B: 3f44de62, PR #33's TensorFold v1.1.9 tree; its engine/, scripts/, recipe/ and bench/ equal the PR head's, and
+# only those come from root/B (this runner and its plan run from $W/gpu-checks). Only the full model is compared.
 SHAS = {'A': 'f68738ea91de74dcf8bb698a26df44b5cf078396', 'B': '3f44de621379bbe20f1ae6599a26465edf9dcbce'}
-# Linux patch series per (tree, profile) build contract; None means unpatched by contract. B's full model is the
-# empty v1.1.9 series; scripts/build-engine.sh in that tree still checks its manifest at build time.
-PATCH_DIRS = {('A', 'full'): 'engine/patches', ('A', 'nvfp4'): 'engine/nvfp4/patches',
-              ('B', 'full'): None, ('B', 'nvfp4'): 'engine/nvfp4/patches'}
-NVFP4_NOTE = ('NVFP4: A and B pin the same engine/nvfp4 sources (UPSTREAM and patch series), so both NVFP4 builds are '
-              'made only to prove their patched source trees identical; no NVFP4 A/B check runs.')
+# Full-model patch series per tree; None means unpatched by contract. B's full model is the empty v1.1.9 series;
+# scripts/build-engine.sh in that tree still checks its manifest at build time.
+PATCH_DIRS = {'A': 'engine/patches', 'B': None}
+# build-engine.sh fixes the committer and takes dates from the patches, so each pinned build has one HEAD:
+# A = d1018b31 + patches 0001-0015 (reproduced with git am outside the device), B = v1.1.9 465e48b6 + 0 patches.
+# A build dir at any other HEAD (e.g. from an earlier pin) is never reused and a fresh build must reach it.
+EXPECTED_HEADS = {'A': '3e1721df2b913a6748fc686b99385229fc8adb02', 'B': '465e48b624202d027cb72144749753578846aa7c'}
+# NVFP4 identity without building: the same engine/nvfp4 tree (UPSTREAM and patch series) in A and B, and the two
+# reviewed build-engine.sh blobs, which differ only in the full-model empty-series exemption.
+NVFP4_TREE = '7c9e2d863e76b2495f103f7755cd159b9e09baaf'
+BUILD_SCRIPT_BLOBS = {'A': '838d6672ba7d152081969017df6782222bd98d35', 'B': 'd2dc452b6b6f60ff4d9ce374249cc804fd9e5b7d'}
+NVFP4_NOTE = ('NVFP4: A and B pin the same engine/nvfp4 tree and their build-engine.sh differs only in the full-model '
+              'empty-series exemption, so their NVFP4 builds would be identical; no NVFP4 engine is built and no '
+              'NVFP4 A/B check runs.')
 BASE = 'http://127.0.0.1:18795'
 TEXT = 'The train leaves at seven fifteen. Please bring the blue notebook.'
 REFS = ['The small boat crossed the lake.', 'A bright bird landed near the window.']
@@ -92,6 +100,7 @@ PILOT = {'log': None}
 BUILDS = {}
 REUSE = {}
 NVFP4_IDENTITY = {}
+GATE = {}
 D1REC = {}
 D2REC = {}
 DIAG_DEVIATIONS = [
@@ -100,12 +109,13 @@ DIAG_DEVIATIONS = [
     'The runner exits non-zero only on infrastructure errors; every diagnostic observation (frame cap, WER flag) is recorded, never fatal.',
     'Full-profile pilots launch only at or above the 88 GiB MemAvailable floor; below it the check records WAIT/INCONCLUSIVE without launching, without holding the GPU lock and without pausing or killing any scoring process.',
     'A complete verdict requires D1 and D2 PASS plus valid A and B evidence; any failed, WAITed or missing check renders the whole run INCONCLUSIVE, never a frame-cap result or PASS.',
-    'Retained builds are reused only when a recorded manifest (--build-manifest, or root/build-manifest.json written by each run) verifies the engine head and both binary sha256s; --diag-resume re-executes only the missing D1-D2 checks into a fresh --out-dir.',
+    '--diag-resume re-executes only the missing D1-D2 checks into a fresh --out-dir.',
 ]
 COMMANDS = []
 RESULTS = []
 DEVIATIONS = [
     'ROOT is under the assigned work directory; host-local paths come from the GPU_CHECK_* environment settings.',
+    'Retained builds are reused only at their pinned HEAD (EXPECTED_HEADS) and when a recorded manifest (--build-manifest, or root/build-manifest.json written by each run) verifies that head and both binary sha256s; any other build is rebuilt and must reach the pinned HEAD.',
     NVFP4_NOTE,
     'PCM is signed 16-bit integer audio: NaN cannot be represented on the wire. Nonzero RMS is an automatic silence gate, not proof of intelligible speech.',
     'NVIDIA peak memory is unavailable; pilot host-memory samples are reported separately.',
@@ -226,15 +236,18 @@ def load_build_manifest():
     return json.loads(path.read_text()).get('builds') or {}
 
 
-def build_reusable(build, head, recorded, in_force):
-    """head is the build checkout's current HEAD. Reuse requires a manifest in force (--build-manifest or the
-    runner-written root/build-manifest.json) whose recorded engine head and both binary sha256s verify against
-    the stamped checkout; the stamp alone proves source identity, not binary integrity (run 1's device builds
-    predate build-manifest.json), so without one exactly that build is rebuilt."""
+def build_reusable(build, head, recorded, in_force, expected):
+    """head is the build checkout's current HEAD and expected the pinned EXPECTED_HEADS value. Reuse requires that
+    head to be the pinned one (a build from an earlier pin never passes as A or B) and a manifest in force
+    (--build-manifest or the runner-written root/build-manifest.json) whose recorded engine head and both binary
+    sha256s verify against the stamped checkout; the stamp alone proves source identity, not binary integrity, so
+    without a manifest exactly that build is rebuilt."""
     stamp = build / 'gpu-check-head'
     binary = build / 'zig-out/native/bin/tensorfold-native'
     generate = build / 'zig-out/bin/drama3-generate'
     stamp_value = stamp.read_text().strip() if stamp.exists() else None
+    if head != expected:
+        return False, f'build HEAD {head} is not the pinned {expected}'
     if not binary.exists() or stamp_value is None or stamp_value != head:
         return False, 'stamp or native binary missing/stale'
     if not in_force:
@@ -257,121 +270,153 @@ def prep():
     if PLAN or not (ROOT / 'B').exists():
         command(['git', 'clone', W / 'pr.bundle', ROOT / 'B'])
         command(['git', 'checkout', '--detach', SHAS['B']], cwd=ROOT / 'B')
-    # Run 2's cleanup removed root/A while root/B stayed; restore the worktree without re-cloning.
+    # root/A is a worktree of root/B; restore it without re-cloning when only root/B remains.
     if PLAN or not (ROOT / 'A').exists():
         command(['git', 'worktree', 'add', '--detach', ROOT / 'A', SHAS['A']], cwd=ROOT / 'B')
     for tree in SHAS:
-        source = ROOT / tree
-        head = command(['git', 'rev-parse', 'HEAD'], cwd=source, capture=True)
+        head = command(['git', 'rev-parse', 'HEAD'], cwd=ROOT / tree, capture=True)
         if not PLAN and head != SHAS[tree]:
-            raise RuntimeError(f'{tree} HEAD mismatch')
-        for profile in ('full', 'nvfp4'):
-            verify_patches(tree, profile, source)
-            build = builddir(tree, profile)
-            key = f'{tree}-{profile}'
-            stamp = build / 'gpu-check-head'
-            binary = build / 'zig-out/native/bin/tensorfold-native'
-            if not PLAN and binary.exists() and stamp.exists():
-                reusable, reason = build_reusable(build, command(['git', 'rev-parse', 'HEAD'], cwd=build, capture=True),
-                                                  manifest.get(key), bool(manifest))
-                REUSE[key] = {'decision': 'reused' if reusable else 'rebuilt', 'reason': reason}
-                log(f'build {key}: {REUSE[key]["decision"]} ({reason})')
-                if reusable:
-                    continue
-            elif not PLAN:
-                REUSE[key] = {'decision': 'rebuilt', 'reason': 'stamp or native binary missing'}
-            if not PLAN:
-                while memavailable() < 50 * 2**30:
-                    log('waiting for build MemAvailable floor')
-                    time.sleep(60)
-            command(['env', f'ZIG={ZIG}', f'NVCC={NVCC}', 'JOBS=4', 'bash', source / 'scripts/build-engine.sh', '--weights', profile, build])
-            if not PLAN:
-                stamp.write_text(command(['git', 'rev-parse', 'HEAD'], cwd=build, capture=True) + '\n')
+            raise RuntimeError(f'root/{tree} HEAD {head} is not the pinned {SHAS[tree]}; remove root/A and root/B '
+                               '(README "Existing root/") and run again')
+    # Before any build or GPU work: a NVFP4 difference would need its own A/B, which this run does not have.
     nvfp4_identity()
+    for tree in SHAS:
+        source = ROOT / tree
+        verify_patches(tree, source)
+        build = builddir(tree, 'full')
+        key = f'{tree}-full'
+        stamp = build / 'gpu-check-head'
+        binary = build / 'zig-out/native/bin/tensorfold-native'
+        if not PLAN and binary.exists() and stamp.exists():
+            reusable, reason = build_reusable(build, command(['git', 'rev-parse', 'HEAD'], cwd=build, capture=True),
+                                              manifest.get(key), bool(manifest), EXPECTED_HEADS[tree])
+            REUSE[key] = {'decision': 'reused' if reusable else 'rebuilt', 'reason': reason}
+            log(f'build {key}: {REUSE[key]["decision"]} ({reason})')
+            if reusable:
+                continue
+        elif not PLAN:
+            REUSE[key] = {'decision': 'rebuilt', 'reason': 'stamp or native binary missing'}
+        if not PLAN:
+            while memavailable() < 50 * 2**30:
+                log('waiting for build MemAvailable floor')
+                time.sleep(60)
+        command(['env', f'ZIG={ZIG}', f'NVCC={NVCC}', 'JOBS=4', 'bash', source / 'scripts/build-engine.sh', '--weights', 'full', build])
+        if not PLAN:
+            head = command(['git', 'rev-parse', 'HEAD'], cwd=build, capture=True)
+            if head != EXPECTED_HEADS[tree]:
+                raise RuntimeError(f'build {key} reached HEAD {head}, not the pinned {EXPECTED_HEADS[tree]}')
+            stamp.write_text(head + '\n')
 
 
-def nvfp4_identity():
-    # git am stamps fresh committer dates, so the two NVFP4 build heads differ; their trees must not.
-    trees = {tree: command(['git', 'rev-parse', 'HEAD^{tree}'], cwd=builddir(tree, 'nvfp4'), capture=True) for tree in SHAS}
+def nvfp4_identity(repo=None, shas=SHAS, tree=NVFP4_TREE, blobs=BUILD_SCRIPT_BLOBS):
+    # Source-level proof, no build: the same engine/nvfp4 tree in A and B, and the two reviewed build-engine.sh blobs.
+    repo = repo or ROOT / 'B'
+    trees = command(['git', 'rev-parse', f"{shas['A']}:engine/nvfp4", f"{shas['B']}:engine/nvfp4"], cwd=repo, capture=True).split()
+    scripts = command(['git', 'rev-parse', f"{shas['A']}:scripts/build-engine.sh", f"{shas['B']}:scripts/build-engine.sh"],
+                      cwd=repo, capture=True).split()
     if PLAN:
         print(f'# {NVFP4_NOTE}')
         return
-    NVFP4_IDENTITY.update(trees=trees, identical=trees['A'] == trees['B'])
+    NVFP4_IDENTITY.update(nvfp4_trees=dict(zip('AB', trees)), build_scripts=dict(zip('AB', scripts)),
+                          identical=trees == [tree, tree] and scripts == [blobs['A'], blobs['B']])
     if not NVFP4_IDENTITY['identical']:
-        raise RuntimeError(f'A and B NVFP4 builds have different source trees: {trees}')
-    log(f'NVFP4 builds share source tree {trees["B"]}; no NVFP4 A/B check runs')
+        raise RuntimeError(f'A and B NVFP4 sources differ from the reviewed pins: engine/nvfp4 {trees} (want {tree}), '
+                           f'build-engine.sh {scripts} (want {[blobs["A"], blobs["B"]]})')
+    log(f'NVFP4 sources identical (engine/nvfp4 {tree}); no NVFP4 engine is built or compared')
 
 
-def verify_patches(tree, profile, source):
-    patch = PATCH_DIRS[(tree, profile)]
+def verify_patches(tree, source):
+    patch = PATCH_DIRS[tree]
     if patch is None:
         return
     path = source / patch
     if not PLAN and not path.is_dir():
-        raise RuntimeError(f'{tree}/{profile} patch series missing: {path}')
+        raise RuntimeError(f'{tree}/full patch series missing: {path}')
     manifest = path / 'SHA256SUMS'
     # Same rule as scripts/build-engine.sh: an empty full-model manifest declares an empty series, which
-    # `sha256sum -c` would reject. Any other profile's empty manifest still goes to the check and fails.
-    if profile == 'full' and manifest.is_file() and manifest.stat().st_size == 0 and not any(path.glob('*.patch')):
-        log(f'{tree}/{profile} patch series is empty by manifest; no checksums to verify')
+    # `sha256sum -c` would reject.
+    if manifest.is_file() and manifest.stat().st_size == 0 and not any(path.glob('*.patch')):
+        log(f'{tree}/full patch series is empty by manifest; no checksums to verify')
         return
     command(['sha256sum', '-c', 'SHA256SUMS'], cwd=path)
 
 
 def patch_selftest():
     base = Path(tempfile.mkdtemp(prefix='gpuchk-patches-'))
+    path = base / 'A' / PATCH_DIRS['A']
 
-    def fixture(tree, patch):
-        path = base / tree / patch
+    def fixture():
         path.mkdir(parents=True, exist_ok=True)
-        (path / '0001-fixture.patch').write_text(f'fixture series for {tree} {patch}\n')
+        (path / '0001-fixture.patch').write_text('fixture series for A\n')
         (path / 'SHA256SUMS').write_text(hashlib.sha256((path / '0001-fixture.patch').read_bytes()).hexdigest() + '  0001-fixture.patch\n')
 
-    for tree, patch in (('A', 'engine/patches'), ('A', 'engine/nvfp4/patches'), ('B', 'engine/nvfp4/patches')):
-        fixture(tree, patch)
+    fixture()
     mark = len(COMMANDS)
-    verify_patches('B', 'full', base / 'B')
+    verify_patches('B', base / 'B')
     if any('sha256sum' in x for x in COMMANDS[mark:]):
         raise RuntimeError('B/full is unpatched by contract but ran a checksum command')
-    for tree, profile in (('A', 'full'), ('A', 'nvfp4'), ('B', 'nvfp4')):
-        mark = len(COMMANDS)
-        verify_patches(tree, profile, base / tree)
-        if not any('sha256sum' in x and f'/{tree}/{PATCH_DIRS[(tree, profile)]}' in x for x in COMMANDS[mark:]):
-            raise RuntimeError(f'{tree}/{profile} patch series was not checksum-verified')
-    for tree, profile in (('A', 'full'), ('A', 'nvfp4'), ('B', 'nvfp4')):
-        patch = PATCH_DIRS[(tree, profile)]
-        shutil.rmtree(base / tree / patch)
-        try:
-            verify_patches(tree, profile, base / tree)
-        except RuntimeError:
-            fixture(tree, patch)
-        else:
-            raise RuntimeError(f'{tree}/{profile} accepted a missing patch series')
-    (base / 'A/engine/patches/0001-fixture.patch').write_text('corrupted\n')
+    verify_patches('A', base / 'A')
+    if not any('sha256sum' in x and f'/A/{PATCH_DIRS["A"]}' in x for x in COMMANDS[mark:]):
+        raise RuntimeError('A/full patch series was not checksum-verified')
+    shutil.rmtree(path)
     try:
-        verify_patches('A', 'full', base / 'A')
+        verify_patches('A', base / 'A')
+    except RuntimeError:
+        fixture()
+    else:
+        raise RuntimeError('A/full accepted a missing patch series')
+    (path / '0001-fixture.patch').write_text('corrupted\n')
+    try:
+        verify_patches('A', base / 'A')
     except subprocess.CalledProcessError:
         pass
     else:
         raise RuntimeError('A/full accepted a checksum mismatch')
-    # An empty full manifest with no patches is an empty series and skips the check; NVFP4 never does.
-    (base / 'A/engine/patches/0001-fixture.patch').unlink()
-    (base / 'A/engine/patches/SHA256SUMS').write_text('')
+    # An empty full manifest with no patches is an empty series and skips the check.
+    (path / '0001-fixture.patch').unlink()
+    (path / 'SHA256SUMS').write_text('')
     mark = len(COMMANDS)
-    verify_patches('A', 'full', base / 'A')
+    verify_patches('A', base / 'A')
     if any('sha256sum' in x for x in COMMANDS[mark:]):
         raise RuntimeError('A/full empty series ran a checksum command')
-    for tree in ('A', 'B'):
-        (base / tree / 'engine/nvfp4/patches/0001-fixture.patch').unlink()
-        (base / tree / 'engine/nvfp4/patches/SHA256SUMS').write_text('')
-        try:
-            verify_patches(tree, 'nvfp4', base / tree)
-        except subprocess.CalledProcessError:
-            pass
-        else:
-            raise RuntimeError(f'{tree}/nvfp4 accepted an empty manifest')
+    nvfp4_selftest(base / 'repo')
     shutil.rmtree(base)
     log('patch selftest PASS')
+
+
+def nvfp4_selftest(repo):
+    # Two fixture commits with the same engine/nvfp4 tree pass; a changed NVFP4 patch or build script aborts.
+    repo.mkdir()
+    env = dict(os.environ, GIT_AUTHOR_NAME='f', GIT_AUTHOR_EMAIL='f@example.invalid', GIT_COMMITTER_NAME='f',
+               GIT_COMMITTER_EMAIL='f@example.invalid')
+    git = lambda *args: subprocess.run(['git', '-c', 'commit.gpgsign=false', *args], cwd=repo, env=env, check=True,
+                                       capture_output=True, text=True).stdout.strip()
+    git('init', '-q')
+
+    def commit(patch, script):
+        (repo / 'engine/nvfp4').mkdir(parents=True, exist_ok=True)
+        (repo / 'scripts').mkdir(exist_ok=True)
+        (repo / 'engine/nvfp4/0001.patch').write_text(patch)
+        (repo / 'scripts/build-engine.sh').write_text(script)
+        git('add', '-A')
+        git('commit', '-qm', 'fixture', '--allow-empty')
+        return git('rev-parse', 'HEAD')
+
+    shas = {'A': commit('nvfp4\n', 'a\n'), 'B': commit('nvfp4\n', 'b\n')}
+    tree = git('rev-parse', f"{shas['A']}:engine/nvfp4")
+    blobs = {t: git('rev-parse', f'{shas[t]}:scripts/build-engine.sh') for t in shas}
+    NVFP4_IDENTITY.clear()
+    nvfp4_identity(repo, shas, tree, blobs)
+    if NVFP4_IDENTITY.get('identical') is not True:
+        raise RuntimeError('identical NVFP4 sources were not accepted')
+    for label, changed in (('NVFP4 patch', {'B': commit('changed\n', 'b\n')}), ('build script', {'B': commit('nvfp4\n', 'c\n')})):
+        try:
+            nvfp4_identity(repo, dict(shas, **changed), tree, blobs)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(f'a changed {label} passed the NVFP4 identity check')
+    NVFP4_IDENTITY.clear()
 
 
 def admit_full_profile():
@@ -514,11 +559,32 @@ def g1():
         with server(tree, 'full', run / tree / 'default'):
             bench('corpus_capture.py', BASE, run / tree / 'capture', '--passes', '2')
             bench('stream_check.py', '--base', BASE, '--model', 'fishaudio/drama-3', '--input', TEXT, '--out', run / tree / 'stream-check.json')
-    bench('compare_gate.py', run / 'A/capture', run / 'A/capture', run / 'B/capture', run / 'gate-B.json')
     voices()
     for tree in SHAS:
         with server(tree, 'full', run / tree / 'reference', ['--voices', catalog()]):
             bench('reference_cache_test.py', '--base', BASE, '--voice', 'A', '--other-voice', 'B', '--out', run / tree / 'rc.json')
+    compare_gate(run)
+
+
+def compare_gate(run):
+    # Byte identity between main and v1.1.9 is measured, not assumed: compare_gate.py exits 1 for identical=false,
+    # which is a result. Only a missing or inconsistent report (or any other exit code) is a harness failure.
+    out = run / 'gate-B.json'
+    argv = ['python3', ROOT / 'B' / 'bench' / 'compare_gate.py', run / 'A/capture', run / 'A/capture', run / 'B/capture', out]
+    text = shlex.join(list(map(str, argv)))
+    COMMANDS.append(text)
+    if PLAN:
+        print(shown(text))
+        return
+    log(text)
+    done = subprocess.run(list(map(str, argv)), capture_output=True, text=True)
+    report = json.loads(out.read_text()) if out.exists() else {}
+    identical = report.get('identical')
+    if done.returncode not in (0, 1) or not isinstance(identical, bool) or (done.returncode == 0) != identical:
+        raise RuntimeError(f'compare_gate.py failed: exit {done.returncode}, identical={identical!r}: {done.stderr[-300:]}')
+    GATE.update(identical=identical, normal_mismatches=report.get('normal_mismatches'),
+                long05_clipped_identical=report.get('long05_clipped_identical'), report=str(out))
+    log(f'G1 byte identity A vs B: {identical}')
 
 
 def g2():
@@ -672,17 +738,17 @@ def record_builds():
     if PLAN:
         return
     for tree in SHAS:
-        for profile in ('full', 'nvfp4'):
-            build = builddir(tree, profile)
-            native = build / 'zig-out/native/bin/tensorfold-native'
-            generate = build / 'zig-out/bin/drama3-generate'
-            stamp = build / 'gpu-check-head'
-            BUILDS[f'{tree}-{profile}'] = {
-                'engine_head': stamp.read_text().strip() if stamp.exists() else None,
-                'patch_series': PATCH_DIRS[(tree, profile)],
-                'tensorfold_native_sha256': hashlib.sha256(native.read_bytes()).hexdigest() if native.exists() else None,
-                'drama3_generate_sha256': hashlib.sha256(generate.read_bytes()).hexdigest() if generate.exists() else None,
-            }
+        build = builddir(tree, 'full')
+        native = build / 'zig-out/native/bin/tensorfold-native'
+        generate = build / 'zig-out/bin/drama3-generate'
+        stamp = build / 'gpu-check-head'
+        BUILDS[f'{tree}-full'] = {
+            'engine_head': stamp.read_text().strip() if stamp.exists() else None,
+            'expected_head': EXPECTED_HEADS[tree],
+            'patch_series': PATCH_DIRS[tree],
+            'tensorfold_native_sha256': hashlib.sha256(native.read_bytes()).hexdigest() if native.exists() else None,
+            'drama3_generate_sha256': hashlib.sha256(generate.read_bytes()).hexdigest() if generate.exists() else None,
+        }
     # Written next to the builds so the next run verifies retained-build reuse against recorded hashes.
     save(ROOT / 'build-manifest.json', {'builds': BUILDS})
 
@@ -774,6 +840,8 @@ def diag_verdict(report):
         elif row.get('status') != 'PASS':
             detail = f"{row.get('status')} ({row.get('error', '')})" if row.get('error') else str(row.get('status'))
             reasons.append(f'{name} {detail}')
+    reasons += [f"{row.get('name')} {row.get('status')} ({row.get('error', '')})" for name, row in rows.items()
+                if name not in ('D1', 'D2') and row.get('status') != 'PASS']
     reasons += payload_problems(report)
     return ('INCONCLUSIVE', reasons) if reasons else ('complete', [])
 
@@ -1193,20 +1261,38 @@ def recovery_selftest(checks):
         manifest = {'engine_head': 'abc123', 'tensorfold_native_sha256': hashlib.sha256(native.read_bytes()).hexdigest(),
                     'drama3_generate_sha256': None}
         checks.append(('build reuse verifies a matching manifest',
-                       build_reusable(build, 'abc123', manifest, True) == (True, 'verified against the manifest')))
-        usable, reason = build_reusable(build, 'abc123', dict(manifest, tensorfold_native_sha256='0' * 64), True)
+                       build_reusable(build, 'abc123', manifest, True, 'abc123') == (True, 'verified against the manifest')))
+        # A retained build from an earlier pin: stamp, manifest and hashes all agree, but it is not the pinned HEAD.
+        usable, reason = build_reusable(build, 'abc123', manifest, True, 'pinned999')
+        checks.append(('build reuse refuses a stale build from another pin', not usable and 'is not the pinned' in reason))
+        usable, reason = build_reusable(build, 'abc123', dict(manifest, tensorfold_native_sha256='0' * 64), True, 'abc123')
         checks.append(('build reuse rejects a hash mismatch', not usable and 'tensorfold-native sha256 differs' in reason))
-        usable, reason = build_reusable(build, 'abc123', dict(manifest, engine_head='def456'), True)
+        usable, reason = build_reusable(build, 'abc123', dict(manifest, engine_head='def456'), True, 'abc123')
         checks.append(('build reuse rejects an engine head mismatch', not usable and 'engine_head differs' in reason))
-        usable, reason = build_reusable(build, 'abc123', None, True)
+        usable, reason = build_reusable(build, 'abc123', None, True, 'abc123')
         checks.append(('build reuse rejects a missing manifest entry', not usable and 'no manifest entry' in reason))
-        usable, reason = build_reusable(build, 'abc123', dict(manifest, drama3_generate_sha256=hashlib.sha256(b'other').hexdigest()), True)
+        usable, reason = build_reusable(build, 'abc123', dict(manifest, drama3_generate_sha256=hashlib.sha256(b'other').hexdigest()), True, 'abc123')
         checks.append(('build reuse rejects a drama3-generate mismatch', not usable and 'drama3-generate sha256 differs' in reason))
-        usable, reason = build_reusable(build, 'other', manifest, False)
+        usable, reason = build_reusable(build, 'other', manifest, False, 'other')
         checks.append(('build reuse needs the stamp without a manifest', not usable))
-        usable, reason = build_reusable(build, 'abc123', None, False)
+        usable, reason = build_reusable(build, 'abc123', None, False, 'abc123')
         checks.append(('build reuse rebuilds a matching stamp without a manifest',
                        not usable and 'no manifest in force' in reason))
+        # A prep-time abort (e.g. a NVFP4 source mismatch) still writes an INCONCLUSIVE summary with its reason.
+        OUT = base / 'prep-abort'
+        OUT.mkdir()
+        RESULTS.clear()
+        real_prep = globals()['prep']
+        globals()['prep'] = lambda: (_ for _ in ()).throw(RuntimeError('NVFP4 sources differ (fixture)'))
+        try:
+            prepared = prepare()
+        finally:
+            globals()['prep'] = real_prep
+        report = json.loads((OUT / 'summary.json').read_text()) if (OUT / 'summary.json').exists() else {}
+        checks.append(('prep abort writes an INCONCLUSIVE summary with its reason',
+                       not prepared and report.get('status') == 'INCONCLUSIVE'
+                       and any('NVFP4 sources differ' in r for r in report.get('status_reasons', []))))
+        RESULTS.clear()
     finally:
         PLAN, OUT = saved[0], saved[1]
         globals()['memavailable'] = saved[2]
@@ -1250,13 +1336,28 @@ def diag_main():
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     if not PLAN and not memory_preflight():
         return REFUSED
-    prep()
-    record_builds()
+    if not prepare():
+        return 1
     acquire_gpu()
     jobs = [('D1', [33], d1, ()), ('D2', [33], d2, ())]
     if DIAG_RESUME and not PLAN:
         jobs = carry_resume(jobs)
     return run_jobs(jobs)
+
+
+def prepare():
+    """Sources, NVFP4 identity and builds. Any abort here (before GPU work) is recorded as a failed prep row and
+    written to an INCONCLUSIVE summary with its reason, instead of leaving an empty output directory."""
+    try:
+        prep()
+        record_builds()
+        return True
+    except Exception as error:
+        RESULTS.append({'name': 'prep', 'prs': [33], 'start': now(), 'end': now(), 'status': 'FAIL',
+                        'error': f'{type(error).__name__}: {error}'})
+        log(RESULTS[-1]['error'])
+        summary()
+        return False
 
 
 # Clean refusal (memory floor not met, nothing launched): run-diag.sh exits 0 so systemd records no failure.
@@ -1286,8 +1387,8 @@ def summary():
     path = OUT / 'summary.json'
     report = json.loads(path.read_text()) if path.exists() else {}
     if RESULTS:
-        report.update({'checks': RESULTS, 'commands': COMMANDS, 'deviations': DEVIATIONS, 'build_reuse': REUSE,
-                       'nvfp4_identity': NVFP4_IDENTITY})
+        report.update({'checks': RESULTS, 'commands': COMMANDS, 'deviations': DEVIATIONS, 'builds': BUILDS,
+                       'build_reuse': REUSE, 'nvfp4_identity': NVFP4_IDENTITY, 'g1_gate': GATE})
     memory = []
     for path in OUT.glob('G*/**/memory.jsonl'):
         values = [json.loads(line)['memavailable_bytes'] for line in path.read_text().splitlines() if line.strip()]
@@ -1300,10 +1401,16 @@ def summary():
     report['resumed'] = json.loads((OUT / 'resumed.json').read_text()) if (OUT / 'resumed.json').exists() else {}
     report['listening'] = 'pending owner'
     checks = report.get('checks', [])
-    report['per_pr'] = {'33': 'FAIL' if any(row['status'] == 'FAIL' for row in checks) else
-                        ('PASS' if sorted(row['name'] for row in checks) == sorted(name for name, *_ in MAIN_JOBS) else 'INCOMPLETE')}
+    names = [row.get('name') for row in checks]
+    reasons = [f"{row.get('name')} {row.get('status')} ({row.get('error', '')})" for row in checks if row.get('status') != 'PASS']
+    reasons += [f'{name} did not run' for name, *_ in MAIN_JOBS if name not in names]
+    report['status'], report['status_reasons'] = ('INCONCLUSIVE', reasons) if reasons else ('complete', [])
+    report['per_pr'] = {'33': 'FAIL' if any(row['status'] == 'FAIL' and row['name'] != 'prep' for row in checks) else
+                        ('PASS' if sorted(names) == sorted(name for name, *_ in MAIN_JOBS) else 'INCOMPLETE')}
     save(OUT / 'summary.json', report)
-    lines = ['# GPU checks: PR #33 full model, A = main, B = TensorFold v1.1.9', '', 'Listening: pending owner', '', '## Automatic checks']
+    lines = ['# GPU checks: PR #33 full model, A = main, B = TensorFold v1.1.9', '',
+             f"Status: {report['status']}" + (' — ' + '; '.join(reasons) if reasons else ''), '',
+             f"G1 byte identity A vs B: {GATE.get('identical', 'not measured')}", '', 'Listening: pending owner', '', '## Automatic checks']
     for row in report.get('checks', []):
         lines.append(f"- {row['name']}: {row['status']} ({row.get('error', '')}); PRs {row['prs']}; {row['start']} to {row['end']}")
     lines += ['', '## Deviations', *['- ' + x for x in DEVIATIONS], '', '## Listening files', *report['audio'], '', '## Commands', '```sh', *report.get('commands', []), '```', '', 'Full measurements and pause/resume timestamps: summary.json and raw check JSON files.']
@@ -1333,7 +1440,8 @@ def main():
         claim_out()
         ROOT.mkdir(parents=True, exist_ok=True)
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    prep()
+    if not prepare():
+        return 1
     acquire_gpu()
     return run_jobs(MAIN_JOBS)
 

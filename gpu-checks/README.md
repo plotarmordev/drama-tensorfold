@@ -2,16 +2,28 @@
 
 These checks compare the full model on two trees: A is `main` at `f68738ea` (TensorFold `d1018b31` plus
 full-model patches 0001-0015 and the CUDA NVFP4 series) and B is PR #33's TensorFold v1.1.9 tree at `3f44de62`
-(no full-model patches). Both trees pin the same NVFP4 engine and patch series, so the runner builds both NVFP4
-engines only to prove their patched source trees identical (`git rev-parse HEAD^{tree}`), says so in its plan and
-summary, and runs no NVFP4 A/B check.
+(no full-model patches). Both trees pin the same NVFP4 engine: before any build the runner checks that
+`engine/nvfp4` has the same git tree id in A and B and that `scripts/build-engine.sh` is the reviewed blob in each
+(the two differ only in the full-model empty-series exemption). It builds no NVFP4 engine, says so in its plan and
+summary, and runs no NVFP4 A/B check. Any mismatch aborts before a build or GPU work.
 
 `run-all.sh --plan` prints build, pilot, benchmark, encoder, catalog and HTTP request commands without running subprocesses or writing files. HTTP command lines are equivalent curl representations of the stdlib client's JSON requests; the runner uses urllib to retain status and headers.
 
 Run `GPU_CHECK_SSH_HOST=<device> gpu-checks/sync-to-device.sh` on the workstation after committing. It sends a
 git bundle holding both pinned trees and these scripts to the same work-directory path on the device host,
-without pushing or starting anything. Each tree's checkout carries its own benchmark corpus. On the device host,
-launch from that work directory with the settings below:
+without pushing or starting anything. Each tree's checkout carries its own benchmark corpus.
+
+### Existing root/
+
+`root/` persists across runs. `root/B` is a clone of the bundle and `root/A` a worktree of it; if either is at
+another commit (for example from the earlier `a7752b45`/`0b2e000b` pins), prep refuses with "is not the pinned"
+and writes an INCONCLUSIVE summary. Remove both (`rm -rf "$W/root/A" "$W/root/B"`) and run again: the next run
+re-clones from the new bundle. Retained `root/build-*-full` directories may stay. Each pinned build has one
+deterministic HEAD (`EXPECTED_HEADS` in `runner.py`: A `3e1721df`, B v1.1.9 `465e48b6`), and a build at any other
+HEAD is never reused: `build-engine.sh` rebuilds it in place, and the run fails unless the rebuild reaches the
+pinned HEAD. Old `build-*-nvfp4` directories are no longer used and may be deleted.
+
+On the device host, launch from the work directory with the settings below:
 
 ```sh
 W=/path/to/work-directory
@@ -26,8 +38,10 @@ systemd-run --user --unit=gpu-checks \
 
 The run has three checks, each on both trees with the same requests:
 
-- **G1-full:** two corpus capture passes per tree compared by `compare_gate.py`, the streaming check, and the
-  reference-cache transitions with the shared synthetic catalog.
+- **G1-full:** the streaming check and two corpus capture passes per tree, the reference-cache transitions with
+  the shared synthetic catalog on both trees, then `compare_gate.py` on the captures. The gate's `identical`
+  true/false is a measured result recorded as `g1_gate` in the summary; byte identity is not expected, so only a
+  harness error (no report, or an exit code that disagrees with it) fails G1.
 - **G2-full:** request sampling (patches 0013/0014 on A, upstream #1277 on B): seed repeatability for 42,
   2^53+1 and 2^64-1, `temperature`, `top_k`, `top_p`, and a 400 for `top_k` 65.
 - **G3-full:** speaker tags (patch 0015 on A, upstream #1278 on B): the tagged and untagged dialogue line with
@@ -52,16 +66,18 @@ placeholders and the work directory as `$W`.
 | `GPU_CHECK_TOLERATED_PORT` | no | a GPU process whose argv has `--port` this value is not foreign; unset tolerates none |
 
 The runner refuses every existing output path — with or without a summary, directory or file — without changing
-its bytes; every run or retry takes a fresh `--out-dir`. Builds are reused only when a build manifest is
-in force (`--build-manifest PATH`, e.g. a prior summary.json, or the runner-written `root/build-manifest.json`)
-and the recorded engine head and both binary sha256s verify against the stamped checkout — a stamp alone proves
-source identity, not binary integrity, so without a manifest exactly that build is rebuilt. Patch manifests and
-source HEADs are checked before reuse: A's full and NVFP4 series and B's NVFP4 series by `sha256sum -c`; B's
-full model is unpatched by contract (its empty manifest is still checked by `scripts/build-engine.sh`).
+its bytes; every run or retry takes a fresh `--out-dir`. Builds are reused only at their pinned HEAD and when a
+build manifest is in force (`--build-manifest PATH`, e.g. a prior summary.json, or the `root/build-manifest.json`
+that every run writes after its builds) and the recorded engine head and both binary sha256s verify against the
+stamped checkout — a stamp alone proves source identity, not binary integrity, so without a manifest exactly that
+build is rebuilt. Patch manifests and source HEADs are checked before reuse: A's full-model series by
+`sha256sum -c`; B's full model is unpatched by contract (its empty manifest is still checked by
+`scripts/build-engine.sh`). Any abort during this preparation (sources, NVFP4 identity, builds) still writes an
+INCONCLUSIVE `summary.json` with its reason.
 
 Admission briefly takes the shared GPU lock, rejects foreign compute processes, checks checkpoint memory plus reserve, and records active units matching `GPU_CHECK_PAUSE_ALLOW` before stopping them. The lock is released before pilots start. A pilot that loses the lock race is retried after blocking on that same lock. Pilots own server shutdown and retain their lock until shutdown is confirmed. The EXIT trap and ExecStopPost both invoke idempotent recovery from `out/paused.txt`; recovery resumes every recorded unit even if the allowlist has since changed. Never remove this file before recovery. SIGKILL cannot run shell traps; the systemd ExecStopPost is required.
 
-`selftest.sh` creates only `gpuchk-selftest-sleep`, uses an isolated temporary evidence directory, checks stopped and sleeping process states, tests repeat recovery, and stops its own dummy. It refuses an already loaded unit with that name. No GPU query or GPU lock is used in this test.
+`selftest.sh` creates only `gpuchk-selftest-sleep`, uses an isolated temporary evidence directory, checks stopped and sleeping process states, tests repeat recovery, and stops its own dummy. It refuses an already loaded unit with that name. No GPU query or GPU lock is used in this test. Its output is not committed: run it on the device host and keep the log with that run's evidence.
 
 Synthetic reference clips originate from B's built-in voice. The full engine's codec encoder runs under the shared lock after the rendering pilot exits. `build_voice.py` validates attested frame-major reference catalogs; both trees load the same catalog, including the tagged `dialogue` voice. No existing personal catalog is read.
 

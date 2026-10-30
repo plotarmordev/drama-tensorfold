@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- The full-model engine pins TensorFold v1.1.9 with an empty patch series: every behaviour of the
+  old patches 0001–0015 is upstream (per upstream source; GPU A/B pending). Two differences remain: with the mid-silence rule on,
+  `X-Silence-Mid-Trips` reports only whether the returned take tripped (0 or 1), and a temperature
+  of `-0` or `-1e-400` reaches the sampler as `+0`. `scripts/build-engine.sh` accepts an empty
+  full-model series only through an empty `SHA256SUMS`; an empty NVFP4 manifest or a missing
+  manifest still fails, and the GPU-check runner skips the checksum step on the same rule. The
+  Linux native pilot sets `TF_DRAMA_PREFILL_ROWS=128` for full and custom checkpoints to keep
+  batched prefill; NVFP4 pins and the sglang reference backend are unchanged.
+
 ### Fixed
 
 - CUDA NVFP4 long-form splitting preserves paired delivery tags, bracketed cues and special tokens,
@@ -25,7 +36,10 @@
 - Canonical speaker tags 0..15 in HTTP speech requests and reference transcripts,
   including native/Python catalog writers. Legacy CUDA long-form continuations
   retain the active speaker across splits and redraws; reference-count and malformed-tag
-  validation remain enforced. No voice-quality claim is made.
+  validation remain enforced. No voice-quality claim is made. Tagged full-model requests
+  could run to the frame cap when measured on the previous pin; see the
+  [known stopping limitation](recipe/README-dialogue.md#known-full-model-stopping-limitation)
+  and [issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32).
 - Per-request HTTP speech `temperature`, `top_p`, `top_k` and exact unsigned 64-bit
   `seed` on all pinned profiles, with strict validation and propagation through
   streaming, references and redraws. Omitted/null values retain existing defaults.

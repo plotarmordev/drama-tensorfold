@@ -42,6 +42,11 @@ def serve_arguments(choice: str | None, arguments: list[str]) -> list[str]:
     return selected
 
 
+def native_environment(choice: str | None) -> list[str]:
+    # Preserve batched prefill when the pilot clears the inherited environment.
+    return [] if choice == 'nvfp4' else ['TF_DRAMA_PREFILL_ROWS=128']
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as file:

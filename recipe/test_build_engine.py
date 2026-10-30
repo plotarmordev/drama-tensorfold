@@ -119,6 +119,28 @@ else:
         self.assertIn('has no *.patch files', result.stderr)
         self.assertFalse(target.exists())
 
+    def test_empty_manifest_builds_the_unpatched_full_pin_only_and_a_missing_manifest_is_refused(self):
+        directory = self.repo / self.series['full'] / 'patches'
+        (directory / '0001-fixture.patch').unlink()
+        (directory / 'SHA256SUMS').write_text('')
+        result, target = self.build('Linux', 'full')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        head = subprocess.check_output(['git', '-C', str(target), 'rev-parse', 'HEAD'], text=True).strip()
+        self.assertEqual(head, self.base)
+        self.assertIn(f'{self.base} + 0 patches', result.stdout)
+        (directory / 'SHA256SUMS').unlink()
+        result, target = self.build('Linux', 'full', 'build-no-manifest')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('has no SHA256SUMS manifest', result.stderr)
+        self.assertFalse(target.exists())
+        nvfp4 = self.repo / self.series['cuda'] / 'patches'
+        (nvfp4 / '0001-fixture.patch').unlink()
+        (nvfp4 / 'SHA256SUMS').write_text('')
+        result, target = self.build('Linux', 'nvfp4', 'build-empty-nvfp4')
+        self.assertNotEqual(result.returncode, 0, 'an empty NVFP4 series must never build')
+        self.assertIn('has no *.patch files', result.stderr)
+        self.assertFalse(target.exists())
+
     def test_manifest_covers_exactly_the_selected_patches(self):
         directory = self.repo / self.series['cuda'] / 'patches'
         manifest = directory / 'SHA256SUMS'

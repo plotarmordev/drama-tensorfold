@@ -59,6 +59,12 @@ class WeightSelectionTests(unittest.TestCase):
             self.assertEqual(selection.serve_arguments(mode, arguments), arguments)
             self.assertEqual(arguments, ['--max-frames', '8'])
 
+    def test_native_environment_preserves_full_model_prefill(self):
+        for mode in ('full', None):
+            with self.subTest(mode=mode):
+                self.assertEqual(selection.native_environment(mode), ['TF_DRAMA_PREFILL_ROWS=128'])
+        self.assertEqual(selection.native_environment('nvfp4'), [])
+
     def test_explicit_paths_override_defaults_but_not_manifest(self):
         override = self.root / 'custom-checkpoint'
         selection.checkpoint_path('nvfp4', None).rename(override)

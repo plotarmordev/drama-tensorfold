@@ -71,9 +71,12 @@ def device_preflight():
         raise RuntimeError(f'device runner is restricted to GPU_CHECK_HOST ({DEVICE_HOST})')
 
 
-SHAS = {'A': 'a7752b4591da9b33bf6e7f8f2b478a638bc64bd1', 'B': '0b2e000b52adb8344f1e922c175680753dc31747'}
-# Linux patch series per (tree, profile) build contract; None means unpatched by contract.
-PATCH_DIRS = {('A', 'full'): 'engine/patches', ('A', 'nvfp4'): None, ('B', 'full'): 'engine/patches', ('B', 'nvfp4'): 'engine/nvfp4/patches'}
+# A: the old full-model pin plus its patch series. B: PR #33's TensorFold v1.1.9 tree (a commit cannot name its own
+# SHA, so B is the parent commit whose runner and build rules match this one).
+SHAS = {'A': 'a7752b4591da9b33bf6e7f8f2b478a638bc64bd1', 'B': '3f44de621379bbe20f1ae6599a26465edf9dcbce'}
+# Linux patch series per (tree, profile) build contract; None means unpatched by contract. B's full model is the
+# empty v1.1.9 series; scripts/build-engine.sh in that tree still checks its manifest at build time.
+PATCH_DIRS = {('A', 'full'): 'engine/patches', ('A', 'nvfp4'): None, ('B', 'full'): None, ('B', 'nvfp4'): 'engine/nvfp4/patches'}
 BASE = 'http://127.0.0.1:18795'
 TEXT = 'The train leaves at seven fifteen. Please bring the blue notebook.'
 REFS = ['The small boat crossed the lake.', 'A bright bird landed near the window.']
@@ -324,16 +327,17 @@ def patch_selftest():
         (path / '0001-fixture.patch').write_text(f'fixture series for {tree} {patch}\n')
         (path / 'SHA256SUMS').write_text(hashlib.sha256((path / '0001-fixture.patch').read_bytes()).hexdigest() + '  0001-fixture.patch\n')
 
-    for tree, patch in (('A', 'engine/patches'), ('B', 'engine/patches'), ('B', 'engine/nvfp4/patches')):
+    for tree, patch in (('A', 'engine/patches'), ('B', 'engine/nvfp4/patches')):
         fixture(tree, patch)
     mark = len(COMMANDS)
     verify_patches('A', 'nvfp4', base / 'A')
+    verify_patches('B', 'full', base / 'B')
     if any('sha256sum' in x for x in COMMANDS[mark:]):
-        raise RuntimeError('A/nvfp4 is unpatched by contract but ran a checksum command')
+        raise RuntimeError('A/nvfp4 or B/full is unpatched by contract but ran a checksum command')
     verify_patches('B', 'nvfp4', base / 'B')
     if not any('sha256sum' in x for x in COMMANDS[mark:]):
         raise RuntimeError('B/nvfp4 patch series was not checksum-verified')
-    for tree, profile in (('B', 'nvfp4'), ('A', 'full'), ('B', 'full')):
+    for tree, profile in (('B', 'nvfp4'), ('A', 'full')):
         patch = PATCH_DIRS[(tree, profile)]
         shutil.rmtree(base / tree / patch)
         try:

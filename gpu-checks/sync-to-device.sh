@@ -5,7 +5,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 w=$(cd "$here/.." && pwd)
 branch=$(git -C "$w" branch --show-current)
-git -C "$w" bundle create "$w/pr.bundle" main "$branch" a7752b4591da9b33bf6e7f8f2b478a638bc64bd1 0b2e000b52adb8344f1e922c175680753dc31747
+git -C "$w" bundle create "$w/pr.bundle" main "$branch" a7752b4591da9b33bf6e7f8f2b478a638bc64bd1 3f44de621379bbe20f1ae6599a26465edf9dcbce
 ssh "$GPU_CHECK_SSH_HOST" mkdir -p "$w/gpu-checks" "$w/bench/corpus"
 rsync -a "$here/" "$GPU_CHECK_SSH_HOST:$w/gpu-checks/"
 rsync -a "$w/pr.bundle" "$GPU_CHECK_SSH_HOST:$w/pr.bundle"

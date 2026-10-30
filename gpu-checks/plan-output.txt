@@ -1,12 +1,11 @@
 git clone $W/pr.bundle $W/root/B
-cd $W/root/B && git checkout --detach 0b2e000b52adb8344f1e922c175680753dc31747
+cd $W/root/B && git checkout --detach 3f44de621379bbe20f1ae6599a26465edf9dcbce
 cd $W/root/B && git worktree add --detach $W/root/A a7752b4591da9b33bf6e7f8f2b478a638bc64bd1
 cd $W/root/A && git rev-parse HEAD
 cd $W/root/A/engine/patches && sha256sum -c SHA256SUMS
 env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/A/scripts/build-engine.sh --weights full $W/root/build-A-full
 env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/A/scripts/build-engine.sh --weights nvfp4 $W/root/build-A-nvfp4
 cd $W/root/B && git rev-parse HEAD
-cd $W/root/B/engine/patches && sha256sum -c SHA256SUMS
 env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/B/scripts/build-engine.sh --weights full $W/root/build-B-full
 cd $W/root/B/engine/nvfp4/patches && sha256sum -c SHA256SUMS
 env 'ZIG=<GPU_CHECK_ZIG>' NVCC=/usr/local/cuda/bin/nvcc JOBS=4 bash $W/root/B/scripts/build-engine.sh --weights nvfp4 $W/root/build-B-nvfp4

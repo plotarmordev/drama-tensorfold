@@ -45,14 +45,14 @@ full-model and Metal profiles do not gain a long-form splitter from this feature
 
 ## Known full-model stopping limitation
 
-These results were measured on the previous full-model pin, TensorFold `d1018b31`
-plus patches 0001–0015, not on v1.1.9. On one GB10 with that CUDA full-model build, this page's two-speaker
+These results were first measured on the previous full-model pin, TensorFold `d1018b31`
+plus patches 0001–0015. On one GB10 with that CUDA full-model build, this page's two-speaker
 example reached the 1024-frame cap (47.55 seconds, `X-Finish-Reason: length`)
 in three of five seeds with a matching reference catalog. The same text without
 speaker tags stopped normally in all five. Relabeling both references and input
 to speakers 0/1 still reached the cap in two of five seeds; using the tagged
 input without a reference catalog did so in one of five. Neither variation is a
-reliable workaround.
+reliable workaround; both were measured on the previous pin only.
 
 The CUDA NVFP4 profile, with its default guidance, stopped normally on all five
 tagged and all five untagged requests in this small check. The engine pins,
@@ -60,8 +60,11 @@ weights and guidance differ, so these observations do not establish the cause
 or a guarantee for NVFP4. Metal was not tested in this follow-up. See the
 [settings and per-seed results](../results/dialogue-stopping-20261030.json).
 
-The current full-model pin, TensorFold v1.1.9, has not been tested for this
-behaviour; that check and the investigation are tracked in
+The current full-model pin, TensorFold v1.1.9, gave the same outcome on the same
+GPU: with seeds 1–5, the tagged dialogue reached the frame cap in three of five
+and the untagged text in none, with per-reply bytes, durations and RMS identical
+to the previous pin. The limitation is unchanged on v1.1.9, not fixed; the
+investigation is tracked in
 [issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32).
 Treat `X-Finish-Reason: length` as an incomplete generation. The cause remains
 unresolved; accepting a speaker tag does not guarantee natural termination.

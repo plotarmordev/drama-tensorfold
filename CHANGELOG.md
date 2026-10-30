@@ -5,7 +5,8 @@
 ### Changed
 
 - The full-model engine pins TensorFold v1.1.9 with an empty patch series: every behaviour of the
-  old patches 0001–0015 is upstream (per upstream source; GPU A/B pending). Two differences remain: with the mid-silence rule on,
+  old patches 0001–0015 is upstream. A CUDA GPU A/B against the previous pin passed: corpus captures
+  byte-identical, request sampling and speaker tags pass. Two differences remain: with the mid-silence rule on,
   `X-Silence-Mid-Trips` reports only whether the returned take tripped (0 or 1), and a temperature
   of `-0` or `-1e-400` reaches the sampler as `+0`. `scripts/build-engine.sh` accepts an empty
   full-model series only through an empty `SHA256SUMS`; an empty NVFP4 manifest or a missing
@@ -37,7 +38,7 @@
   including native/Python catalog writers. Legacy CUDA long-form continuations
   retain the active speaker across splits and redraws; reference-count and malformed-tag
   validation remain enforced. No voice-quality claim is made. Tagged full-model requests
-  could run to the frame cap when measured on the previous pin; see the
+  can run to the frame cap, with the same outcome on the previous pin and on v1.1.9; see the
   [known stopping limitation](recipe/README-dialogue.md#known-full-model-stopping-limitation)
   and [issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32).
 - Per-request HTTP speech `temperature`, `top_p`, `top_k` and exact unsigned 64-bit

@@ -134,8 +134,8 @@ Guidance-enabled replies carry the configured γ in `X-Cfg-Gamma`; builtin voice
 Request text and reference transcripts accept canonical speaker tags 0 through 15.
 See [speaker-tagged dialogue](recipe/README-dialogue.md) for catalog examples,
 profile-specific reference limits and legacy long-form speaker continuation, and its
-[known full-model stopping limitation](recipe/README-dialogue.md#known-full-model-stopping-limitation)
-([issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32)).
+[known full-model stopping limitation](recipe/README-dialogue.md#known-full-model-stopping-limitation),
+unchanged on v1.1.9 ([issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32)).
 
 - **Whole reply:** `Content-Length` framing and an `X-Finish-Reason` header: `stop`, `length` or, with the silence
   guard on, `silence`.
@@ -190,7 +190,7 @@ feature. Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`
 | Request-local speech sampling and exact integer seeds, with parsed-JSON boundary docs | HTTP `temperature`, `top_p`, `top_k`, `seed` | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
 | Canonical speaker tags 0..15 in speech and catalog transcripts | speaker tags in text | [#1278](https://github.com/ashhart/TensorFold/pull/1278) |
 
-Every old patch's behaviour is in v1.1.9 (per upstream source; GPU A/B pending) with two differences. With the mid-silence rule on, `X-Silence-Mid-Trips`
+Every old patch's behaviour is in v1.1.9, and a CUDA GPU A/B against the previous pin passed (corpus captures byte-identical; request sampling and speaker tags pass), with two differences. With the mid-silence rule on, `X-Silence-Mid-Trips`
 reports only whether the returned take tripped (0 or 1); takes discarded by silence/short/register redraws are no
 longer counted. A temperature of `-0` or `-1e-400` reaches the sampler as `+0` rather than `-0`; both were already
 greedy. `drama3-voice`, the upstream tool that writes attested voice files for `--voices`, is in TensorFold; the

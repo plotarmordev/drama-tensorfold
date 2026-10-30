@@ -25,7 +25,7 @@
 **Fish Audio's Drama 3 text-to-speech on NVIDIA GB10 (native Zig/CUDA) or Apple silicon (native Zig/Metal).**
 
 [TensorFold](https://github.com/ashhart/TensorFold) runs Drama 3 natively since v1.1.0. This repository pins
-upstream TensorFold and adds a small series of opt-in patches for the full model. NVFP4 retains its
+TensorFold v1.1.9 for the full model, which now carries every feature the old patch series added. NVFP4 retains its
 measured CUDA engine pin with a checksummed patch series and uses a separate upstream pin plus Metal patches on Mac. It builds the engine
 and starts a local speech server with an OpenAI-style `/v1/audio/speech` route, whole or streamed.
 
@@ -69,7 +69,7 @@ On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTRE
 guidance γ 1.5 and batched guidance, as measured; a `--cfg-gamma` of your own after `--` replaces both.
 On Mac it builds [`engine/nvfp4/macos/UPSTREAM`](engine/nvfp4/macos/UPSTREAM) plus its patch series.
 Metal's `--cfg-batched` pairs independent states in one command buffer, not a vectorized GEMM.
-`--weights full` retains [`engine/UPSTREAM`](engine/UPSTREAM) and [`engine/patches`](engine/patches).
+`--weights full` builds [`engine/UPSTREAM`](engine/UPSTREAM) with the empty [`engine/patches`](engine/patches) series.
 
 When it prints `DRAMA_PILOT_READY`, synthesize from another terminal. The second command streams and plays as
 it arrives:
@@ -133,7 +133,9 @@ Guidance-enabled replies carry the configured γ in `X-Cfg-Gamma`; builtin voice
 
 Request text and reference transcripts accept canonical speaker tags 0 through 15.
 See [speaker-tagged dialogue](recipe/README-dialogue.md) for catalog examples,
-profile-specific reference limits and legacy long-form speaker continuation.
+profile-specific reference limits and legacy long-form speaker continuation, and its
+[known full-model stopping limitation](recipe/README-dialogue.md#known-full-model-stopping-limitation)
+([issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32)).
 
 - **Whole reply:** `Content-Length` framing and an `X-Finish-Reason` header: `stop`, `length` or, with the silence
   guard on, `silence`.
@@ -163,35 +165,36 @@ See the [CUDA patch index](engine/nvfp4/patches/README.md) for scope and tests.
 
 ### Full-model engine
 
-These patches build the full-model engine (`--weights full`). Upstream TensorFold already serves Drama 3. Each patch
-below adds one feature that stays off until you pass its flag, so a server started without them answers as
-upstream does. The exceptions are the first two and one request-level feature: batched prefill is on by default
-(`TF_DRAMA_PREFILL_ROWS=1` restores upstream's single-row prefill), the replay fix is a bug fix, and per-request
-`temperature`, `top_p`, `top_k` and `seed` (0013/0014) need no launch flag. A request without those fields is
-answered as upstream answers it; upstream refuses them with a 400, and these patches serve them. The CUDA NVFP4
-series (0002) and the Metal NVFP4 series (0004, 0005) carry the same request-level feature. The patches stack and
-apply in order; each one's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
+The full-model engine (`--weights full`) is TensorFold v1.1.9 with no patches: every feature the old patch series
+added is upstream. Each flagged feature stays off until you pass its flag, so a server started without them answers as plain
+TensorFold does. The Linux recipe sets `TF_DRAMA_PREFILL_ROWS=128` for native full-model and custom-checkpoint
+launches to keep batched prefill; TensorFold otherwise defaults to single-row prefill. NVFP4 and the sglang
+reference backend do not receive this setting. Per-request `temperature`, `top_p`, `top_k` and `seed` need no
+launch flag; the CUDA NVFP4 series (0002) and the Metal NVFP4 series (0004, 0005) carry the same request-level
+feature. Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 
-| Patch | Adds | Opt in with | Upstream |
-|---|---|---|---|
-| 0001 (K0) | CUDA prompt prefill in bounded row chunks | on by default; `TF_DRAMA_PREFILL_ROWS` | [#1120](https://github.com/ashhart/TensorFold/pull/1120) |
-| 0002 | Replay waits for poison fills before buffers are reused | always on | [#1119](https://github.com/ashhart/TensorFold/pull/1119) |
-| 0003 (K1) | A configurable frame budget | `--max-frames N` | [#1134](https://github.com/ashhart/TensorFold/pull/1134) |
-| 0004 (K7) | An allowlist for bracketed speech controls | `--allowed-controls LIST` | [#1152](https://github.com/ashhart/TensorFold/pull/1152) |
-| 0005 (K9) | Attested voice catalogs and `GET /v1/voices` | `--voices DIR`, `--default-voice NAME` | [#1135](https://github.com/ashhart/TensorFold/pull/1135) |
-| 0006 (K2) | A sustained-silence guard that ends a reply as `silence` | `--silence-floor-dbfs`, `--silence-seconds` | [#1157](https://github.com/ashhart/TensorFold/pull/1157) |
-| 0007 (K3) | The guard's onset rule: silence before enough voiced audio | `--silence-onset-s`, `--silence-onset-voiced-s` | [#1158](https://github.com/ashhart/TensorFold/pull/1158) |
-| 0008 (K4) | The guard's mid rule: an ending lost in a long silence | `--silence-mid-s`, `--silence-mid-min-voiced-s` | [#1159](https://github.com/ashhart/TensorFold/pull/1159) |
-| 0009 (K5) | Whole replies the guard ended are drawn again | `--silence-redraws N`, `--silence-redraw-budget-s`, `--silence-redraw-controls` | [#1160](https://github.com/ashhart/TensorFold/pull/1160) |
-| 0010 (K6) | Whole replies that stopped short of their text are drawn again | `--short-reply-ratio`, `--short-reply-chars-per-s` | [#1161](https://github.com/ashhart/TensorFold/pull/1161) |
-| 0011 (K8) | A whole reply is drawn once more when a phrase opens far above the others | `--register-redraw-st`, `--register-redraw-high`, `--register-high-hz` | [#1162](https://github.com/ashhart/TensorFold/pull/1162) |
-| 0012 | One bounded reference-prefix snapshot per Metal lane, with exact identity and safe invalidation | none (automatic) | [#1237](https://github.com/ashhart/TensorFold/pull/1237) |
-| 0013 | Request-local speech sampling and exact integer seeds | HTTP `temperature`, `top_p`, `top_k`, `seed` | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
-| 0014 | Parsed-JSON floating boundary documentation and regressions | none (tests/docs) | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
-| 0015 | Canonical speaker tags 0..15 in speech and catalog transcripts | speaker tags in text | [#1278](https://github.com/ashhart/TensorFold/pull/1278) |
+| In TensorFold 1.1.9 | Opt in with | Upstream |
+|---|---|---|
+| CUDA prompt prefill in bounded row chunks | `TF_DRAMA_PREFILL_ROWS` (the recipe sets `128`) | [#1120](https://github.com/ashhart/TensorFold/pull/1120) |
+| Replay waits for poison fills before buffers are reused | always on | [#1119](https://github.com/ashhart/TensorFold/pull/1119) |
+| A configurable frame budget | `--max-frames N` | [#1134](https://github.com/ashhart/TensorFold/pull/1134) |
+| An allowlist for bracketed speech controls | `--allowed-controls LIST` | [#1152](https://github.com/ashhart/TensorFold/pull/1152) |
+| Attested voice catalogs and `GET /v1/voices` | `--voices DIR`, `--default-voice NAME` | [#1135](https://github.com/ashhart/TensorFold/pull/1135) |
+| A sustained-silence guard that ends a reply as `silence` | `--silence-floor-dbfs`, `--silence-seconds` | [#1157](https://github.com/ashhart/TensorFold/pull/1157) |
+| The guard's onset rule: silence before enough voiced audio | `--silence-onset-s`, `--silence-onset-voiced-s` | [#1158](https://github.com/ashhart/TensorFold/pull/1158) |
+| The guard's mid rule: an ending lost in a long silence | `--silence-mid-s`, `--silence-mid-min-voiced-s` | [#1159](https://github.com/ashhart/TensorFold/pull/1159) |
+| Whole replies the guard ended are drawn again | `--silence-redraws N`, `--silence-redraw-budget-s`, `--silence-redraw-controls` | [#1160](https://github.com/ashhart/TensorFold/pull/1160) |
+| Whole replies that stopped short of their text are drawn again | `--short-reply-ratio`, `--short-reply-chars-per-s` | [#1161](https://github.com/ashhart/TensorFold/pull/1161) |
+| A whole reply is drawn once more when a phrase opens far above the others | `--register-redraw-st`, `--register-redraw-high`, `--register-high-hz` | [#1162](https://github.com/ashhart/TensorFold/pull/1162) |
+| One bounded reference-prefix snapshot per Metal lane, with exact identity and safe invalidation | none (automatic) | [#1237](https://github.com/ashhart/TensorFold/pull/1237) |
+| Request-local speech sampling and exact integer seeds, with parsed-JSON boundary docs | HTTP `temperature`, `top_p`, `top_k`, `seed` | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
+| Canonical speaker tags 0..15 in speech and catalog transcripts | speaker tags in text | [#1278](https://github.com/ashhart/TensorFold/pull/1278) |
 
-`drama3-voice`, a tool that writes attested voice files for `--voices`, is proposed upstream in
-[#1153](https://github.com/ashhart/TensorFold/pull/1153); it is not part of this series.
+Every old patch's behaviour is in v1.1.9 with two differences. With the mid-silence rule on, `X-Silence-Mid-Trips`
+reports only whether the returned take tripped (0 or 1); takes discarded by silence/short/register redraws are no
+longer counted. A temperature of `-0` or `-1e-400` reaches the sampler as `+0` rather than `-0`; both were already
+greedy. `drama3-voice`, the upstream tool that writes attested voice files for `--voices`, is in TensorFold; the
+full-model build script still builds only the native server and `drama3-generate`.
 
 Pass serve flags to the launcher after `--`. An illustrative launch with the frame budget, the silence guard and
 one redraw; the numbers are examples, not tuned values, so calibrate thresholds on your own voice:
@@ -200,7 +203,7 @@ one redraw; the numbers are examples, not tuned values, so calibrate thresholds 
 python3 recipe/pilot.py … -- --max-frames 2048 --silence-floor-dbfs -50 --silence-seconds 6 --silence-redraws 1
 ```
 
-Patch 0004's cue list holds only words from Fish Audio's public tags; deployments may extend the cue list locally.
+The speech-control allowlist holds only words from Fish Audio's public tags; deployments may extend it locally.
 
 A voice catalog is a directory of `drama3-http-voice/1` files, each with a `source` attestation (`synthetic`,
 `self` or `consented`); the format is in `docs/drama-http-voices.md` in the engine tree. Clone only a voice the

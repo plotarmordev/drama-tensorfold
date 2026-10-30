@@ -1,7 +1,7 @@
 # macOS: running the pinned recipe on Apple silicon
 
 Both `--weights full` and `--weights nvfp4` use the native Zig/Metal engine, not Python/MLX.
-The full model retains the Linux recipe's existing pin and patches. NVFP4 uses the separate
+The full model uses the Linux recipe's pin, TensorFold v1.1.9, with no patches. NVFP4 uses the separate
 [Mac engine pin](../engine/nvfp4/macos/UPSTREAM) and patch series; the CUDA NVFP4 pin is unchanged.
 Neither path requires CUDA, `nvcc`, systemd, or `/proc`. Use `recipe/pilot_macos.py`.
 
@@ -180,7 +180,7 @@ Start a new coordinated pilot with `-- --voices /absolute/path/to/runtime/voices
 directory. `GET /v1/voices` lists loaded voices. Without `--default-voice`, omitted/default
 requests use the builtin voice. Setting `--default-voice NAME` changes both cases.
 
-The full-model patch 0012 and the NVFP4 Mac base reuse one conditional reference-prefix snapshot per
+The full-model engine (upstream since TensorFold v1.1.5) and the NVFP4 Mac base reuse one conditional reference-prefix snapshot per
 Metal lane. A different or absent prefix invalidates it before prefill; switching voices reuses the
 allocated snapshot buffers. Guided requests reset their independent unconditional backbone state;
 cancellation invalidates conditional retention before another request. Neither is a multi-voice cache.

@@ -45,7 +45,7 @@ series and check that the whole series still applies and builds from a clean che
 
 ```sh
 cd build/tensorfold
-git format-patch --start-number 12 -o ../../engine/patches HEAD~2   # two new commits; 0012 is the next free number
+git format-patch --start-number 1 -o ../../engine/patches HEAD~2   # two new commits; the v1.1.9 series is empty, so 0001 is next
 cd ../../engine/patches && sha256sum -- *.patch > SHA256SUMS
 cd ../.. && ZIG=/path/to/zig-0.17.0/zig NVCC=/usr/local/cuda/bin/nvcc scripts/build-engine.sh
 ```

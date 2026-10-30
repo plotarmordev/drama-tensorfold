@@ -1,0 +1,481 @@
+{
+  "date": "2026-10-30",
+  "purpose": "Bounded reproduction of PR #28 speaker-tagged stopping behavior; no speed or acoustic-quality claim.",
+  "recipe_commit": "9ec2318c102e246871587af802965dd8bfe6101e",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "os": "Ubuntu 24.04.5 LTS",
+    "driver": "580.178.04",
+    "cuda_compiler": "13.0.88",
+    "zig": "0.17.0"
+  },
+  "engine_sources": {
+    "full": {
+      "base": "d1018b318fb51981c4a18f12e40269a4d3ee9713",
+      "patches": 15,
+      "source_tree": "d7eb6817d37bac0807571b3c90e2c55b1c231a96",
+      "binary_sha256": "d9e507c4a22d1254fd90cdd57fc509fdbb004aa53e16f472d0bf4f9bac710d62"
+    },
+    "nvfp4": {
+      "base": "b1f4b9b4830c9bd43bf7c432cffe7dea21313537",
+      "patches": 4,
+      "source_commit": "e06a0cda2fd9fa6adcb5a309581b7691173bd1ce",
+      "binary_sha256": "5878ccbf11acd54b2f4da91bce97f0a3c121b1852fbf44e7134eb838fc145877"
+    }
+  },
+  "settings": {
+    "sample_rate_hz": 44100,
+    "channels": 1,
+    "sample_bits": 16,
+    "response_format": "pcm",
+    "max_frames": 1024,
+    "frame_cap_seconds": 47.55446712018141,
+    "context": 8192,
+    "parallel": 1,
+    "temperature": 1.0,
+    "top_p": 0.9,
+    "top_k": 30,
+    "diagnostic_seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "prompt_cache_gib": 0,
+    "keep_warm": 0,
+    "guidance": {
+      "full": "No classifier-free guidance in this pinned full profile.",
+      "nvfp4": {
+        "gamma": 1.5,
+        "batched": true
+      }
+    }
+  },
+  "reference_preparation": {
+    "kind": "synthetic",
+    "seeds": [
+      42,
+      43
+    ],
+    "transcripts": [
+      "The small boat crossed the lake.",
+      "A bright bird landed near the window."
+    ],
+    "procedure": "Each profile generated its own two built-in-voice references with the settings above. The full-profile drama3-generate tool encoded each WAV with that profile's codec.pth. Catalog transcripts used matching speaker tags 1/15, or 0/1 for the relabeling check. Generation was serial; each profile restarted after reference encoding and then served its case groups in the recorded order."
+  },
+  "pilot_checks": {
+    "full-references": {
+      "checkpoint_verified": true,
+      "checkpoint_revision": "e0a9218aa48888270f06ef1ed9ea67622c0e17d2",
+      "failures": [],
+      "admission_required_memavailable_bytes": 94489280512,
+      "observed_runtime_minimum_memavailable_bytes": 77733724160
+    },
+    "full-dialogue": {
+      "checkpoint_verified": true,
+      "checkpoint_revision": "e0a9218aa48888270f06ef1ed9ea67622c0e17d2",
+      "failures": [],
+      "admission_required_memavailable_bytes": 94489280512,
+      "observed_runtime_minimum_memavailable_bytes": 77570543616
+    },
+    "nvfp4-references": {
+      "checkpoint_verified": true,
+      "checkpoint_revision": "494db08481db952f834b2241bce63fb3dfa72554",
+      "failures": [],
+      "admission_required_memavailable_bytes": 94489280512,
+      "observed_runtime_minimum_memavailable_bytes": 98009337856
+    },
+    "nvfp4-dialogue": {
+      "checkpoint_verified": true,
+      "checkpoint_revision": "494db08481db952f834b2241bce63fb3dfa72554",
+      "failures": [],
+      "admission_required_memavailable_bytes": 94489280512,
+      "observed_runtime_minimum_memavailable_bytes": 97703804928
+    }
+  },
+  "build_checks": {
+    "full": "107/107 steps succeeded; 582/582 tests passed.",
+    "nvfp4": "106/106 steps succeeded; 870/879 tests passed, 9 skipped; cached steps retained.",
+    "initial_nvfp4_attempt": "A source archive lacked Git metadata required by a version-generation step: 101/106 steps succeeded, 1 failed; 1032/1041 tests passed, 9 skipped. The exact published source metadata was restored and the unchanged code passed on rerun."
+  },
+  "groups": [
+    {
+      "profile": "full",
+      "case": "synthetic-reference",
+      "voice": "default",
+      "attempts": 2,
+      "natural_stop": 2,
+      "frame_cap": 0,
+      "takes": [
+        {
+          "seed": 42,
+          "finish": "stop",
+          "audio_seconds": 1.7182766439909296,
+          "render_seconds": 1.8076799178961664,
+          "bytes": 151552,
+          "sha256": "1aeb3141f68254790433e3a06549052f165d51383f15cbf0cf771ac5ff88f12e",
+          "input": "The small boat crossed the lake."
+        },
+        {
+          "seed": 43,
+          "finish": "stop",
+          "audio_seconds": 3.575873015873016,
+          "render_seconds": 2.8071080818772316,
+          "bytes": 315392,
+          "sha256": "82cbebac79a6f088bcb8abfb233f620687f74ff83492bb495b2bfa3db93019b8",
+          "input": "A bright bird landed near the window."
+        }
+      ]
+    },
+    {
+      "profile": "full",
+      "case": "tagged-catalog",
+      "input": "<|speaker:1|> Is the train here? <|speaker:15|> It arrives at seven fifteen.",
+      "voice": "dialogue",
+      "attempts": 5,
+      "natural_stop": 2,
+      "frame_cap": 3,
+      "takes": [
+        {
+          "seed": 1,
+          "finish": "length",
+          "audio_seconds": 47.55446712018141,
+          "render_seconds": 35.86638974794187,
+          "bytes": 4194304,
+          "sha256": "9b64fb211ae96e0557279fdae9e9b9feb035f365b9dfcc4b4bb54aa481fe4faa"
+        },
+        {
+          "seed": 2,
+          "finish": "length",
+          "audio_seconds": 47.55446712018141,
+          "render_seconds": 35.588721685810015,
+          "bytes": 4194304,
+          "sha256": "1c43ec4d4f6f169b01f3758228dca6e2af3ba71073842be6106017435199c945"
+        },
+        {
+          "seed": 3,
+          "finish": "stop",
+          "audio_seconds": 4.551111111111111,
+          "render_seconds": 3.747302348027006,
+          "bytes": 401408,
+          "sha256": "dae64bd354b7a69d24c2ea4d6d8f51f68e664d0c0d927b51ea70642f6e69ebb0"
+        },
+        {
+          "seed": 4,
+          "finish": "length",
+          "audio_seconds": 47.55446712018141,
+          "render_seconds": 35.60359556088224,
+          "bytes": 4194304,
+          "sha256": "b66f41590b851282e83e3801a697bc51f44ba78eabd5934d007492b3237df02e"
+        },
+        {
+          "seed": 5,
+          "finish": "stop",
+          "audio_seconds": 5.015510204081632,
+          "render_seconds": 4.093490864848718,
+          "bytes": 442368,
+          "sha256": "8e3c5d5d253b544463aefe39ca23c1b5ade159f0846e94045b36d8da212bbb3e"
+        }
+      ]
+    },
+    {
+      "profile": "full",
+      "case": "untagged-catalog",
+      "input": " Is the train here?  It arrives at seven fifteen.",
+      "voice": "dialogue",
+      "attempts": 5,
+      "natural_stop": 5,
+      "frame_cap": 0,
+      "takes": [
+        {
+          "seed": 1,
+          "finish": "stop",
+          "audio_seconds": 4.504671201814059,
+          "render_seconds": 3.715083193965256,
+          "bytes": 397312,
+          "sha256": "d98a4a35cf2b821874e5a3d9cc36fb679a0b4e4e9968187957c5a683438efa1d"
+        },
+        {
+          "seed": 2,
+          "finish": "stop",
+          "audio_seconds": 4.73687074829932,
+          "render_seconds": 3.8848382350988686,
+          "bytes": 417792,
+          "sha256": "6ae76381c3868a21e1d55ceb2abc146815918e6d1c693bc41e6c21bc9120b31e"
+        },
+        {
+          "seed": 3,
+          "finish": "stop",
+          "audio_seconds": 4.272471655328798,
+          "render_seconds": 3.5429713330231607,
+          "bytes": 376832,
+          "sha256": "f5166e194f9c37b1d765dc996a45e85a7a6e906a3e1d13c2ca88616e2d453ac1"
+        },
+        {
+          "seed": 4,
+          "finish": "stop",
+          "audio_seconds": 5.061950113378685,
+          "render_seconds": 4.12782311392948,
+          "bytes": 446464,
+          "sha256": "dfa57ffc2203ed703a7215dfec9cbbd1237bb6897ff39a8cf1e7439799d57b61"
+        },
+        {
+          "seed": 5,
+          "finish": "stop",
+          "audio_seconds": 3.250793650793651,
+          "render_seconds": 2.787320796167478,
+          "bytes": 286720,
+          "sha256": "ddb6d5410601c44ab6c68eeea7125cfad792299eaa025a13bb7097d0cd397241"
+        }
+      ]
+    },
+    {
+      "profile": "full",
+      "case": "tagged-built-in",
+      "input": "<|speaker:1|> Is the train here? <|speaker:15|> It arrives at seven fifteen.",
+      "voice": "default",
+      "attempts": 5,
+      "natural_stop": 4,
+      "frame_cap": 1,
+      "takes": [
+        {
+          "seed": 1,
+          "finish": "stop",
+          "audio_seconds": 4.876190476190477,
+          "render_seconds": 3.7644356288947165,
+          "bytes": 430080,
+          "sha256": "b718f42d5f899d4567b2be91ab14ec72e1b1e8621e97e1e27d2e392e5a1037ab"
+        },
+        {
+          "seed": 2,
+          "finish": "length",
+          "audio_seconds": 47.55446712018141,
+          "render_seconds": 35.331854237942025,
+          "bytes": 4194304,
+          "sha256": "91c309245da55174fc256b8b9815f0e1792d153e025a532864e84a8b003cce17"
+        },
+        {
+          "seed": 3,
+          "finish": "stop",
+          "audio_seconds": 4.365351473922902,
+          "render_seconds": 3.381959602003917,
+          "bytes": 385024,
+          "sha256": "dfd8764d4c186a12816e7c10b5addb79b2977989e838ea9725a9d5f666b8daa1"
+        },
+        {
+          "seed": 4,
+          "finish": "stop",
+          "audio_seconds": 4.73687074829932,
+          "render_seconds": 3.659604276996106,
+          "bytes": 417792,
+          "sha256": "38055c32b572cfa0609107387d9e8b26c36a33a22461ce17d579a6e37da8da03"
+        },
+        {
+          "seed": 5,
+          "finish": "stop",
+          "audio_seconds": 5.294149659863946,
+          "render_seconds": 4.076286201132461,
+          "bytes": 466944,
+          "sha256": "145e90c421b2c05f1e92c98856ddcb6e3da31b3cfcf6475e0c70049e07b8dc40"
+        }
+      ]
+    },
+    {
+      "profile": "full",
+      "case": "contiguous-catalog",
+      "input": "<|speaker:0|> Is the train here? <|speaker:1|> It arrives at seven fifteen.",
+      "voice": "contiguous",
+      "attempts": 5,
+      "natural_stop": 3,
+      "frame_cap": 2,
+      "takes": [
+        {
+          "seed": 1,
+          "finish": "stop",
+          "audio_seconds": 4.365351473922902,
+          "render_seconds": 3.6108327691908926,
+          "bytes": 385024,
+          "sha256": "ee34d18de1e4820f416d3a16e8459c4956b72fa7c2a4c7a981324bd1e6c16f6a"
+        },
+        {
+          "seed": 2,
+          "finish": "stop",
+          "audio_seconds": 4.2260317460317465,
+          "render_seconds": 3.505084641976282,
+          "bytes": 372736,
+          "sha256": "b37184cf166356d0bfd67fbb5d912fb5b7fb6be700c8daa4219ad23673e9de08"
+        },
+        {
+          "seed": 3,
+          "finish": "length",
+          "audio_seconds": 47.55446712018141,
+          "render_seconds": 35.61752852401696,
+          "bytes": 4194304,
+          "sha256": "0042057ea7aeab2cc49746e44475a3cd03aefd1725e2f58f6fc489dfad622ff8"
+        },
+        {
+          "seed": 4,
+          "finish": "stop",
+          "audio_seconds": 4.365351473922902,
+          "render_seconds": 3.6127231549471617,
+          "bytes": 385024,
+          "sha256": "51a76f6f21a6c91d1d61fd5f45979bc2b16821deed8049b92bd71fd4a00e049e"
+        },
+        {
+          "seed": 5,
+          "finish": "length",
+          "audio_seconds": 47.55446712018141,
+          "render_seconds": 35.6254837338347,
+          "bytes": 4194304,
+          "sha256": "a2b567299598be0742a101be582464a44052d06157850712ecd05621322cb8fa"
+        }
+      ]
+    },
+    {
+      "profile": "nvfp4",
+      "case": "synthetic-reference",
+      "voice": "default",
+      "attempts": 2,
+      "natural_stop": 2,
+      "frame_cap": 0,
+      "takes": [
+        {
+          "seed": 42,
+          "finish": "stop",
+          "audio_seconds": 2.2755555555555556,
+          "render_seconds": 1.530193794053048,
+          "bytes": 200704,
+          "sha256": "27a0518aa96b3a95783e6cd2ac8113f7220591de52c9aa6d0770fe16d68401c3",
+          "input": "The small boat crossed the lake."
+        },
+        {
+          "seed": 43,
+          "finish": "stop",
+          "audio_seconds": 2.043356009070295,
+          "render_seconds": 1.3589847041293979,
+          "bytes": 180224,
+          "sha256": "81015c7c2c83817e5f6541a789ba32aa5597e5f64c6ac85f9d8cfe33067625a9",
+          "input": "A bright bird landed near the window."
+        }
+      ]
+    },
+    {
+      "profile": "nvfp4",
+      "case": "tagged-catalog",
+      "input": "<|speaker:1|> Is the train here? <|speaker:15|> It arrives at seven fifteen.",
+      "voice": "dialogue",
+      "attempts": 5,
+      "natural_stop": 5,
+      "frame_cap": 0,
+      "takes": [
+        {
+          "seed": 1,
+          "finish": "stop",
+          "audio_seconds": 3.0650340136054424,
+          "render_seconds": 2.3493569360580295,
+          "bytes": 270336,
+          "sha256": "4107df8dc77683aefdd9b6516c86f34701ec61d32c997f990f40cfd05857b190"
+        },
+        {
+          "seed": 2,
+          "finish": "stop",
+          "audio_seconds": 3.900952380952381,
+          "render_seconds": 2.869977713096887,
+          "bytes": 344064,
+          "sha256": "11dad79a29646ab067e804d1abc5dd23d2bc2a189d48ad865976606b5467ff29"
+        },
+        {
+          "seed": 3,
+          "finish": "stop",
+          "audio_seconds": 3.01859410430839,
+          "render_seconds": 2.299853689968586,
+          "bytes": 266240,
+          "sha256": "b2958f99bdcec09c1aa09c53d41047bbcb67d63f6e5f5335cc4194a1758ccb3c"
+        },
+        {
+          "seed": 4,
+          "finish": "stop",
+          "audio_seconds": 3.947392290249433,
+          "render_seconds": 2.8945382239762694,
+          "bytes": 348160,
+          "sha256": "b283a60b5aad7549e99afcf435988a6031599ac8948bd0606b30f1c47c5a58e4"
+        },
+        {
+          "seed": 5,
+          "finish": "stop",
+          "audio_seconds": 4.783310657596372,
+          "render_seconds": 3.4300055550411344,
+          "bytes": 421888,
+          "sha256": "a0388a957b20f2608404aff50896e866c92c75e9316667a6750786b0dc4f721d"
+        }
+      ]
+    },
+    {
+      "profile": "nvfp4",
+      "case": "untagged-catalog",
+      "input": " Is the train here?  It arrives at seven fifteen.",
+      "voice": "dialogue",
+      "attempts": 5,
+      "natural_stop": 5,
+      "frame_cap": 0,
+      "takes": [
+        {
+          "seed": 1,
+          "finish": "stop",
+          "audio_seconds": 5.061950113378685,
+          "render_seconds": 3.6132642519660294,
+          "bytes": 446464,
+          "sha256": "d3ad6f38b974d3b4898aa2987b6cbdb2b54c9a040a041ae63d5c826faf52a1ce"
+        },
+        {
+          "seed": 2,
+          "finish": "stop",
+          "audio_seconds": 3.111473922902494,
+          "render_seconds": 2.3578906329348683,
+          "bytes": 274432,
+          "sha256": "3bebcbdfaa57338813495872215b5197872633249fda4777b05100719528a2ab"
+        },
+        {
+          "seed": 3,
+          "finish": "stop",
+          "audio_seconds": 4.133151927437642,
+          "render_seconds": 3.0144398738630116,
+          "bytes": 364544,
+          "sha256": "d5863b676f0176e9da8b421dea3f631979bb3176f3c0ad0b5d65bfa9e6d94f49"
+        },
+        {
+          "seed": 4,
+          "finish": "stop",
+          "audio_seconds": 4.31891156462585,
+          "render_seconds": 3.1373087589163333,
+          "bytes": 380928,
+          "sha256": "1ec37c6eeeb02cc7ec7d584495bb06f3beb00a34fdb36b4f6368bcd46b1ced20"
+        },
+        {
+          "seed": 5,
+          "finish": "stop",
+          "audio_seconds": 3.1579138321995464,
+          "render_seconds": 2.3858531878795475,
+          "bytes": 278528,
+          "sha256": "8ef606945f4cfa92fe961a0e0bd7d2d5ea838ec96b8a1b1efcb5aac037dec5c9"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "This measures finish reasons, PCM byte counts and elapsed times, not intelligibility or speaker identity; no listening review was performed.",
+    "The profiles differ in engine pin, weights and guidance, so the comparison does not isolate quantization as the cause.",
+    "Only the two public reference sentences and one dialogue were sampled; no wider reliability claim.",
+    "Metal behavior and the reference Python runtime were not tested in this follow-up.",
+    "Raw requests, PCM/WAV, catalogs and logs are retained privately; this file is a neutral summary.",
+    "An earlier supervisor attempt stopped during service preparation before inference. It produced no audio samples; the diagnostic run began after restoring the services and correcting the supervisor lifetime."
+  ],
+  "follow_up": "https://github.com/plotarmordev/drama-tensorfold/issues/32",
+  "pilot_memory_guards": {
+    "admission_available_gib": 88,
+    "cgroup_limit_gib": 54,
+    "abort_available_gib": 34,
+    "unchanged": true
+  }
+}

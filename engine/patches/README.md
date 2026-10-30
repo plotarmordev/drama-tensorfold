@@ -18,6 +18,11 @@ Full-model patches 0013/0014 add [request sampling controls](../../recipe/README
 and document the existing JSON floating-point boundary. They backport
 [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) without moving the pin.
 
+Full-model patch 0015 adds [speaker-tagged dialogue](../../recipe/README-dialogue.md)
+from [TensorFold #1278](https://github.com/ashhart/TensorFold/pull/1278).
+The full pin predates the native voice writer; its Python catalog writer accepts
+the same canonical speaker IDs without adding an engine tool absent from that pin.
+
 Patch 0012 is corrected in place: it owns one reusable Metal recurrent-state snapshot per lane,
 invalidates incompatible live KV before prefill, and uses the prompt builder's exact invariant
 boundary including tower lookahead. It preserves uncached chunk cuts and CUDA execution.
@@ -38,6 +43,7 @@ It does not change the full-model series above or the CUDA NVFP4 pin.
 | [`0003-shared-cli-extension-point.patch`](../nvfp4/macos/patches/0003-shared-cli-extension-point.patch) | Group CFG flags beside voice selection without occupying shared CLI-table extension points; no parsing or numerical change | [TensorFold #1268](https://github.com/ashhart/TensorFold/pull/1268) |
 | [`0004-speech-sampling-controls.patch`](../nvfp4/macos/patches/0004-speech-sampling-controls.patch) | Request sampling parameters and exact seeds, retaining CFG rows | [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) |
 | [`0005-sampling-json-boundaries.patch`](../nvfp4/macos/patches/0005-sampling-json-boundaries.patch) | Parsed-JSON floating boundary documentation and regressions | [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) |
+| [`0006-dialogue-speakers.patch`](../nvfp4/macos/patches/0006-dialogue-speakers.patch) | Canonical speaker IDs in request/catalog transcripts and the native writer | [TensorFold #1278](https://github.com/ashhart/TensorFold/pull/1278) |
 
 The [Mac qualification receipt](../../results/macos-nvfp4.json) separates observed GPU/model results,
 the initial failed fixture and focused correction, and the final CPU-only CLI integration build.

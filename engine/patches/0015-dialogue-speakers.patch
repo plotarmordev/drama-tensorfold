@@ -1,0 +1,341 @@
+From c8463349418ddc53f6746c442db40a294b37fc0b Mon Sep 17 00:00:00 2001
+From: Mauvis Ledford <20738+krunkosaurus@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 11:47:33 +0800
+Subject: [PATCH] server: accept dialogue speaker tags zero through fifteen
+
+---
+ CHANGELOG.md                            |   2 +
+ README.md                               |   2 +-
+ docs/drama-http-voices.md               |  22 +++-
+ zig/src/families/drama3/prompt.zig      |  29 ++++++
+ zig/src/server/drama_prompt.zig         |  40 ++-----
+ zig/src/server/root.zig                 |   1 +
+ zig/src/server/speech_speakers_test.zig | 132 ++++++++++++++++++++++++
+ 7 files changed, 196 insertions(+), 32 deletions(-)
+ create mode 100644 zig/src/server/speech_speakers_test.zig
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f75699c3..32366bc1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
+ 
+ ## Unreleased
+ 
++- Drama speech accepts dialogue tags `<|speaker:0|>` through `<|speaker:15|>` in whole and streamed HTTP requests and catalog reference transcripts. Untagged text still uses speaker 0, and catalogs still allow at most four reference passages. See [dialogue speakers](docs/drama-http-voices.md#dialogue-speakers).
++
+ - Drama speech requests accept `temperature`, `top_p`, `top_k` (1 through 64) and exact unsigned 64-bit `seed` values. Whole replies, streams, catalog voices and redraws retain the requested settings; omitted or null fields keep the existing defaults. Explicit seeds advance by the attempt number for redraws. See [speech sampling](docs/speech-sampling.md).
+ 
+ - Combined silence onset and mid settings append their clauses to the base startup sentence in onset-then-mid order; the mid clause includes its required voiced minimum.
+diff --git a/README.md b/README.md
+index ad7633de..6ef24f11 100644
+--- a/README.md
++++ b/README.md
+@@ -136,7 +136,7 @@ Conversions are explicitly marked: their upstream weights need the linked conver
+ | Step-5-Preview, converted affine | `hf download stepfun-ai/Step-5-Preview --local-dir ~/models/step5-preview-fp8` | One 256 GB Mac; text 166.9 GiB, MTP adds 2.5 GiB and vision 3.7 GiB. | [Convert and serve](docs/recipes/step-5-preview.md). The documented 256 GB setup serves converted affine weights; converting the upstream FP8 download needs Python and mlx. |
+ | Kolibri-1, block FP8 (research) | `tensorfold pull Aleph-Alpha/Kolibri-1@e52eb4627d11516b0c01de49210ab5a4e4061444` | One NVIDIA GPU; GB10 measured; 74 GB checkpoint. | [Kolibri](docs/recipes/kolibri-1.md). Text only; copy drafts, no EAGLE-3/neural drafter. |
+ | Liquid AI d1-3B, decisions | Not documented yet. | Native CUDA; RAM minimum not published. | [API section below](#serve-flags). `/v1/systemone` and `/v1/decisions`. |
+-| Fish Audio Drama 3, speech | Not documented yet. | Native Metal or CUDA; GB10 measured. | [Release audio instructions](CHANGELOG.md#110). `/v1/audio/speech` with [sampling controls](docs/speech-sampling.md); checkpoint and `codec.pth` required. |
++| Fish Audio Drama 3, speech | Not documented yet. | Native Metal or CUDA; GB10 measured. | [Release audio instructions](CHANGELOG.md#110), [reference voices and dialogue speakers](docs/drama-http-voices.md). `/v1/audio/speech` with [sampling controls](docs/speech-sampling.md); checkpoint and `codec.pth` required. |
+ 
+ ### GLM-5.3: one machine or two?
+ 
+diff --git a/docs/drama-http-voices.md b/docs/drama-http-voices.md
+index 785479df..b0b052ee 100644
+--- a/docs/drama-http-voices.md
++++ b/docs/drama-http-voices.md
+@@ -20,4 +20,24 @@ The mandatory `source.kind` is `synthetic` (generated audio), `self` (the operat
+ 
+ Reference `text` is the exact transcript. Codes are frame-major signed integers, with the semantic code first and residual codebooks following, in the same order as upstream `drama3-generate --encode` emits. Encode a synthetic reference through upstream's codec using `--codec`, `--ref-audio` and `--encode`; decode its native signed integer binary output into frame rows when preparing the JSON. This PR does not provide voice-file writer tooling or an encoder implementation. Do not substitute codes from an unrelated codec.
+ 
+-The loader enforces the family's reference count, transcript length, frame count and codebook ranges before serving. It also rejects empty references, structural prompt tokens, unsupported speaker tags, oversized files and oversized catalogs. The assembled prompt must still fit the engine's advertised prompt budget. Reference rows go through the same family `prompt.build` used by the generation CLI; only the tokenizer interface is adapted.
++The loader enforces the family's reference count, transcript length, frame count and codebook ranges before serving. It also rejects empty references, structural prompt tokens, malformed speaker tags, oversized files and oversized catalogs. The assembled prompt must still fit the engine's advertised prompt budget. Reference rows go through the same family `prompt.build` used by the generation CLI; only the tokenizer interface is adapted.
++
++## Dialogue speakers
++
++Speech input and reference transcripts accept `<|speaker:N|>` with decimal IDs from `0` through `15`. Tags can change speakers within one request. Untagged text defaults to speaker 0; a leading tag after Unicode whitespace is preserved. Leading zeros, negative IDs, non-ASCII digits, incomplete tags and IDs above 15 are rejected.
++
++For example, send this body to `POST /v1/audio/speech` with your served model name:
++
++```json
++{
++  "model": "MODEL",
++  "input": "<|speaker:0|> Is the gate open? <|speaker:15|> Yes, come through. <|speaker:0|> Thank you.",
++  "response_format": "wav"
++}
++```
++
++For streamed audio, set `"stream": true` and `"response_format": "pcm"`. To condition speakers on reference audio, create a catalog entry whose reference transcripts have matching tags, such as `<|speaker:0|> First reference transcript.` and `<|speaker:15|> Second reference transcript.`, then select its name with `"voice": "conversation"`. The HTTP `speaker` field remains an alias for that catalog name; dialogue speaker IDs belong in the text tags.
++
++One catalog entry still accepts at most **four reference passages**, even though there are sixteen valid speaker IDs. Each passage keeps its own transcript and code rows. Reusing a catalog entry preserves its exact reference prefix; changing a reference speaker tag changes that prefix. Speaker tags specify the prompt's roles; this does not guarantee distinguishable voices without suitable references or establish voice similarity.
++
++The public [Drama 3 MLX prompt implementation](https://github.com/Sogni-AI/drama3-mlx/blob/ecc235039ccd5f982f66a6982184f57432354ab4/drama3_mlx/prompt.py) provides a behavior reference for these speaker markers. TensorFold uses its existing native prompt builder.
+diff --git a/zig/src/families/drama3/prompt.zig b/zig/src/families/drama3/prompt.zig
+index e9e40b6c..0f069788 100644
+--- a/zig/src/families/drama3/prompt.zig
++++ b/zig/src/families/drama3/prompt.zig
+@@ -226,3 +226,32 @@ test "reference cache: last reference code and equal-length changed tower lookah
+     first.frames[saved_rows][0] += 1;
+     try t.expect(!try prefix.begin(t.allocator, first.frames, saved_rows));
+ }
++
++test "reference cache: a reference speaker change misses while request speaker changes reuse the prefix" {
++    const t = std.testing;
++    const cache = @import("reference_cache.zig");
++    var prefix: cache.Prefix = .{};
++    defer prefix.deinit(t.allocator);
++    const codes = [_][cfg.codebooks]i32{@splat(1)};
++    var refs = [_]Reference{
++        .{ .transcript = "<|speaker:1|> First.", .codes = &codes },
++        .{ .transcript = "<|speaker:15|> Second.", .codes = &codes },
++    };
++    const first = try build(t.allocator, ByteTokenizer{}, "<|speaker:1|> One.", &refs);
++    defer t.allocator.free(first.frames);
++    const saved_rows = cache.prefillRows(first.frames.len, first.reference_rows, 1);
++    try t.expect(!try prefix.begin(t.allocator, first.frames, saved_rows));
++    prefix.saved();
++
++    const request = try build(t.allocator, ByteTokenizer{}, "<|speaker:15|> Two. <|speaker:1|> Three.", &refs);
++    defer t.allocator.free(request.frames);
++    try t.expectEqual(first.reference_rows, request.reference_rows);
++    try t.expect(try prefix.begin(t.allocator, request.frames, saved_rows));
++
++    refs[0].transcript = "<|speaker:2|> First.";
++    const changed = try build(t.allocator, ByteTokenizer{}, "<|speaker:1|> One.", &refs);
++    defer t.allocator.free(changed.frames);
++    try t.expectEqual(first.frames.len, changed.frames.len);
++    try t.expectEqual(first.reference_rows, changed.reference_rows);
++    try t.expect(!try prefix.begin(t.allocator, changed.frames, saved_rows));
++}
+diff --git a/zig/src/server/drama_prompt.zig b/zig/src/server/drama_prompt.zig
+index 3e466c86..ea526873 100644
+--- a/zig/src/server/drama_prompt.zig
++++ b/zig/src/server/drama_prompt.zig
+@@ -63,36 +63,13 @@ fn speakerId(digits: []const u8) ?u8 {
+     return if (n <= max_speaker_id) n else null;
+ }
+ 
+-/// Why input cannot be spoken, in the reference's words and order, or null.
++/// Why input cannot be spoken; canonical speaker tags 0..15 are accepted in requests and references.
+ pub fn problem(a: Allocator, input: []const u8) Allocator.Error!?[]const u8 {
+-    // speech_request.py: well-formed tags naming a speaker other than 0 (malformed ones are the builder's)
+-    var others: u16 = 0;
+-    var at: usize = 0;
+-    while (std.mem.indexOfPos(u8, input, at, "<|speaker:")) |start| {
+-        if (tagAt(input, start)) |tag| {
+-            if (speakerId(tag.digits)) |n| if (n != 0) {
+-                others |= @as(u16, 1) << @intCast(n);
+-            };
+-            at = tag.end;
+-        } else at = start + 1;
+-    }
+-    if (others != 0) {
+-        var list: std.ArrayList(u8) = .empty;
+-        try list.appendSlice(a, error_prefix ++ " only speaker 0 is supported; got speaker tags [");
+-        var first = true;
+-        for (1..max_speaker_id + 1) |n| if (others & (@as(u16, 1) << @intCast(n)) != 0) {
+-            if (!first) try list.appendSlice(a, ", ");
+-            try list.print(a, "{d}", .{n});
+-            first = false;
+-        };
+-        try list.append(a, ']');
+-        return list.items;
+-    }
+     // prompt.py's validate_caller_text(text, "input")
+     if (trimStart(input).len == 0) return error_prefix ++ " input: text must not be empty";
+     for (structural_tokens) |token| if (std.mem.indexOf(u8, input, token) != null)
+         return try std.fmt.allocPrint(a, error_prefix ++ " input: {s} is written by the prompt builder and must not appear in caller text", .{token});
+-    at = 0;
++    var at: usize = 0;
+     while (std.mem.indexOfPos(u8, input, at, "<|speaker")) |start| {
+         const tag = tagAt(input, start);
+         if (tag == null or speakerId(tag.?.digits) == null)
+@@ -137,6 +114,7 @@ test "speaker 0 tags untagged text; a leading tag after white space is kept" {
+         .{ "\n<|speaker:0|> hi", "\n<|speaker:0|> hi" },
+         .{ "\u{3000}<|speaker:0|> hi", "\u{3000}<|speaker:0|> hi" },
+         .{ "a <|speaker:0|> b", "<|speaker:0|> a <|speaker:0|> b" },
++        .{ "a <|speaker:15|> b", "<|speaker:0|> a <|speaker:15|> b" },
+         .{ "\x1c<|speaker:0|> hi", "<|speaker:0|> \x1c<|speaker:0|> hi" },
+         .{ "\x1f", "<|speaker:0|> \x1f" },
+     };
+@@ -144,20 +122,22 @@ test "speaker 0 tags untagged text; a leading tag after white space is kept" {
+         try std.testing.expect(try problem(a, c[0]) == null);
+         try std.testing.expectEqualStrings(c[1], try tagged(a, c[0]));
+     }
++    for (0..16) |id| {
++        const dialogue = try std.fmt.allocPrint(a, "\u{3000}<|speaker:{d}|> First. <|speaker:0|> Reply.", .{id});
++        try std.testing.expect(try problem(a, dialogue) == null);
++        try std.testing.expectEqualStrings(dialogue, try tagged(a, dialogue));
++    }
+ }
+ 
+-test "input the reference refuses" {
++test "empty input, malformed speaker tags and structural tokens are refused" {
+     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+     defer arena.deinit();
+     const a = arena.allocator();
+-    const malformed = [_][]const u8{ "<|speaker:99|> x", "<|speaker:16|> x", "a <|speaker:99|> b", "<|speaker:01|> x", "<|speaker:00|> x", "<|speaker:|> x", "<|speaker0|> x", "hi <|speaker", "<|speaker:abc|> x", "<|speaker:0> x", "  <|speaker:abc|> hi" };
++    const malformed = [_][]const u8{ "<|speaker:99|> x", "<|speaker:16|> x", "a <|speaker:99|> b", "<|speaker:01|> x", "<|speaker:00|> x", "<|speaker:|> x", "<|speaker0|> x", "hi <|speaker", "<|speaker:abc|> x", "<|speaker:0> x", "  <|speaker:abc|> hi", "<|speaker:2|> x <|speaker:01|>" };
+     for (malformed) |text| {
+         const message = (try problem(a, text)) orelse return error.TestUnexpectedResult;
+         try std.testing.expect(std.mem.startsWith(u8, message, "Drama 3 request: input: speaker tags must be written <|speaker:N|> with N in 0..15 and no leading zero; got "));
+     }
+-    try std.testing.expectEqualStrings("Drama 3 request: only speaker 0 is supported; got speaker tags [1, 15]", (try problem(a, "<|speaker:15|> a <|speaker:1|> b <|speaker:1|> c <|speaker:0|> d")).?);
+-    // other speakers are refused before malformed tags, as speech_request.py checks them first
+-    try std.testing.expectEqualStrings("Drama 3 request: only speaker 0 is supported; got speaker tags [2]", (try problem(a, "<|speaker:2|> x <|speaker:01|>")).?);
+     for ([_][]const u8{ "", " ", "\u{3000}\u{2028}\t" }) |blank|
+         try std.testing.expectEqualStrings("Drama 3 request: input: text must not be empty", (try problem(a, blank)).?);
+     for (structural_tokens) |token| {
+diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
+index 94097cac..b4dbdec6 100644
+--- a/zig/src/server/root.zig
++++ b/zig/src/server/root.zig
+@@ -43,6 +43,7 @@ test {
+     _ = @import("status_routes.zig");
+     _ = @import("speech.zig");
+     _ = @import("speech_stream_test.zig");
++    _ = @import("speech_speakers_test.zig");
+     _ = @import("speech_sampling_test.zig");
+     _ = @import("speech_redraw.zig");
+     _ = @import("speech_redraw_test.zig");
+diff --git a/zig/src/server/speech_speakers_test.zig b/zig/src/server/speech_speakers_test.zig
+new file mode 100644
+index 00000000..f39d5d20
+--- /dev/null
++++ b/zig/src/server/speech_speakers_test.zig
+@@ -0,0 +1,132 @@
++//! Speaker tags through catalog loading and HTTP lowering, checked against independently spelled prompt rows.
++const std = @import("std");
++const voice = @import("drama_voice.zig");
++const json = @import("json");
++const wire = @import("speech_stream_test.zig");
++
++const dialogue = "\u{3000}<|speaker:15|> Wait for me. <|speaker:0|> I will. <|speaker:15|> Thanks.";
++const catalog =
++    \\{"format":"drama3-http-voice/1","source":{"kind":"synthetic","note":"Generated parser fixtures."},
++    \\"references":[{"text":"A small cloud passes.","codes":[[7,1,2,3,4,5,6,7,8,9]]},
++    \\{"text":"\u3000<|speaker:15|> Rain taps.","codes":[[17,9,8,7,6,5,4,3,2,1]]}]}
++;
++const malformed = [_][]const u8{
++    "<|speaker:15|> Fine. <|speaker:16|> Outside.",
++    "<|speaker:1|> Fine. <|speaker:01|> Leading zero.",
++    "<|speaker:-1|> Negative.",
++    "<|speaker:\u{661}|> Non-ASCII digit.",
++    "<|speaker:999999999999999999999|> Overflow.",
++    "<|speaker:15|> Partial <|speaker:",
++    "<|speaker:15|> Inject <|im_end|>",
++    "<|speaker:15|> Inject <|semantic:1|>",
++};
++
++fn appendText(a: std.mem.Allocator, rows: *std.ArrayList([11]i32), text: []const u8) !void {
++    for (text) |byte| {
++        var row: [11]i32 = @splat(0);
++        row[0] = byte;
++        try rows.append(a, row);
++    }
++}
++
++const Expected = struct { rows: []const [11]i32, reference_rows: u32 };
++
++fn expected(a: std.mem.Allocator, references: bool) !Expected {
++    var rows: std.ArrayList([11]i32) = .empty;
++    if (references) {
++        try appendText(a, &rows, "<|im_start|>system\nconvert the provided text to speech reference to the following:" ++
++            "\n\n[Reference 1]\nText: <|speaker:0|> A small cloud passes.\nSpeech: ");
++        try rows.append(a, .{ 1007, 7, 1, 2, 3, 4, 5, 6, 7, 8, 9 });
++        try appendText(a, &rows, "\n\n[Reference 2]\nText: <|speaker:15|>\u{3000} Rain taps.\nSpeech: ");
++        try rows.append(a, .{ 1017, 17, 9, 8, 7, 6, 5, 4, 3, 2, 1 });
++        try appendText(a, &rows, "<|im_end|>\n<|im_start|>user\n");
++    } else try appendText(a, &rows, "<|im_start|>system\nconvert the provided text to speech<|im_end|>\n<|im_start|>user\n");
++    const boundary: u32 = if (references) @intCast(rows.items.len) else 0;
++    try appendText(a, &rows, dialogue ++ "<|im_end|>\n<|im_start|>assistant\n<|voice|>");
++    return .{ .rows = rows.items, .reference_rows = boundary };
++}
++
++test "speakers: whole and streamed HTTP preserve dialogue, catalog tags and exact code rows" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    for ([_]bool{ false, true }) |references| {
++        const voices = [_]voice.Voice{.{ .name = "duo", .references = if (references) try voice.parse(a, catalog) else &.{} }};
++        const want = try expected(a, references);
++        for ([_]bool{ false, true }) |stream| {
++            var script: wire.Script = .{ .steps = &.{wire.frame}, .voices = &voices, .expected_rows = want.rows, .inline_ = true };
++            const request = try std.json.Stringify.valueAlloc(a, .{
++                .model = "m",
++                .input = dialogue,
++                .voice = if (references) "duo" else "default",
++                .response_format = "pcm",
++                .stream = stream,
++            }, .{});
++            var s: wire.Served = undefined;
++            try s.open(&script, .{ .served_name = "m", .model_ids = &.{"m"} }, "", "HTTP/1.1", request, 2000);
++            defer s.deinit();
++            const head = try a.dupe(u8, try s.readHead());
++            const rest = try s.readRest();
++            s.join(&script);
++            try wire.expectHeader(head, " 200 ");
++            try std.testing.expectEqual(@as(usize, 1), script.takes);
++            try std.testing.expect(script.rows_equal);
++            try std.testing.expectEqual(want.reference_rows, script.reference_rows[0]);
++            const pcm = if (stream) blk: {
++                try wire.expectHeader(head, "Transfer-Encoding: chunked\r\n");
++                try std.testing.expect(std.mem.startsWith(u8, rest, "1000\r\n"));
++                try std.testing.expect(std.mem.endsWith(u8, rest, "\r\n0\r\n\r\n"));
++                break :blk rest["1000\r\n".len .. rest.len - "\r\n0\r\n\r\n".len];
++            } else blk: {
++                try wire.expectHeader(head, "Content-Length: 4096\r\n");
++                break :blk rest;
++            };
++            try std.testing.expectEqual(@as(usize, wire.frame * 2), pcm.len);
++            for (pcm, 0..) |byte, i| try std.testing.expectEqual(@as(u8, if (i % 2 == 0) 0xff else 0x3f), byte);
++        }
++    }
++}
++
++test "speakers: catalog accepts every canonical ID and refuses malformed or structural tags" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const doc = (try json.parse(a, catalog)).ok;
++    const reference = doc.get("references").?.array[1].object;
++    for (0..16) |id| {
++        const text = try std.fmt.allocPrint(a, "\u{3000}<|speaker:{d}|> Rain taps.", .{id});
++        try reference.put(a, "text", .{ .string = text });
++        const refs = try voice.parse(a, try json.stringify(a, doc, .{}));
++        try std.testing.expectEqualStrings(text, refs[1].transcript);
++        try std.testing.expectEqualSlices(i32, &.{ 17, 9, 8, 7, 6, 5, 4, 3, 2, 1 }, &refs[1].codes[0]);
++    }
++    for (malformed) |text| {
++        try reference.put(a, "text", .{ .string = text });
++        try std.testing.expectError(error.BadVoice, voice.parse(a, try json.stringify(a, doc, .{})));
++    }
++}
++
++test "speakers: malformed dialogue refuses before engine submission with default or catalog voice" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const voices = [_]voice.Voice{.{ .name = "duo", .references = try voice.parse(a, catalog) }};
++    for ([_][]const u8{ "default", "duo" }) |name| for (malformed) |input| {
++        var script: wire.Script = .{ .steps = &.{wire.frame}, .voices = &voices, .inline_ = true };
++        const request = try std.json.Stringify.valueAlloc(a, .{
++            .model = "m",
++            .input = input,
++            .voice = name,
++            .response_format = "pcm",
++            .stream = true,
++        }, .{});
++        var s: wire.Served = undefined;
++        try s.open(&script, .{ .served_name = "m", .model_ids = &.{"m"} }, "", "HTTP/1.1", request, 2000);
++        defer s.deinit();
++        const head = try a.dupe(u8, try s.readHead());
++        _ = try s.readRest();
++        s.join(&script);
++        try wire.expectHeader(head, " 400 ");
++        try std.testing.expectEqual(@as(usize, 0), script.takes);
++    };
++}
+-- 
+2.46.0
+

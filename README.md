@@ -131,6 +131,10 @@ as codec codes (not audio). The Mac NVFP4 engine instead uses attested `drama3-h
 catalogs and refuses request-supplied references; see the [Mac voice commands](recipe/README-macos.md#attested-reference-voices).
 Guidance-enabled replies carry the configured γ in `X-Cfg-Gamma`; builtin voices remain unguided.
 
+Request text and reference transcripts accept canonical speaker tags 0 through 15.
+See [speaker-tagged dialogue](recipe/README-dialogue.md) for catalog examples,
+profile-specific reference limits and legacy long-form speaker continuation.
+
 - **Whole reply:** `Content-Length` framing and an `X-Finish-Reason` header: `stop`, `length` or, with the silence
   guard on, `silence`.
 - **Streamed reply:** chunked mono 16-bit 44.1 kHz PCM. A reply that ends in `length` or `silence` ends with an
@@ -184,6 +188,7 @@ apply in order; each one's notes are in the engine tree's `CHANGELOG.md` or `doc
 | 0012 | One bounded reference-prefix snapshot per Metal lane, with exact identity and safe invalidation | none (automatic) | [#1237](https://github.com/ashhart/TensorFold/pull/1237) |
 | 0013 | Request-local speech sampling and exact integer seeds | HTTP `temperature`, `top_p`, `top_k`, `seed` | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
 | 0014 | Parsed-JSON floating boundary documentation and regressions | none (tests/docs) | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
+| 0015 | Canonical speaker tags 0..15 in speech and catalog transcripts | speaker tags in text | [#1278](https://github.com/ashhart/TensorFold/pull/1278) |
 
 `drama3-voice`, a tool that writes attested voice files for `--voices`, is proposed upstream in
 [#1153](https://github.com/ashhart/TensorFold/pull/1153); it is not part of this series.

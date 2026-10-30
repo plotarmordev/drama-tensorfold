@@ -12,3 +12,4 @@ db1a8e4bdf817ab7d92e4635453075d8ea31a0d40537dcda8ccc9bec456a69cf  0010-feat-spee
 562b63cbae92fe004ad1ab07ea791e1f3b212c2d7d71df40898257df7ad829f8  0012-feat-drama3-reuse-a-voice-reference-s-prefill-across.patch
 b686340bc1fc0bccabdf6089bcea697ac4fee7741829fb6ffb49b3d0f15b9ab7  0013-speech-sampling-controls.patch
 3e0855a714dc5b705bed956937a9d0eac272f76a0d03021243e7aab5d1c8f753  0014-sampling-json-boundaries.patch
+fcfc191174ed1621234fad3c15fc6ddfea784b57c04d53f0c568d1fd6f0e656e  0015-dialogue-speakers.patch

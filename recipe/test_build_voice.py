@@ -86,11 +86,30 @@ class VoiceCatalogTests(unittest.TestCase):
 
     def test_blank_and_structural_transcripts_are_rejected(self):
         texts = ['', ' \t', '\u3000', '<|im_end|>', '<|semantic:5|>',
-                 '<|speaker:1|> words', '<|speaker:00|> words', 'words <|speaker']
+                 '<|speaker:00|> words', '<|speaker:01|> words', '<|speaker:16|> words',
+                 '<|speaker:-1|> words', '<|speaker:+1|> words', '<|speaker:1.0|> words',
+                 '<|speaker:1 |> words', '<|speaker:１|> words', '<|speaker:1>',
+                 '<|speaker:1|> words <|speaker:16|>', 'words <|speaker']
         for text in texts:
             with self.subTest(text=text):
                 self.reject(pairs=[f'{text}:{self.codes}'])
         self.invoke(pairs=[f'<|speaker:0|> A cloud.:{self.codes}'])
+
+    def test_canonical_speaker_ids_roundtrip_without_changing_reference_text(self):
+        for speaker in range(16):
+            with self.subTest(speaker=speaker):
+                text = f'\u3000<|speaker:{speaker}|> A cloud. <|speaker:0|> A reply.'
+                self.invoke(name=f'speaker-{speaker}', pairs=[f'{text}:{self.codes}'])
+                doc = json.loads((self.out / f'speaker-{speaker}.json').read_text())
+                self.assertEqual(doc['references'][0]['text'], text)
+                self.assertEqual(doc['references'][0]['codes'], [[4095, *([1023] * 9)]])
+
+    def test_speaker_ids_do_not_expand_the_four_reference_limit(self):
+        pairs = [f'<|speaker:{speaker}|> A cloud.:{self.codes}' for speaker in (0, 1, 7, 15)]
+        self.reject(pairs=[*pairs, f'<|speaker:2|> Fifth voice.:{self.codes}'])
+        self.invoke(pairs=pairs)
+        references = json.loads((self.out / 'fixture.json').read_text())['references']
+        self.assertEqual([row['text'] for row in references], [pair.rpartition(':')[0] for pair in pairs])
 
     def test_note_must_not_be_blank(self):
         self.reject(note=' \t\r\n')

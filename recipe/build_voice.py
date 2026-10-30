@@ -42,8 +42,8 @@ def checked_text(value: str, label: str, transcript: bool = False) -> str:
         if any(token in value for token in STRUCTURAL_TOKENS):
             raise ValueError(f'{label}: transcript contains a structural prompt token')
         for match in re.finditer(r'<\|speaker', value):
-            if not value.startswith('<|speaker:0|>', match.start()):
-                raise ValueError(f'{label}: only well-formed <|speaker:0|> tags are supported')
+            if not re.match(r'<\|speaker:(?:[0-9]|1[0-5])\|>', value[match.start():]):
+                raise ValueError(f'{label}: expected a canonical speaker tag from <|speaker:0|> through <|speaker:15|>')
     return value
 
 

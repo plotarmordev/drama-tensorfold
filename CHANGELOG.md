@@ -22,6 +22,10 @@
 
 ### Added
 
+- Canonical speaker tags 0..15 in HTTP speech requests and reference transcripts,
+  including native/Python catalog writers. Legacy CUDA long-form continuations
+  retain the active speaker across splits and redraws; reference-count and malformed-tag
+  validation remain enforced. No voice-quality claim is made.
 - Per-request HTTP speech `temperature`, `top_p`, `top_k` and exact unsigned 64-bit
   `seed` on all pinned profiles, with strict validation and propagation through
   streaming, references and redraws. Omitted/null values retain existing defaults.

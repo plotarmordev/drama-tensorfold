@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -u
-# Repair round r2 (run-1 recovery) launches this script as unit gpu-checks-diag-r2 with
-# --out-dir "$W/out-diag-r2"; see README 'Repair round r2'. Run-1 out-diag/ holds a summary and is refused.
+# Every run takes a fresh --out-dir (default out-diag/); an existing output path is refused unchanged.
 here=$(cd "$(dirname "$0")" && pwd)
 if [[ ${1:-} == --plan ]]; then
   exec python3 "$here/runner.py" --diag --plan
@@ -17,7 +16,7 @@ trap '"$here/resume-paused.sh"' EXIT
 python3 "$here/runner.py" --diag "$@"
 rc=$?
 # 75 = memory WAIT (launch preflight or a later full-profile admission): INCONCLUSIVE summary written, no further
-# pilot launched, not a unit failure. Every other code (corpus/hash/harness/code failure, 143) passes through.
+# pilot launched, not a unit failure. Every other code (hash/harness/code failure, 143) passes through.
 if [[ $rc == 75 ]]; then
   echo "diag refused on memory WAIT (see summary); exiting cleanly" >&2
   exit 0

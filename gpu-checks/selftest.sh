@@ -17,7 +17,6 @@ if systemctl --user show -p LoadState --value gpuchk-selftest-sleep | grep -qx l
   exit 1
 fi
 python3 "$here/runner.py" --patch-selftest
-python3 "$here/runner.py" --segments-selftest
 python3 "$here/runner.py" --diag-selftest
 # run-diag.sh exit mapping, through isolated shims (no runner, no units): 75 -> 0, other codes kept.
 shim=$(mktemp -d)

@@ -48,9 +48,10 @@ def _setting(name):
 DEVICE_HOST = _setting('GPU_CHECK_HOST')
 LOCK = Path(_setting('GPU_CHECK_LOCK'))
 PILOT_ROOT = Path(_setting('GPU_CHECK_PILOT_ROOT'))
-CHECKPOINTS = {'full': PILOT_ROOT / 'checkpoint', 'nvfp4': Path(_setting('GPU_CHECK_NVFP4_CHECKPOINT'))}
+# Only the full model is served; the NVFP4 builds are compared by source tree, never loaded.
+CHECKPOINTS = {'full': PILOT_ROOT / 'checkpoint'}
 ZIG = Path(_setting('GPU_CHECK_ZIG'))
-# The pilot's Whisper code directory (transcribe.py), read-only; D4 only.
+# The pilot's Whisper code directory (transcribe.py), read-only; diagnostic D2 only.
 ASR_DIR = Path(_setting('GPU_CHECK_ASR_DIR'))
 NVCC = os.environ.get('GPU_CHECK_NVCC') or '/usr/local/cuda/bin/nvcc'
 LIB = PILOT_ROOT / 'venv/lib/python3.12/site-packages/nvidia/cu13/lib'
@@ -59,7 +60,7 @@ LIB = PILOT_ROOT / 'venv/lib/python3.12/site-packages/nvidia/cu13/lib'
 PAUSE_ALLOW = (os.environ.get('GPU_CHECK_PAUSE_ALLOW') or '').split()
 # A GPU process listening on this port (an owner-designated service) is tolerated at admission; unset tolerates none.
 TOLERATED_PORT = os.environ.get('GPU_CHECK_TOLERATED_PORT')
-REQUIRED_SETTINGS = ('GPU_CHECK_HOST', 'GPU_CHECK_LOCK', 'GPU_CHECK_PILOT_ROOT', 'GPU_CHECK_NVFP4_CHECKPOINT', 'GPU_CHECK_ZIG') + (('GPU_CHECK_ASR_DIR',) if DIAG else ())
+REQUIRED_SETTINGS = ('GPU_CHECK_HOST', 'GPU_CHECK_LOCK', 'GPU_CHECK_PILOT_ROOT', 'GPU_CHECK_ZIG') + (('GPU_CHECK_ASR_DIR',) if DIAG else ())
 
 
 def device_preflight():
@@ -71,54 +72,41 @@ def device_preflight():
         raise RuntimeError(f'device runner is restricted to GPU_CHECK_HOST ({DEVICE_HOST})')
 
 
-# A: the old full-model pin plus its patch series. B: PR #33's TensorFold v1.1.9 tree (a commit cannot name its own
-# SHA, so B is the parent commit whose runner and build rules match this one).
-SHAS = {'A': 'a7752b4591da9b33bf6e7f8f2b478a638bc64bd1', 'B': '3f44de621379bbe20f1ae6599a26465edf9dcbce'}
+# PR #33 A/B. A: main f68738ea, the old full-model pin d1018b31 plus patches 0001-0015 and the CUDA NVFP4 series.
+# B: PR #33's TensorFold v1.1.9 tree (a commit cannot name its own SHA, so B is the commit whose runner and build
+# rules match this one). A and B carry the same NVFP4 engine, so only the full model is compared.
+SHAS = {'A': 'f68738ea91de74dcf8bb698a26df44b5cf078396', 'B': '3f44de621379bbe20f1ae6599a26465edf9dcbce'}
 # Linux patch series per (tree, profile) build contract; None means unpatched by contract. B's full model is the
 # empty v1.1.9 series; scripts/build-engine.sh in that tree still checks its manifest at build time.
-PATCH_DIRS = {('A', 'full'): 'engine/patches', ('A', 'nvfp4'): None, ('B', 'full'): None, ('B', 'nvfp4'): 'engine/nvfp4/patches'}
+PATCH_DIRS = {('A', 'full'): 'engine/patches', ('A', 'nvfp4'): 'engine/nvfp4/patches',
+              ('B', 'full'): None, ('B', 'nvfp4'): 'engine/nvfp4/patches'}
+NVFP4_NOTE = ('NVFP4: A and B pin the same engine/nvfp4 sources (UPSTREAM and patch series), so both NVFP4 builds are '
+              'made only to prove their patched source trees identical; no NVFP4 A/B check runs.')
 BASE = 'http://127.0.0.1:18795'
 TEXT = 'The train leaves at seven fifteen. Please bring the blue notebook.'
 REFS = ['The small boat crossed the lake.', 'A bright bird landed near the window.']
-MARKUP = ('<whisper>The evening train is nearly here. Please keep this quiet.</whisper> '
-          '[laughs] We brought the blue notebook. ¶ 天空很蓝，火车到了。 ' * 6)[:600]
-# End the fixture outside a protected span rather than truncating a tag.
-MARKUP = MARKUP[:MARKUP.rfind('。') + 1]
-MARKUP += ' ' + ('The next train arrives soon. ' * 30)[:600 - len(MARKUP) - 1]
-SPEECH = ('We are waiting by the old station. ' * 20)[:400]
 DIALOGUE = '<|speaker:1|> Is the train here? <|speaker:15|> It arrives at seven fifteen.'
-G4_TEXT = f'<|speaker:1|> {SPEECH} <|speaker:2|> {SPEECH}'
-CORPUS = W / 'bench/corpus/drama-bench-en-v1.jsonl'
-# The device host receives the corpus only through sync-to-device.sh; the preflight compares this pinned hash.
-CORPUS_SHA256 = 'b8995194915f75ffa8860eaca5fc75821d30d209db907d80a07af946ebf59d3b'
 # pilot.py's own full-profile admission floor, mirrored instead of discovered by a failed launch; never lowered.
 PILOT_ADMISSION_FLOOR = 88 * 2**30
-LONG_FORM = ['--long-form', '--long-form-chars', '120']
 PILOT = {'log': None}
 BUILDS = {}
 REUSE = {}
-D1REC = {'trees': {}}
+NVFP4_IDENTITY = {}
+D1REC = {}
 D2REC = {}
-D3REC = {}
-D4REC = {}
 DIAG_DEVIATIONS = [
-    'The full-profile engine (upstream d1018b3 series) has no long-form mode: those trees hold no speech_long.zig and their CLI refuses --long-form, so D1 runs on the NVFP4 family (both trees); the binaries\' own refusals are recorded in d1.full_profile.',
-    'No corpus item is 600-900 characters (the largest is 313), so D1\'s three corpus paragraphs are consecutive items of bench/corpus/drama-bench-en-v1.jsonl joined verbatim with single spaces until the band is reached; file and item ids are recorded.',
-    'The server records one whole-reply long_form line (speech_long.zig finish) and no per-segment prompts: every segment before the last ends in stop by the upstream rule `if (r.reason != .stop) break;`, and D2\'s speaker carry is verified by the CPU probe on the candidate\'s actual cuts.',
-    'D4 transcribes through the pilot\'s Whisper code (GPU_CHECK_ASR_DIR transcribe.py, read-only, its own venv) and computes WER locally; run-2 wavs under out/ are read, never written.',
-    'D3\'s five baseline attempts are unseeded because tree A rejects the seed field.',
-    'The runner exits non-zero only on infrastructure errors; every diagnostic observation (early stop, carry failure, WER flag) is recorded, never fatal.',
-    'The corpus preflight (pinned sha256) gates the diagnostic run before any build, unit pause, GPU lock or pilot; a missing or mismatched file is an infrastructure failure that writes an INCONCLUSIVE summary and exits non-zero.',
+    'Both trees take the same seeded, catalog-voice dialogue requests (tagged and untagged, seeds 1-5): main already carries request seeds and speaker tags (patches 0013-0015), so D1 compares like for like.',
+    'D2 transcribes D1\'s replies through the pilot\'s Whisper code (GPU_CHECK_ASR_DIR transcribe.py, read-only, its own venv) and computes WER locally.',
+    'The runner exits non-zero only on infrastructure errors; every diagnostic observation (frame cap, WER flag) is recorded, never fatal.',
     'Full-profile pilots launch only at or above the 88 GiB MemAvailable floor; below it the check records WAIT/INCONCLUSIVE without launching, without holding the GPU lock and without pausing or killing any scoring process.',
-    'A complete verdict requires every D1-D4 check PASS plus actual A and B observations; any failed, WAITed or missing check renders the whole run INCONCLUSIVE, never a comparative phrase or PASS.',
-    'Retained builds are reused only when a recorded manifest (--build-manifest, or root/build-manifest.json written by each run) verifies the engine head and both binary sha256s; --diag-resume re-executes only the missing D1-D4 checks into a fresh --out-dir.',
+    'A complete verdict requires D1 and D2 PASS plus valid A and B evidence; any failed, WAITed or missing check renders the whole run INCONCLUSIVE, never a frame-cap result or PASS.',
+    'Retained builds are reused only when a recorded manifest (--build-manifest, or root/build-manifest.json written by each run) verifies the engine head and both binary sha256s; --diag-resume re-executes only the missing D1-D2 checks into a fresh --out-dir.',
 ]
 COMMANDS = []
 RESULTS = []
 DEVIATIONS = [
     'ROOT is under the assigned work directory; host-local paths come from the GPU_CHECK_* environment settings.',
-    'X-Long-Form-Segments contains audio sample offsets, not text boundaries.',
-    'Text cuts outside spans and continuation-speaker carry are checked by the CPU probe only; probe compilation failure is unavailable (not verified), never a pass.',
+    NVFP4_NOTE,
     'PCM is signed 16-bit integer audio: NaN cannot be represented on the wire. Nonzero RMS is an automatic silence gate, not proof of intelligible speech.',
     'NVIDIA peak memory is unavailable; pilot host-memory samples are reported separately.',
 ]
@@ -299,7 +287,19 @@ def prep():
             command(['env', f'ZIG={ZIG}', f'NVCC={NVCC}', 'JOBS=4', 'bash', source / 'scripts/build-engine.sh', '--weights', profile, build])
             if not PLAN:
                 stamp.write_text(command(['git', 'rev-parse', 'HEAD'], cwd=build, capture=True) + '\n')
-    cpu_probe()
+    nvfp4_identity()
+
+
+def nvfp4_identity():
+    # git am stamps fresh committer dates, so the two NVFP4 build heads differ; their trees must not.
+    trees = {tree: command(['git', 'rev-parse', 'HEAD^{tree}'], cwd=builddir(tree, 'nvfp4'), capture=True) for tree in SHAS}
+    if PLAN:
+        print(f'# {NVFP4_NOTE}')
+        return
+    NVFP4_IDENTITY.update(trees=trees, identical=trees['A'] == trees['B'])
+    if not NVFP4_IDENTITY['identical']:
+        raise RuntimeError(f'A and B NVFP4 builds have different source trees: {trees}')
+    log(f'NVFP4 builds share source tree {trees["B"]}; no NVFP4 A/B check runs')
 
 
 def verify_patches(tree, profile, source):
@@ -327,17 +327,18 @@ def patch_selftest():
         (path / '0001-fixture.patch').write_text(f'fixture series for {tree} {patch}\n')
         (path / 'SHA256SUMS').write_text(hashlib.sha256((path / '0001-fixture.patch').read_bytes()).hexdigest() + '  0001-fixture.patch\n')
 
-    for tree, patch in (('A', 'engine/patches'), ('B', 'engine/nvfp4/patches')):
+    for tree, patch in (('A', 'engine/patches'), ('A', 'engine/nvfp4/patches'), ('B', 'engine/nvfp4/patches')):
         fixture(tree, patch)
     mark = len(COMMANDS)
-    verify_patches('A', 'nvfp4', base / 'A')
     verify_patches('B', 'full', base / 'B')
     if any('sha256sum' in x for x in COMMANDS[mark:]):
-        raise RuntimeError('A/nvfp4 or B/full is unpatched by contract but ran a checksum command')
-    verify_patches('B', 'nvfp4', base / 'B')
-    if not any('sha256sum' in x for x in COMMANDS[mark:]):
-        raise RuntimeError('B/nvfp4 patch series was not checksum-verified')
-    for tree, profile in (('B', 'nvfp4'), ('A', 'full')):
+        raise RuntimeError('B/full is unpatched by contract but ran a checksum command')
+    for tree, profile in (('A', 'full'), ('A', 'nvfp4'), ('B', 'nvfp4')):
+        mark = len(COMMANDS)
+        verify_patches(tree, profile, base / tree)
+        if not any('sha256sum' in x and f'/{tree}/{PATCH_DIRS[(tree, profile)]}' in x for x in COMMANDS[mark:]):
+            raise RuntimeError(f'{tree}/{profile} patch series was not checksum-verified')
+    for tree, profile in (('A', 'full'), ('A', 'nvfp4'), ('B', 'nvfp4')):
         patch = PATCH_DIRS[(tree, profile)]
         shutil.rmtree(base / tree / patch)
         try:
@@ -360,48 +361,17 @@ def patch_selftest():
     verify_patches('A', 'full', base / 'A')
     if any('sha256sum' in x for x in COMMANDS[mark:]):
         raise RuntimeError('A/full empty series ran a checksum command')
-    (base / 'B/engine/nvfp4/patches/0001-fixture.patch').unlink()
-    (base / 'B/engine/nvfp4/patches/SHA256SUMS').write_text('')
-    try:
-        verify_patches('B', 'nvfp4', base / 'B')
-    except subprocess.CalledProcessError:
-        pass
-    else:
-        raise RuntimeError('B/nvfp4 accepted an empty manifest')
+    for tree in ('A', 'B'):
+        (base / tree / 'engine/nvfp4/patches/0001-fixture.patch').unlink()
+        (base / tree / 'engine/nvfp4/patches/SHA256SUMS').write_text('')
+        try:
+            verify_patches(tree, 'nvfp4', base / tree)
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            raise RuntimeError(f'{tree}/nvfp4 accepted an empty manifest')
     shutil.rmtree(base)
     log('patch selftest PASS')
-
-
-def cpu_probe():
-    build = builddir('B', 'nvfp4')
-    target = build / 'zig/src/server/gpuchk_probe.zig'
-    argv = [ZIG, 'test', '-lc', '--test-filter', 'gpuchk',
-            '--dep', 'tokenizer', f'-Mroot={target}',
-            f'-Mtokenizer={build}/zig/src/core/tokenizer/tokenizer.zig']
-    if PLAN:
-        command(argv)
-        return
-    template = (W / 'gpu-checks/probe.zig.in').read_text()
-    # Byte escapes keep the Zig literal identical to the HTTP UTF-8 payload.
-    literal = lambda text: '"' + ''.join(f'\\x{x:02x}' for x in text.encode()) + '"'
-    source = template.replace('@MARKUP@', literal(MARKUP)).replace(
-        '@DIALOGUE@', literal(f'<|speaker:1|> {SPEECH} <|speaker:2|> {SPEECH}'))
-    report = {'status': 'unavailable (not verified)', 'start': now()}
-    try:
-        with target.open('x') as output:
-            output.write(source)
-        try:
-            report['stdout'] = command(argv, capture=True)
-            report['status'] = 'PASS'
-        except subprocess.CalledProcessError as error:
-            report['stderr'] = error.stderr
-            if 'FAIL' in (error.stderr or '') or 'tests failed' in (error.stderr or ''):
-                report['status'] = 'FAIL'
-    finally:
-        if target.exists() and target.read_text() == source:
-            target.unlink()
-        report['end'] = now()
-        save(OUT / 'cpu-probe.json', report)
 
 
 def admit_full_profile():
@@ -514,223 +484,72 @@ def request(run, label, text=TEXT, expected=200, record_only=False, **fields):
     return data, headers
 
 
-def segments(data, headers):
-    if PLAN:
-        return
-    header = headers.get('X-Long-Form-Segments', '')
-    count, sep, values = header.partition(';')
-    try:
-        count = int(count)
-    except ValueError:
-        count = None
-    if not sep or count is None or count < 1:
-        raise RuntimeError(f'invalid long-form segment count in X-Long-Form-Segments {header!r}')
-    if count == 1:
-        # The G4 outcome: a one-segment reply carries no cuts, so the check fails with its real reason.
-        raise RuntimeError(f'long-form reply spoke 1 segment, so there are no segment cuts (X-Long-Form-Segments {header!r})')
-    try:
-        offsets = [int(x) for x in values.split(',')]
-    except ValueError:
-        offsets = None
-    if offsets is None or len(offsets) != count - 1 or offsets != sorted(set(offsets)) or not all(0 < x < len(data)//2 for x in offsets):
-        raise RuntimeError(f'invalid long-form segment sample offsets in X-Long-Form-Segments {header!r}')
-
-
-def segments_selftest():
-    # segments() no-ops under --plan; this selftest must pass regardless of argv.
-    global PLAN
-    PLAN = False
-
-    def outcome(data, headers):
-        try:
-            segments(data, headers)
-        except RuntimeError as error:
-            return str(error)
-        except Exception as error:
-            raise RuntimeError(f'segments let {type(error).__name__} escape: {error}') from None
-        return ''
-
-    # None header means the header is absent; fragment is the required rejection reason, None to accept.
-    cases = [
-        (1110016, '1;', 'spoke 1 segment'),
-        (3794526, '7;507904,592059,841915,921062,1261187,1346351', None),
-        (1000, '3;100,200', None),
-        (1000, None, ''),
-        (1000, '', ''),
-        (1000, '3', ''),
-        (1000, 'x;1,2', ''),
-        (1000, '3;100,abc', ''),
-        (1000, '3;100,', ''),
-        (1000, '3;200,100', ''),
-        (1000, '3;100,100', ''),
-        (1000, '3;100', ''),
-        (1000, '3;100,500', ''),
-        (1000, '3;0,100', ''),
-        (1000, '2;100;200', ''),
-    ]
-    for size, value, fragment in cases:
-        headers = {} if value is None else {'X-Long-Form-Segments': value}
-        message = outcome(bytes(size), headers)
-        if fragment is None and message:
-            raise RuntimeError(f'segments rejected a valid header {value!r}: {message}')
-        if fragment is not None and (not message or fragment not in message):
-            raise RuntimeError(f'segments did not reject {value!r} as expected: {message or "accepted"}')
-    log('segments selftest PASS')
-
-
 def bench(name, *args):
     command(['python3', ROOT / 'B' / 'bench' / name, *args])
 
 
-def catalog(profile):
-    return OUT / 'synthetic' / profile / 'catalog'
+def catalog():
+    return OUT / 'synthetic' / 'full' / 'catalog'
 
 
-def voices(profile):
-    run = OUT / 'synthetic' / profile
+def voices():
+    # Full-model catalog voices A, B and the tagged 'dialogue' voice; both trees load the same catalog.
+    run = OUT / 'synthetic' / 'full'
     if not PLAN and (run / 'complete.json').exists():
         return
-    with server('B', profile, run / 'render'):
+    with server('B', 'full', run / 'render'):
         for i, text in enumerate(REFS):
             request(run, f'ref-{i}', text, seed=42 + i)
     for i in range(len(REFS)):
-        command(['flock', LOCK, 'env', f'LD_LIBRARY_PATH={LIB}', builddir('B', 'full') / 'zig-out/bin/drama3-generate', '--codec', CHECKPOINTS[profile] / 'codec.pth', '--encode', run / f'ref-{i}.codes', '--ref-audio', run / f'ref-{i}.wav'])
+        command(['flock', LOCK, 'env', f'LD_LIBRARY_PATH={LIB}', builddir('B', 'full') / 'zig-out/bin/drama3-generate', '--codec', CHECKPOINTS['full'] / 'codec.pth', '--encode', run / f'ref-{i}.codes', '--ref-audio', run / f'ref-{i}.wav'])
     for name, refs in [('A', [(0, REFS[0])]), ('B', [(1, REFS[1])]), ('dialogue', [(0, '<|speaker:1|> ' + REFS[0]), (1, '<|speaker:15|> ' + REFS[1])])]:
-        target = catalog(profile) if profile == 'full' else run / 'http-catalog'
-        command(['python3', ROOT / 'B' / 'recipe/build_voice.py', '--source', 'synthetic', '--output-dir', target, name, 'Model-invented clips rendered by candidate built-in voice; request evidence retained.', *[f'{text}:{run}/ref-{i}.codes' for i, text in refs]])
-        if not PLAN and profile == 'nvfp4':
-            doc = json.loads((target / f'{name}.json').read_text())
-            entries = []
-            for ref, (i, _) in zip(doc['references'], refs):
-                grid = list(map(list, zip(*ref['codes'])))
-                raw = b''.join(struct.pack('<i', x) for row in grid for x in row)
-                entries.append({'text': ref['text'], 'vq_codes': grid, 'codes_sha256': hashlib.sha256(raw).hexdigest(), 'audio_sha256': hashlib.sha256((run / f'ref-{i}.wav').read_bytes()).hexdigest(), 'frames': len(ref['codes'])})
-            source = {'kind': 'model-invented', 'note': doc['source']['note']}
-            legacy = {'format': 'drama3-voice/2', 'source': source, 'references': entries} if len(entries) > 1 else {'format': 'drama3-voice/1', 'source': source, **entries[0]}
-            save(catalog(profile) / f'{name}.json', legacy)
+        command(['python3', ROOT / 'B' / 'recipe/build_voice.py', '--source', 'synthetic', '--output-dir', catalog(), name, 'Model-invented clips rendered by candidate built-in voice; request evidence retained.', *[f'{text}:{run}/ref-{i}.codes' for i, text in refs]])
     if not PLAN:
         save(run / 'complete.json', {'finished_at': now()})
 
 
-def g1(profile):
-    run = OUT / 'G1' / profile
+def g1():
+    run = OUT / 'G1' / 'full'
     for tree in SHAS:
-        with server(tree, profile, run / tree / 'default'):
+        with server(tree, 'full', run / tree / 'default'):
             bench('corpus_capture.py', BASE, run / tree / 'capture', '--passes', '2')
             bench('stream_check.py', '--base', BASE, '--model', 'fishaudio/drama-3', '--input', TEXT, '--out', run / tree / 'stream-check.json')
     bench('compare_gate.py', run / 'A/capture', run / 'A/capture', run / 'B/capture', run / 'gate-B.json')
-    voices(profile)
-    # Baseline rejects the dialogue catalog's new speaker tags; load untagged references only.
-    untagged = OUT / 'synthetic' / profile / 'untagged'
-    if not PLAN:
-        untagged.mkdir(exist_ok=True)
-        for name in ('A', 'B'):
-            (untagged / f'{name}.json').write_bytes((catalog(profile) / f'{name}.json').read_bytes())
+    voices()
     for tree in SHAS:
-        with server(tree, profile, run / tree / 'reference', ['--voices', untagged]):
+        with server(tree, 'full', run / tree / 'reference', ['--voices', catalog()]):
             bench('reference_cache_test.py', '--base', BASE, '--voice', 'A', '--other-voice', 'B', '--out', run / tree / 'rc.json')
 
 
-def g2(profile):
-    run = OUT / 'G2' / profile
-    with server('B', profile, run):
-        for seed in (42, 9007199254740993, 18446744073709551615):
-            a, _ = request(run, f'seed-{seed}-first', seed=seed)
-            b, _ = request(run, f'seed-{seed}-repeat', seed=seed)
-            if a != b:
-                raise RuntimeError(f'non-repeatable seed {seed}')
-        request(run, 'temperature-zero', temperature=0)
-        request(run, 'top-k-one', top_k=1)
-        request(run, 'sampling', temperature=.7, top_p=.8, top_k=20)
-        request(run, 'invalid-top-k', 'hi', expected=400, top_k=65)
+def g2():
+    # Request sampling: patches 0013/0014 on A, upstream #1277 on B; each tree must honour the same fields.
+    for tree in SHAS:
+        run = OUT / 'G2' / 'full' / tree
+        with server(tree, 'full', run):
+            for seed in (42, 9007199254740993, 18446744073709551615):
+                a, _ = request(run, f'seed-{seed}-first', seed=seed)
+                b, _ = request(run, f'seed-{seed}-repeat', seed=seed)
+                if not PLAN and a != b:
+                    raise RuntimeError(f'{tree}: non-repeatable seed {seed}')
+            request(run, 'temperature-zero', temperature=0)
+            request(run, 'top-k-one', top_k=1)
+            request(run, 'sampling', temperature=.7, top_p=.8, top_k=20)
+            request(run, 'invalid-top-k', 'hi', expected=400, top_k=65)
 
 
-def g3(pause_s):
-    run = OUT / 'G3' / f'pause-{pause_s}'
-    flags = ['--long-form', '--long-form-chars', '120']
-    if pause_s:
-        flags += ['--shift-pause-s', str(pause_s)]
-    with server('B', 'nvfp4', run, flags):
-        segments(*request(run, 'markup', MARKUP))
-    probe_gate()
-
-
-def g4():
-    run = OUT / 'G4'
-    with server('B', 'nvfp4', run, ['--long-form', '--long-form-chars', '120']):
-        segments(*request(run, 'speakers', f'<|speaker:1|> {SPEECH} <|speaker:2|> {SPEECH}', seed=7))
-    probe_gate()
-
-
-def probe_gate():
-    if not PLAN and json.loads((OUT / 'cpu-probe.json').read_text())['status'] == 'FAIL':
-        raise RuntimeError('CPU splitter/continuation probe failed; see cpu-probe.json')
-
-
-def g5(profile):
-    voices(profile)
-    run = OUT / 'G5' / profile
-    with server('B', profile, run, ['--voices', catalog(profile)]):
-        for voice in ('default', 'dialogue'):
-            request(run, f'{voice}-tagged', DIALOGUE, voice=voice)
-            request(run, f'{voice}-untagged', re.sub(r'<\|speaker:\d+\|>', '', DIALOGUE), voice=voice)
+def g3():
+    # Speaker tags: patch 0015 on A, upstream #1278 on B; the same tagged and untagged dialogue on each tree.
+    voices()
+    for tree in SHAS:
+        run = OUT / 'G3' / 'full' / tree
+        with server(tree, 'full', run, ['--voices', catalog()]):
+            for voice in ('default', 'dialogue'):
+                request(run, f'{voice}-tagged', DIALOGUE, voice=voice)
+                request(run, f'{voice}-untagged', tag_free(DIALOGUE), voice=voice)
 
 
 def tag_free(text):
     return re.sub(r'<\|speaker:\d+\|>', '', text)
-
-
-def plain(text):
-    # The engine's controls removed: speaker tags, paired direction tags, bracketed cues and the shift mark.
-    return ' '.join(re.sub(r'<\|speaker:\d+\|>|</?whisper>|\[[^\]]*\]|¶', ' ', text).split())
-
-
-def corpus_paragraphs(count=3):
-    # The corpus holds no 600-900 character item (its largest is 313), so a paragraph is consecutive verbatim items
-    # joined with single spaces until the band is reached; the pick is file-order deterministic and ids are recorded.
-    items = [json.loads(line) for line in CORPUS.read_text().splitlines() if line.strip()]
-    groups, current = [], []
-    for item in items:
-        current.append(item)
-        if len(' '.join(x['text'] for x in current)) >= 600:
-            groups.append(current)
-            current = []
-    if len(groups) < count:
-        raise RuntimeError(f'corpus yields only {len(groups)} paragraphs of at least 600 characters')
-    paragraphs = []
-    for group in groups[:count]:
-        text = ' '.join(x['text'] for x in group)
-        if not 600 <= len(text) <= 900:
-            raise RuntimeError(f'corpus paragraph {group[0]["id"]}.. is {len(text)} characters, outside 600-900')
-        paragraphs.append({'text': text, 'ids': [x['id'] for x in group], 'item_chars': [len(x['text']) for x in group]})
-    return paragraphs
-
-
-def corpus_preflight(path=CORPUS, pinned=CORPUS_SHA256):
-    """First gate of a diagnostic run: the device host receives the corpus only via sync-to-device.sh, so verify the
-    pinned sha256 before any build, unit pause, GPU lock or pilot (run 1 lost D1/D2/D4 to its absence)."""
-    if not Path(path).exists():
-        raise RuntimeError(f'corpus missing: {path} (sync-to-device.sh copies it; pinned sha256 {pinned})')
-    if PLAN:
-        command(['sha256sum', path])
-        return None
-    digest = command(['sha256sum', path], capture=True).split()[0]
-    if digest != pinned:
-        raise RuntimeError(f'corpus sha256 mismatch: {digest} != pinned {pinned}: {path}')
-    return digest
-
-
-def d1_inputs():
-    paragraphs = corpus_paragraphs()
-    D1REC['inputs'] = {
-        'corpus_file': str(CORPUS),
-        'fixed': [{'label': 'g4-plain', 'source': 'G4 text with both speaker tags removed', 'chars': len(tag_free(G4_TEXT))},
-                  {'label': 'g3-plain', 'source': 'G3 markup text with its markup removed', 'chars': len(plain(MARKUP))}],
-        'corpus': [{'label': f'corpus-{i + 1}', 'ids': p['ids'], 'item_chars': p['item_chars'], 'chars': len(p['text'])}
-                   for i, p in enumerate(paragraphs)],
-    }
-    return ([('g4-plain', tag_free(G4_TEXT)), ('g3-plain', plain(MARKUP))]
-            + [(f'corpus-{i + 1}', p['text']) for i, p in enumerate(paragraphs)])
 
 
 def asr_words(text):
@@ -765,171 +584,48 @@ def diag_request(run, label, text, **fields):
     if PLAN:
         return {}
     info = json.loads((run / f'{label}.json').read_text())
-    fresh = pilot_new(offset)
-    info.update(label=label, input_chars=len(text), server_log=fresh.splitlines()[-3:])
-    spoken = re.search(r'long_form segments=(\d+)/(\d+)', fresh)
-    info['segments_spoken_log'], info['segments_planned_log'] = (int(spoken.group(1)), int(spoken.group(2))) if spoken else (None, None)
-    finish = re.search(r'finish=(\w+)', fresh)
-    info['finish_log'] = finish.group(1) if finish else None
-    header = info['headers'].get('X-Long-Form-Segments', '')
-    info['segments_header'] = header
-    count = header.partition(';')[0]
-    info['segments_spoken_header'] = int(count) if count.isdigit() else None
+    info.update(label=label, input_chars=len(text), server_log=pilot_new(offset).splitlines()[-3:])
     info['finish_header'] = info['headers'].get('X-Finish-Reason')
-    info['segments_spoken'] = info['segments_spoken_log'] if info['segments_spoken_log'] is not None else info['segments_spoken_header']
-    info['early_stop'] = None if None in (info['segments_spoken'], info['segments_planned_log']) else info['segments_spoken'] < info['segments_planned_log']
     save(run / f'{label}.json', info)
     return info
 
 
-def d1_full_profile_probes():
-    # D1 as specified asks for full-profile long-form servers, but the full-profile engine has no long-form mode;
-    # the binaries' own refusals are the evidence, and a surprise acceptance fails the check instead of narrowing it.
-    rows = []
-    for tree in ('A', 'B'):
-        argv = [builddir(tree, 'full') / 'zig-out/native/bin/tensorfold-native', 'serve', *LONG_FORM]
-        text = shlex.join(list(map(str, argv)))
-        COMMANDS.append(text)
-        if PLAN:
-            print(shown(text))
-            continue
-        done = subprocess.run(list(map(str, argv)), capture_output=True, text=True, timeout=300)
-        output = (done.stdout + done.stderr).strip()
-        rows.append({'tree': tree, 'exit': done.returncode, 'output': output[-400:]})
-        refused = ('unrecognized' in output or 'not served by the native engine' in output) and '--long-form' in output
-        if not refused:
-            raise RuntimeError(f'{tree}/full did not refuse --long-form: exit {done.returncode}: {output[-200:]}')
-    D1REC['full_profile'] = {'note': 'the full-profile engine has no long-form mode; both binaries refused --long-form at argument parsing', 'probes': rows}
-
-
 def d1():
+    # Issue #32's full-model frame cap, like for like: both trees, the same tagged and untagged dialogue, seeds 1-5.
     run = OUT / 'D1'
     D1REC['start'] = now()
-    d1_full_profile_probes()
-    inputs = d1_inputs()
-    with server('A', 'nvfp4', run / 'A' / 'nvfp4', LONG_FORM):
-        D1REC['trees']['A-nvfp4'] = [diag_request(run / 'A' / 'nvfp4', label, text) for label, text in inputs]
+    voices()
+    D1REC['groups'] = {}
+    for tree in SHAS:
+        with server(tree, 'full', run / tree, ['--voices', catalog()]):
+            for kind, text in (('tagged', DIALOGUE), ('untagged', tag_free(DIALOGUE))):
+                rows = [diag_request(run / tree, f'{kind}-seed-{seed}', text, voice='dialogue', seed=seed) for seed in range(1, 6)]
+                D1REC['groups'][f'{tree}-full-dialogue-{kind}-seed-1-5'] = d1_group(rows)
     D1REC['end'] = now()
 
 
-def d2():
-    run = OUT / 'D2'
-    D2REC['start'] = now()
-    inputs = d1_inputs()
-    with server('B', 'nvfp4', run, LONG_FORM):
-        # One server per tree x profile x mode: D1's B column and D2's seeds share the B nvfp4 long-form server.
-        D1REC['b_start'] = now()
-        D1REC['trees']['B-nvfp4'] = [diag_request(OUT / 'D1' / 'B' / 'nvfp4', label, text) for label, text in inputs]
-        D1REC['b_end'] = now()
-        D2REC['seeds'] = [diag_request(run, f'seed-{seed}', G4_TEXT, seed=seed) for seed in range(1, 9)]
-    D2REC['end'] = now()
-    reached = [row for row in D2REC['seeds'] if (row.get('segments_spoken') or 0) >= 2]
-    D2REC['reached_segment_2'] = len(reached)
-    D2REC['fraction_reaching_segment_2'] = len(reached) / len(D2REC['seeds'])
-    carry_probe()
-
-
-def carry_probe():
-    # The server log carries no per-segment prompt or speaker, so carry follows the CPU probe on the candidate's
-    # actual cuts for the G4 text; seeds move sampling only, never the text cuts, so one probe covers every reply.
-    build = builddir('B', 'nvfp4')
-    target = build / 'zig/src/server/gpuchk_carry_probe.zig'
-    argv = [ZIG, 'test', '-lc', '--test-filter', 'gpuchk carry',
-            '--dep', 'tokenizer', f'-Mroot={target}', f'-Mtokenizer={build}/zig/src/core/tokenizer/tokenizer.zig']
-    if PLAN:
-        command(argv)
-        return
-    template = (W / 'gpu-checks/probe-carry.zig.in').read_text()
-    # Byte escapes keep the Zig literal identical to the HTTP UTF-8 payload.
-    literal = lambda text: '"' + ''.join(f'\\x{x:02x}' for x in text.encode()) + '"'
-    source = template.replace('@DIALOGUE@', literal(G4_TEXT))
-    report = {'method': 'cpu-probe (drama_shift.split at 120 chars, drama_prompt.continued per segment, build-B-nvfp4 sources)',
-              'why_not_server_log': 'speech_long.zig logs one whole-reply long_form line per reply and no continuation prompts',
-              'start': now()}
-    try:
-        with target.open('x') as output:
-            output.write(source)
-        done = subprocess.run(list(map(str, argv)), capture_output=True, text=True, timeout=900)
-        text = done.stdout + done.stderr
-        report.update(exit=done.returncode, output=text[-4000:])
-        segments = []
-        for line in text.splitlines():
-            hit = re.search(r'gpuchk-carry segment=(\d+) start=(\d+) len=(\d+) expected=(<\|speaker:\d+\|>) ok=(true|false)', line)
-            if hit:
-                segments.append({'segment': int(hit.group(1)), 'start': int(hit.group(2)), 'len': int(hit.group(3)),
-                                 'expected': hit.group(4), 'ok': hit.group(5) == 'true'})
-        report['segments'] = segments
-        report['status'] = 'PASS' if segments and done.returncode == 0 and all(s['ok'] for s in segments) else ('FAIL' if segments else 'unavailable (not verified)')
-        report['per_seed'] = {}
-        for row in D2REC['seeds']:
-            n = row.get('segments_spoken') or 0
-            checked = [s for s in segments if 2 <= s['segment'] <= n]
-            report['per_seed'][row['label']] = {'segments_spoken': n, 'carry_segments': [s['segment'] for s in checked],
-                                                'carry_ok': bool(checked) and all(s['ok'] for s in checked)}
-    finally:
-        if target.exists() and target.read_text() == source:
-            target.unlink()
-        report['end'] = now()
-    D2REC['carry'] = report
-
-
-def d3():
-    run = OUT / 'D3'
-    D3REC['start'] = now()
-    voices('full')
-    D3REC['groups'] = {}
-    with server('B', 'full', run / 'B', ['--voices', catalog('full')]):
-        for kind, text in (('tagged', DIALOGUE), ('untagged', tag_free(DIALOGUE))):
-            rows = [diag_request(run / 'B', f'{kind}-seed-{seed}', text, voice='dialogue', seed=seed) for seed in range(1, 6)]
-            D3REC['groups'][f'B-full-dialogue-{kind}-seed-1-5'] = d3_group(rows, True)
-    # A rejects the seed field and speaker tags: five unseeded default-field attempts on the untagged line.
-    with server('A', 'full', run / 'A'):
-        rows = [diag_request(run / 'A', f'untagged-unseeded-{attempt}', tag_free(DIALOGUE)) for attempt in range(1, 6)]
-        D3REC['groups']['A-full-default-untagged-unseeded-1-5'] = d3_group(rows, False)
-    D3REC['end'] = now()
-
-
-def d3_group(rows, seeded):
+def d1_group(rows):
     detail = [{'label': r.get('label'), 'status': r.get('status'), 'finish': r.get('finish_header'), 'bytes': r.get('bytes'),
                'duration_s': r.get('duration_s'), 'rms': r.get('rms'), 'sha256': r.get('sha256'),
                'capped': r.get('finish_header') == 'length' or r.get('bytes') == 4194304} for r in rows]
-    return {'seeded': seeded, 'replies': len(detail), 'finish_length': sum(1 for r in detail if r['finish'] == 'length'),
+    return {'replies': len(detail), 'finish_length': sum(1 for r in detail if r['finish'] == 'length'),
             'bytes_cap': sum(1 for r in detail if r['bytes'] == 4194304), 'capped': sum(1 for r in detail if r['capped']),
             'rows': detail}
 
 
-def d4_jobs():
+def d2_jobs():
     jobs = []
     seen = set()
-
-    def add(identifier, wav, reference):
-        # A --diag-resume run reads wavs from both this run's out dir and the prior one; current evidence wins.
-        if identifier in seen:
-            return
-        seen.add(identifier)
-        jobs.append({'id': identifier, 'wav': str(wav), 'reference': reference, 'exists': Path(wav).exists() if not PLAN else None})
-
-    # Run 2's evidence under out/ is read-only here.
-    run2 = W / 'out'
-    add('run2-G3-pause-0', run2 / 'G3/pause-0/markup.wav', plain(MARKUP))
-    add('run2-G3-pause-0.5', run2 / 'G3/pause-0.5/markup.wav', plain(MARKUP))
-    add('run2-G4-speakers', run2 / 'G4/speakers.wav', tag_free(G4_TEXT))
-    for profile in ('full', 'nvfp4'):
-        for voice in ('default', 'dialogue'):
-            for kind in ('tagged', 'untagged'):
-                add(f'run2-G5-{profile}-{voice}-{kind}', run2 / 'G5' / profile / f'{voice}-{kind}.wav', tag_free(DIALOGUE))
-    add('run2-G2-full-temperature-zero', run2 / 'G2/full/temperature-zero.wav', TEXT)
-    add('run2-G2-full-top-k-one', run2 / 'G2/full/top-k-one.wav', TEXT)
-    texts = dict(d1_inputs())
+    # A --diag-resume run reads wavs from both this run's out dir and the prior one; current evidence wins.
     roots = [OUT] + ([Path(DIAG_RESUME).resolve().parent] if DIAG_RESUME else [])
     for root in roots:
-        for wav in sorted(root.glob('D1/*/*/*.wav')):
-            add(f'd1-{wav.parent.parent.name}-{wav.parent.name}-{wav.stem}', wav, texts.get(wav.stem))
-        for wav in sorted(root.glob('D2/*.wav')):
-            add(f'd2-{wav.stem}', wav, tag_free(G4_TEXT))
-        for wav in sorted(root.glob('D3/*/*.wav')):
-            add(f'd3-{wav.parent.name}-{wav.stem}', wav, tag_free(DIALOGUE))
-    return [j for j in jobs if j['reference'] is not None]
+        for wav in sorted(root.glob('D1/*/*.wav')):
+            identifier = f'd1-{wav.parent.name}-{wav.stem}'
+            if identifier not in seen:
+                seen.add(identifier)
+                jobs.append({'id': identifier, 'wav': str(wav), 'reference': tag_free(DIALOGUE),
+                             'exists': wav.exists() if not PLAN else None})
+    return jobs
 
 
 def wav_measure(path):
@@ -939,11 +635,11 @@ def wav_measure(path):
     return {'duration_s': len(samples) / 44100, 'rms': (sum(x * x for x in samples) / len(samples)) ** .5 if samples else 0}
 
 
-def d4():
-    run = OUT / 'D4'
-    D4REC['start'] = now()
-    jobs = d4_jobs()
-    D4REC['inputs'] = jobs
+def d2():
+    run = OUT / 'D2'
+    D2REC['start'] = now()
+    jobs = d2_jobs()
+    D2REC['inputs'] = jobs
     manifest, result = run / 'input.json', run / 'asr.json'
     if not PLAN:
         save(manifest, {'asr_dir': str(ASR_DIR),
@@ -952,7 +648,7 @@ def d4():
     command(['flock', LOCK, PILOT_ROOT / 'venv/bin/python', W / 'gpu-checks/asr.py', manifest, result])
     if not PLAN:
         asr = json.loads(result.read_text())
-        D4REC.update(model=asr['model'], device=asr['device'])
+        D2REC.update(model=asr['model'], device=asr['device'])
         rows = []
         for job in jobs:
             row = {'id': job['id'], 'wav': job['wav'], 'reference': job['reference']}
@@ -967,9 +663,9 @@ def d4():
             row['flags'] = [name for name, on in (('wer>0.3', row['wer'] is not None and row['wer'] > .3),
                                                   ('rms<500', row['rms'] is not None and row['rms'] < 500)) if on]
             rows.append(row)
-        D4REC['rows'] = rows
-        D4REC['flagged'] = [row['id'] for row in rows if row.get('flags')]
-    D4REC['end'] = now()
+        D2REC['rows'] = rows
+        D2REC['flagged'] = [row['id'] for row in rows if row.get('flags')]
+    D2REC['end'] = now()
 
 
 def record_builds():
@@ -995,7 +691,7 @@ def num(value):
     return f'{value:.2f}' if isinstance(value, (int, float)) else str(value)
 
 
-DIAG_GROUPS = ('B-full-dialogue-tagged-seed-1-5', 'B-full-dialogue-untagged-seed-1-5', 'A-full-default-untagged-unseeded-1-5')
+DIAG_GROUPS = tuple(f'{tree}-full-dialogue-{kind}-seed-1-5' for tree in ('A', 'B') for kind in ('tagged', 'untagged'))
 
 
 def _count(value, low=0):
@@ -1024,109 +720,54 @@ def _reply_ok(row):
             and _real(row.get('duration_s'), strict=True) and _real(row.get('rms')))
 
 
-def d1_observation(row):
-    if not _reply_ok(row):
-        return False
-    spoken, planned = row.get('segments_spoken'), row.get('segments_planned_log')
-    return (_count(spoken, 1) and _count(planned, 1) and spoken <= planned
-            and isinstance(row.get('early_stop'), bool) and row['early_stop'] == (spoken < planned))
-
-
-def _carry_segment(s):
-    return (isinstance(s, dict) and _count(s.get('segment'), 1) and _count(s.get('start')) and _count(s.get('len'), 1)
-            and isinstance(s.get('expected'), str) and isinstance(s.get('ok'), bool))
-
-
-def d2_problems(d2):
-    seeds = d2.get('seeds')
-    labels = [f'seed-{n}' for n in range(1, 9)]
-    if not isinstance(seeds, list) or len(seeds) != 8:
-        return ['D2 lacks its 8 seeded replies']
-    if not all(_reply_ok(row) and _count(row.get('segments_spoken'), 1) for row in seeds):
-        return ['D2 has invalid seeded replies']
-    if sorted(row.get('label') for row in seeds if isinstance(row.get('label'), str)) != sorted(labels):
-        return ['D2 seed labels are not exactly seed-1..seed-8']
-    problems = []
-    reached = sum(1 for row in seeds if row['segments_spoken'] >= 2)
-    fraction = d2.get('fraction_reaching_segment_2')
-    if d2.get('reached_segment_2') != reached or not _count(d2.get('reached_segment_2')) \
-            or not _real(fraction) or abs(fraction - reached / 8) > 1e-9:
-        problems.append('D2 reached count/fraction missing or inconsistent with its seeds')
-    carry = _dict(d2.get('carry'))
-    segments = carry.get('segments')
-    if not isinstance(segments, list) or not segments or not all(_carry_segment(s) for s in segments) or not _count(carry.get('exit')):
-        problems.append('D2 has no carry evidence')
-        return problems
-    passed = carry['exit'] == 0 and all(s['ok'] for s in segments)
-    if carry.get('status') != ('PASS' if passed else 'FAIL'):
-        problems.append('D2 carry status is inconsistent with its exit and segments')
-    per = carry.get('per_seed')
-    if not isinstance(per, dict) or any(not isinstance(per.get(label), dict) or not isinstance(per[label].get('carry_ok'), bool)
-                                        or not isinstance(per[label].get('carry_segments'), list) for label in labels):
-        problems.append('D2 carry evidence misses seeds')
-    return problems
-
-
-def d3_problems(d3):
-    groups = d3.get('groups')
+def d1_problems(d1):
+    groups = d1.get('groups')
     if not isinstance(groups, dict) or set(groups) != set(DIAG_GROUPS):
         present = groups if isinstance(groups, dict) else {}
-        return [f'D3 group {name} lacks its 5 replies' for name in DIAG_GROUPS if name not in present] or ['D3 has unexpected groups']
+        return [f'D1 group {name} lacks its 5 replies' for name in DIAG_GROUPS if name not in present] or ['D1 has unexpected groups']
     problems = []
     for name in DIAG_GROUPS:
         group = groups[name]
         rows = group.get('rows') if isinstance(group, dict) else None
         if not isinstance(rows, list) or len(rows) != 5 or group.get('replies') != 5:
-            problems.append(f'D3 group {name} lacks its 5 replies')
+            problems.append(f'D1 group {name} lacks its 5 replies')
         elif not all(_reply_ok(r) and isinstance(r.get('label'), str) and isinstance(r.get('capped'), bool) for r in rows):
-            problems.append(f'D3 group {name} has invalid replies')
+            problems.append(f'D1 group {name} has invalid replies')
         elif (group.get('finish_length'), group.get('bytes_cap'), group.get('capped')) != (
                 sum(r.get('finish') == 'length' for r in rows), sum(r['bytes'] == 4194304 for r in rows), sum(r['capped'] for r in rows)):
-            problems.append(f'D3 group {name} counts disagree with its replies')
+            problems.append(f'D1 group {name} counts disagree with its replies')
     return problems
 
 
-def d4_problems(d4):
-    inputs, rows = d4.get('inputs'), d4.get('rows')
+def d2_problems(d2):
+    inputs, rows = d2.get('inputs'), d2.get('rows')
     if not isinstance(inputs, list) or not inputs or not isinstance(rows, list):
-        return ['D4 has no jobs or results']
+        return ['D2 has no jobs or results']
     ids = [job.get('id') if isinstance(job, dict) else None for job in inputs]
     if not all(isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
-        return ['D4 job ids are missing or duplicated']
+        return ['D2 job ids are missing or duplicated']
     row_ids = [row.get('id') if isinstance(row, dict) else None for row in rows]
     if not all(isinstance(i, str) for i in row_ids) or sorted(row_ids) != sorted(ids):
-        return ['D4 result rows do not match its jobs one to one']
+        return ['D2 result rows do not match its jobs one to one']
     bad = [row['id'] for row in rows if not (_real(row.get('wer')) and _real(row.get('rms')) and _real(row.get('duration_s'), strict=True)
                                             and isinstance(row.get('flags'), list))]
-    return [f'D4 lacks results for {len(bad)} of {len(ids)} jobs'] if bad else []
+    return [f'D2 lacks results for {len(bad)} of {len(ids)} jobs'] if bad else []
 
 
 def payload_problems(report):
-    """Each D1-D4 payload must hold the coherent, producer-shaped evidence its check exists to produce; a PASS row
+    """Each D1-D2 payload must hold the coherent, producer-shaped evidence its check exists to produce; a PASS row
     (run here or carried by --diag-resume) over missing, empty, failed, inconsistent or malformed data is not evidence."""
-    problems = []
-    trees = _dict(_dict(report.get('d1')).get('trees'))
-    for key, tree in (('A-nvfp4', 'A'), ('B-nvfp4', 'B')):
-        rows = trees.get(key)
-        if not isinstance(rows, list) or not rows:
-            problems.append(f'D1 has zero {tree} observations')
-        elif not all(d1_observation(row) for row in rows):
-            problems.append(f'D1 {tree} has invalid observations')
-    problems += d2_problems(_dict(report.get('d2')))
-    problems += d3_problems(_dict(report.get('d3')))
-    problems += d4_problems(_dict(report.get('d4')))
-    return problems
+    return d1_problems(_dict(report.get('d1'))) + d2_problems(_dict(report.get('d2')))
 
 
 def diag_verdict(report):
-    """A complete verdict requires every D1-D4 check PASS plus valid payloads for each (actual A and B
-    observations, D2 seeds and carry, D3 groups, a D4 result per job). Anything else (failed, WAIT,
-    infra-failed or missing check; missing, empty or malformed evidence) is INCONCLUSIVE, never a comparative
-    phrase (run 1 claimed 'as often as' from zero observations) and never PASS."""
+    """A complete verdict requires D1 and D2 PASS plus valid payloads for each (all four 5-reply A and B groups, a
+    D2 result per job). Anything else (failed, WAIT, infra-failed or missing check; missing, empty or malformed
+    evidence) is INCONCLUSIVE, never a frame-cap result and never PASS."""
     report = _dict(report)
     rows = {row.get('name'): row for row in _rows(report.get('checks'))}
     reasons = []
-    for name in ('D1', 'D2', 'D3', 'D4'):
+    for name in ('D1', 'D2'):
         row = rows.get(name)
         if row is None:
             reasons.append(f'{name} did not run')
@@ -1147,72 +788,28 @@ def diag_markdown(report):
     report = _dict(report)
     status, reasons = diag_verdict(report)
     why = (' — ' + '; '.join(reasons)) if reasons else ''
-    lines = ['# Diagnostic round D1-D4', '', f'Status: {status}{why}', '']
+    lines = ['# Diagnostic round D1-D2 (PR #33 full model)', '', f'Status: {status}{why}', '']
     lines += [f"- {row.get('name')}: {row.get('status')} ({row.get('error', '')}); {row.get('start')} to {row.get('end')}"
               for row in _rows(report.get('checks'))]
-    d1 = _dict(report.get('d1'))
-    inputs = _dict(d1.get('inputs'))
-    if inputs:
-        fixed = _rows(inputs.get('fixed')) + [{}, {}]
-        lines += ['', '## D1 long-form early stops', '',
-                  f"- Inputs: g4-plain ({fixed[0].get('chars')} chars), g3-plain ({fixed[1].get('chars')} chars), "
-                  + ', '.join(f"{p.get('label')} {p.get('chars')} chars = "
-                              + '+'.join(map(str, p['ids'] if isinstance(p.get('ids'), list) else []))
-                              for p in _rows(inputs.get('corpus')))
-                  + f" from {inputs.get('corpus_file')}"]
-    for probe in _rows(_dict(d1.get('full_profile')).get('probes')):
-        lines.append(f"- {probe.get('tree')}/full refused --long-form: exit {probe.get('exit')}: {str(probe.get('output'))[:160]}")
-    lines += ['', '| tree-profile | input | HTTP | N (header) | N/M (log) | finish (header/log) | duration s | RMS | early stop |', '|---|---|---|---|---|---|---|---|---|']
-    trees = {key: _rows(rows) for key, rows in _dict(d1.get('trees')).items()}
-    for key in ('A-nvfp4', 'B-nvfp4'):
-        for r in trees.get(key, []):
-            lines.append(f"| {key} | {r.get('label')} | {r.get('status')} | {r.get('segments_spoken_header')} | "
-                         f"{r.get('segments_spoken_log')}/{r.get('segments_planned_log')} | {r.get('finish_header')}/{r.get('finish_log')} | "
-                         f"{num(r.get('duration_s'))} | {num(r.get('rms'))} | {r.get('early_stop')} |")
-    counts = {str(key): {'replies': len(rows), 'early': sum(1 for r in rows if r.get('early_stop') is True),
-                         'unknown': sum(1 for r in rows if not isinstance(r.get('early_stop'), bool))} for key, rows in trees.items()}
-    lines += ['', '**Early stops (N < M) per tree x profile:** '
-              + ', '.join(f"{key} {v['early']}/{v['replies']}" + (f" ({v['unknown']} without N/M evidence)" if v['unknown'] else '')
-                         for key, v in sorted(counts.items()))]
-    a = sum(v['early'] for k, v in counts.items() if k.startswith('A'))
-    b = sum(v['early'] for k, v in counts.items() if k.startswith('B'))
-    if status == 'complete':
-        verdict = 'more often than' if b > a else ('less often than' if b < a else 'as often as')
-        lines.append(f'**Verdict: B stops early {verdict} A** (B {b} early stops, A {a}).')
-    else:
-        detail = '; '.join(reasons)
-        lines.append(f'**Verdict: INCONCLUSIVE** ({detail}).')
-    d2 = _dict(report.get('d2'))
-    seeds = _rows(d2.get('seeds'))
-    lines += ['', '## D2 seeded G4 speaker carry (B nvfp4)', '',
-              f"- Fraction reaching segment 2: {d2.get('reached_segment_2')}/{len(seeds)}"
-              + (f" = {_fixed(d2.get('fraction_reaching_segment_2'), 3)}" if seeds else ''),
-              '', '| seed | N/M | finish | duration s | RMS | carry |', '|---|---|---|---|---|---|']
-    carry = _dict(d2.get('carry'))
-    per_seed = _dict(carry.get('per_seed'))
-    for r in seeds:
-        label = r.get('label')
-        per = per_seed.get(label) if isinstance(label, str) else None
-        lines.append(f"| {label} | {r.get('segments_spoken')}/{r.get('segments_planned_log')} | {r.get('finish_header')} | "
-                     f"{num(r.get('duration_s'))} | {num(r.get('rms'))} | {per.get('carry_ok') if isinstance(per, dict) else ''} |")
-    if carry:
-        lines += ['', f"- Carry method: {carry.get('method')}; {carry.get('why_not_server_log')}. Status: {carry.get('status')}.",
-                  '- Planned segments: ' + ', '.join(f"{s.get('segment')}@{s.get('start')}->{s.get('expected')}" + (' ok' if s.get('ok') is True else ' WRONG')
-                                                     for s in _rows(carry.get('segments')))]
-    groups = {str(name): _dict(group) for name, group in _dict(_dict(report.get('d3')).get('groups')).items()}
-    lines += ['', '## D3 full-model frame cap (4194304 bytes / finish=length)', '', '| group | replies | finish=length | bytes=cap | capped either |', '|---|---|---|---|---|']
+    groups = {str(name): _dict(group) for name, group in _dict(_dict(report.get('d1')).get('groups')).items()}
+    lines += ['', '## D1 full-model frame cap (4194304 bytes / finish=length)', '', '| group | replies | finish=length | bytes=cap | capped either |', '|---|---|---|---|---|']
     for name, group in groups.items():
         lines.append(f"| {name} | {group.get('replies')} | {group.get('finish_length')} | {group.get('bytes_cap')} | {group.get('capped')} |")
     lines += ['', '| group | label | finish | bytes | duration s | RMS | capped |', '|---|---|---|---|---|---|---|']
     for name, group in groups.items():
         for r in _rows(group.get('rows')):
             lines.append(f"| {name} | {r.get('label')} | {r.get('finish')} | {r.get('bytes')} | {num(r.get('duration_s'))} | {num(r.get('rms'))} | {r.get('capped')} |")
-    d4 = _dict(report.get('d4'))
-    lines += ['', '## D4 ASR (Whisper through the pilot code)', '']
-    if d4.get('model'):
-        lines += [f"- Model {d4.get('model')} on {d4.get('device')}; WER > 0.3 and RMS < 500 are flags, not failures.", '']
+    if status == 'complete':
+        capped = {tree: sum(groups[name]['capped'] for name in DIAG_GROUPS if name.startswith(tree + '-')) for tree in ('A', 'B')}
+        lines.append(f"**Verdict: frame cap reached by A {capped['A']}/10 and B {capped['B']}/10 replies.**")
+    else:
+        lines.append(f"**Verdict: INCONCLUSIVE** ({'; '.join(reasons)}).")
+    d2 = _dict(report.get('d2'))
+    lines += ['', '## D2 ASR (Whisper through the pilot code)', '']
+    if d2.get('model'):
+        lines += [f"- Model {d2.get('model')} on {d2.get('device')}; WER > 0.3 and RMS < 500 are flags, not failures.", '']
     lines += ['| id | WER | RMS | duration s | flags |', '|---|---|---|---|---|']
-    for r in _rows(d4.get('rows')):
+    for r in _rows(d2.get('rows')):
         flags = r.get('flags') if isinstance(r.get('flags'), list) else []
         if not _real(r.get('wer')):
             lines.append(f"| {r.get('id')} | - | {num(r.get('rms'))} | {num(r.get('duration_s'))} | {r.get('note', 'no transcript')} |")
@@ -1222,6 +819,9 @@ def diag_markdown(report):
     for name, b in _dict(report.get('builds')).items():
         b = _dict(b)
         lines.append(f"- {name}: engine {b.get('engine_head')}, patches {b.get('patch_series')}, tensorfold-native {b.get('tensorfold_native_sha256')}, drama3-generate {b.get('drama3_generate_sha256')}")
+    identity = _dict(report.get('nvfp4_identity'))
+    if identity:
+        lines.append(f"- NVFP4 source trees identical: {identity.get('identical')} ({identity.get('trees')})")
     for name, r in _dict(report.get('build_reuse')).items():
         r = _dict(r)
         lines.append(f"- {name}: {r.get('decision')} ({r.get('reason')})")
@@ -1242,7 +842,7 @@ def diag_summary():
     report = json.loads(path.read_text()) if path.exists() else {}
     if RESULTS:
         report.update({'checks': RESULTS, 'commands': COMMANDS, 'deviations': DEVIATIONS + DIAG_DEVIATIONS,
-                       'builds': BUILDS, 'build_reuse': REUSE, 'd1': D1REC, 'd2': D2REC, 'd3': D3REC, 'd4': D4REC})
+                       'builds': BUILDS, 'build_reuse': REUSE, 'nvfp4_identity': NVFP4_IDENTITY, 'd1': D1REC, 'd2': D2REC})
     report['status'], report['status_reasons'] = diag_verdict(report)
     values = [json.loads(line)['memavailable_bytes'] for p in OUT.glob('**/memory.jsonl')
               for line in p.read_text().splitlines() if line.strip()]
@@ -1251,8 +851,6 @@ def diag_summary():
     report['audio'] = [str(p) for p in OUT.glob('**/*.wav')]
     report['paused'] = (OUT / 'paused.txt').read_text().splitlines() if (OUT / 'paused.txt').exists() else []
     report['resumed'] = json.loads((OUT / 'resumed.json').read_text()) if (OUT / 'resumed.json').exists() else {}
-    probe = OUT / 'cpu-probe.json'
-    report['cpu_probe'] = json.loads(probe.read_text()) if probe.exists() else {'status': 'unavailable (not verified)'}
     save(OUT / 'summary.json', report)
     (OUT / 'summary.md').write_text(diag_markdown(report) + '\n')
 
@@ -1301,21 +899,9 @@ def run_jobs(jobs):
 
 
 def diag_selftest():
-    # CPU-only unit test of the WER function and the D1 text preparation, per the brief's test list.
+    # CPU-only unit test of the WER function and the dialogue reference text.
     checks = []
-    g4 = tag_free(G4_TEXT)
-    checks.append(('g4 tags removed', '<|speaker:' not in g4 and g4 == f' {SPEECH}  {SPEECH}'))
-    g3 = plain(MARKUP)
-    checks.append(('g3 markup removed', all(token not in g3 for token in ('<', '>', '[', ']', '¶', 'whisper', 'laughs')) and '天空很蓝' in g3))
-    paragraphs = corpus_paragraphs()
-    items = [json.loads(line) for line in CORPUS.read_text().splitlines() if line.strip()]
-    by_id = {x['id']: x['text'] for x in items}
-    order = [x['id'] for x in items]
-    for index, p in enumerate(paragraphs):
-        checks.append((f'paragraph {index + 1} in band', 600 <= len(p['text']) <= 900))
-        checks.append((f'paragraph {index + 1} verbatim', p['text'] == ' '.join(by_id[i] for i in p['ids'])))
-        checks.append((f'paragraph {index + 1} file order', p['ids'] == sorted(p['ids'], key=order.index)))
-    checks.append(('paragraph pick deterministic', [p['ids'] for p in corpus_paragraphs()] == [p['ids'] for p in paragraphs]))
+    checks.append(('dialogue tags removed', tag_free(DIALOGUE) == ' Is the train here?  It arrives at seven fifteen.'))
     checks.append(('asr words strip markup', asr_words('<|speaker:1|> Is [laughs] the ¶ train?') == ['is', 'the', 'train']))
     checks.append(('asr words keep cjk', asr_words('天空很蓝，火车到了。') == ['天空很蓝火车到了']))
     cases = [
@@ -1339,33 +925,13 @@ def diag_selftest():
 
 
 def recovery_selftest(checks):
-    """Behavioral regressions for the run-1 failure modes: corpus preflight before builds, memory admission,
-    verdict honesty, sealed output directories and manifest-verified build reuse. CPU-only; no GPU, network or units."""
+    """Behavioral regressions for the run-1 failure modes: memory admission, verdict honesty, sealed output
+    directories and manifest-verified build reuse. CPU-only; no GPU, network or units."""
     global PLAN, OUT
     base = Path(tempfile.mkdtemp(prefix='gpuchk-recovery-'))
     saved = (PLAN, OUT, memavailable, RESULTS[:], COMMANDS[:])
     PLAN = False
     try:
-        # Corpus preflight: missing or mismatched file is an infrastructure failure before any build command.
-        marker = len(COMMANDS)
-        try:
-            corpus_preflight(path=base / 'absent.jsonl')
-            checks.append(('missing corpus preflight fails', False))
-        except RuntimeError as error:
-            checks.append(('missing corpus preflight fails', 'corpus missing' in str(error)))
-        wrong = base / 'wrong.jsonl'
-        wrong.write_text('not the corpus\n')
-        try:
-            corpus_preflight(path=wrong, pinned=CORPUS_SHA256)
-            checks.append(('mismatched corpus hash fails', False))
-        except RuntimeError as error:
-            checks.append(('mismatched corpus hash fails', 'sha256 mismatch' in str(error)))
-        checks.append(('corpus preflight ran no build commands', not any('build-engine' in x or x.startswith('git') or 'git ' in x for x in COMMANDS[marker:])))
-        right = base / 'right.jsonl'
-        right.write_text('{"id": "fixture", "text": "hi"}\n')
-        pinned = hashlib.sha256(right.read_bytes()).hexdigest()
-        checks.append(('matching corpus preflight passes', corpus_preflight(path=right, pinned=pinned) == pinned))
-
         # Memory admission: below the floor nothing launches, no lock is touched, the check records WAIT.
         globals()['memavailable'] = lambda: PILOT_ADMISSION_FLOOR - 1
         marker = len(COMMANDS)
@@ -1421,15 +987,15 @@ def recovery_selftest(checks):
 
         ran = []
         checks.append(('memory WAIT returns REFUSED and starts no later check',
-                       run_jobs([('D3', [], refuse, ()), ('D4', [], lambda: ran.append('D4'), ())]) == REFUSED
-                       and RESULTS[-1]['status'] == 'WAIT' and [r['name'] for r in RESULTS] == ['D3'] and ran == []))
+                       run_jobs([('D1', [], refuse, ()), ('D2', [], lambda: ran.append('D2'), ())]) == REFUSED
+                       and RESULTS[-1]['status'] == 'WAIT' and [r['name'] for r in RESULTS] == ['D1'] and ran == []))
         RESULTS.clear()
 
         def broken():
             raise RuntimeError('harness error (fixture)')
 
         checks.append(('genuine failure stays exit 1 even beside a WAIT',
-                       run_jobs([('D1', [], broken, ()), ('D3', [], refuse, ())]) == 1))
+                       run_jobs([('D1', [], broken, ()), ('D2', [], refuse, ())]) == 1))
         RESULTS.clear()
         checks.append(('all-PASS run exits 0', run_jobs([('D1', [], lambda: None, ())]) == 0))
         RESULTS.clear()
@@ -1447,29 +1013,23 @@ def recovery_selftest(checks):
         globals()['memavailable'] = saved[2]
         OUT = saved[1]
 
-        # Verdict honesty: a complete, comparative verdict needs PASS rows AND real D1-D4 payloads.
-        comparative = ('as often as', 'more often than', 'less often than')
+        # Verdict honesty: a frame-cap result needs PASS rows AND real D1-D2 payloads for both trees.
+        comparative = ('frame cap reached by',)
 
         def check_row(name, status):
             return {'name': name, 'prs': [], 'start': now(), 'end': now(), 'status': status,
                     'error': 'fixture failure' if status != 'PASS' else ''}
 
-        def observation(early, label='fixture'):
-            return {'label': label, 'status': 200, 'bytes': 88200, 'duration_s': 1.0, 'rms': 900.0,
-                    'early_stop': early, 'segments_spoken': 1 if early else 2, 'segments_planned_log': 2}
-
-        def full_report(a, b):
-            seeds = [observation(False, f'seed-{s}') for s in range(1, 9)]
-            reply = {'label': 'r', 'status': 200, 'finish': 'stop', 'bytes': 88200, 'duration_s': 1.0, 'rms': 900.0, 'capped': False}
-            return {'checks': [check_row(n, 'PASS') for n in ('D1', 'D2', 'D3', 'D4')], 'builds': {}, 'commands': [], 'deviations': [],
-                    'd1': {'trees': {'A-nvfp4': a, 'B-nvfp4': b}},
-                    'd2': {'seeds': seeds, 'reached_segment_2': 8, 'fraction_reaching_segment_2': 1.0,
-                           'carry': {'method': 'm', 'why_not_server_log': 'w', 'status': 'PASS', 'exit': 0,
-                                     'segments': [{'segment': 2, 'start': 0, 'len': 40, 'expected': '<|speaker:1|>', 'ok': True}],
-                                     'per_seed': {s['label']: {'segments_spoken': 2, 'carry_segments': [2], 'carry_ok': True} for s in seeds}}},
-                    'd3': {'groups': {name: {'replies': 5, 'finish_length': 0, 'bytes_cap': 0, 'capped': 0, 'rows': [dict(reply) for _ in range(5)]}
-                                      for name in DIAG_GROUPS}},
-                    'd4': {'inputs': [{'id': 'j1'}, {'id': 'j2'}],
+        def full_report(capped=()):
+            # capped names the groups whose first two replies hit the frame cap.
+            def group(name):
+                rows = [{'label': f'r{i}', 'status': 200, 'finish': 'length' if name in capped and i < 2 else 'stop',
+                         'bytes': 88200, 'duration_s': 1.0, 'rms': 900.0, 'capped': name in capped and i < 2} for i in range(5)]
+                hits = sum(r['capped'] for r in rows)
+                return {'replies': 5, 'finish_length': hits, 'bytes_cap': 0, 'capped': hits, 'rows': rows}
+            return {'checks': [check_row(n, 'PASS') for n in ('D1', 'D2')], 'builds': {}, 'commands': [], 'deviations': [],
+                    'd1': {'groups': {name: group(name) for name in DIAG_GROUPS}},
+                    'd2': {'inputs': [{'id': 'j1'}, {'id': 'j2'}],
                            'rows': [{'id': j, 'wer': 0.0, 'rms': 900.0, 'duration_s': 1.0, 'flags': []} for j in ('j1', 'j2')]}}
 
         def inconclusive(name, report, needle=''):
@@ -1483,96 +1043,81 @@ def recovery_selftest(checks):
                            and 'Verdict: INCONCLUSIVE' in markdown and not any(p in markdown for p in comparative)))
 
         def mutated(change):
-            report = full_report([observation(True), observation(False)], [observation(False)])
+            report = full_report()
             change(report)
             return report
 
-        # Round-2 review observations: each malformed field must be INCONCLUSIVE, never comparative, never a crash.
-        d2, d4 = (lambda r: r['d2']), (lambda r: r['d4'])
-        round2 = {
-            'D2 fraction missing': lambda r: d2(r).pop('fraction_reaching_segment_2'),
-            'D2 reached count missing': lambda r: d2(r).pop('reached_segment_2'),
-            'D2 reached count inconsistent': lambda r: d2(r).update(reached_segment_2=3),
-            'D4 duration missing': lambda r: d4(r)['rows'][0].pop('duration_s'),
-            'D1 early stop with spoken > planned': lambda r: r['d1']['trees']['A-nvfp4'][0].update(segments_spoken=2, segments_planned_log=1),
-            'D1 early stop disagrees with counts': lambda r: r['d1']['trees']['B-nvfp4'][0].update(early_stop=True),
-            'D2 seeds all labelled seed-1': lambda r: [s.update(label='seed-1') for s in d2(r)['seeds']],
-            'D2 carry PASS with exit 1': lambda r: d2(r)['carry'].update(exit=1),
-            'D2 carry per_seed values null': lambda r: d2(r)['carry'].update(per_seed={k: None for k in d2(r)['carry']['per_seed']}),
-            'D2 carry per_seed not a dict': lambda r: d2(r)['carry'].update(per_seed=['seed-1']),
-            'D3 extra group': lambda r: r['d3']['groups'].update(extra={'replies': 5, 'rows': []}),
-            'D3 reply rms NaN': lambda r: r['d3']['groups'][DIAG_GROUPS[1]]['rows'][0].update(rms=float('nan')),
-            'D3 count disagrees with replies': lambda r: r['d3']['groups'][DIAG_GROUPS[0]].update(capped=2),
-            'D4 wer bool': lambda r: d4(r)['rows'][0].update(wer=True),
-            'D4 wer NaN': lambda r: d4(r)['rows'][0].update(wer=float('nan')),
-            'D4 rms Inf': lambda r: d4(r)['rows'][0].update(rms=float('inf')),
-            'D4 duration zero': lambda r: d4(r)['rows'][0].update(duration_s=0),
-            'D4 duplicate job id': lambda r: d4(r)['inputs'].append({'id': 'j1'}),
-            'D4 duplicate row': lambda r: d4(r)['rows'].append(dict(d4(r)['rows'][0])),
-            'D4 row id unhashable': lambda r: d4(r)['rows'][1].update(id=['j2']),
-            'D1 rows not a list': lambda r: r['d1']['trees'].update({'A-nvfp4': 'x'}),
-            'whole payloads of wrong type': lambda r: r.update(d1=[], d2='x', d3=None, d4=7, builds=[], checks={}),
+        # Each malformed field must be INCONCLUSIVE, never a frame-cap result, never a crash.
+        d1, d2 = (lambda r: r['d1']['groups']), (lambda r: r['d2'])
+        malformed = {
+            'D1 extra group': lambda r: d1(r).update(extra={'replies': 5, 'rows': []}),
+            'D1 groups not a dict': lambda r: r['d1'].update(groups=['x']),
+            'D1 reply rms NaN': lambda r: d1(r)[DIAG_GROUPS[1]]['rows'][0].update(rms=float('nan')),
+            'D1 count disagrees with replies': lambda r: d1(r)[DIAG_GROUPS[0]].update(capped=2),
+            'D2 duration missing': lambda r: d2(r)['rows'][0].pop('duration_s'),
+            'D2 wer bool': lambda r: d2(r)['rows'][0].update(wer=True),
+            'D2 wer NaN': lambda r: d2(r)['rows'][0].update(wer=float('nan')),
+            'D2 rms Inf': lambda r: d2(r)['rows'][0].update(rms=float('inf')),
+            'D2 duration zero': lambda r: d2(r)['rows'][0].update(duration_s=0),
+            'D2 duplicate job id': lambda r: d2(r)['inputs'].append({'id': 'j1'}),
+            'D2 duplicate row': lambda r: d2(r)['rows'].append(dict(d2(r)['rows'][0])),
+            'D2 row id unhashable': lambda r: d2(r)['rows'][1].update(id=['j2']),
+            'whole payloads of wrong type': lambda r: r.update(d1=[], d2='x', builds=[], checks={}),
         }
-        for label, change in round2.items():
+        for label, change in malformed.items():
             inconclusive(f'malformed: {label}', mutated(change))
         try:
             garbage = diag_markdown('not a report')
             checks.append(('non-dict report renders INCONCLUSIVE', 'Verdict: INCONCLUSIVE' in garbage))
         except Exception:
             checks.append(('non-dict report renders INCONCLUSIVE', False))
-        # Context fields (inputs, builds, reuse) are not verdict evidence; malformed ones render safely.
-        context = mutated(lambda r: (r['d1'].update(inputs={'fixed': None, 'corpus': [None, {'ids': 5}]}),
-                                     r.update(builds={'X': None}, build_reuse={'Y': 3}, deviations=None, commands=7)))
+        # Context fields (builds, reuse, identity) are not verdict evidence; malformed ones render safely.
+        context = mutated(lambda r: r.update(builds={'X': None}, build_reuse={'Y': 3}, nvfp4_identity={'trees': 5},
+                                             deviations=None, commands=7))
         try:
-            checks.append(('malformed context fields render without throwing', 'Verdict: B stops early' in diag_markdown(context)))
+            checks.append(('malformed context fields render without throwing', 'Verdict: frame cap reached by' in diag_markdown(context)))
         except Exception:
             checks.append(('malformed context fields render without throwing', False))
 
-        inconclusive('zero-observation failed run is INCONCLUSIVE without comparison',
-                     {'checks': [check_row(n, 'FAIL') for n in ('D1', 'D2', 'D3', 'D4')], 'builds': {}, 'd1': {'trees': {}},
-                      'commands': [], 'deviations': []}, 'zero A observations')
-        inconclusive('zero B observations stays INCONCLUSIVE', full_report([observation(True)], []), 'zero B observations')
-        partial = full_report([observation(False)], [observation(False)])
-        partial['checks'][2] = check_row('D3', 'FAIL')
-        inconclusive('one failed check stays INCONCLUSIVE', partial, 'D3 FAIL')
-        waited = full_report([observation(False)], [observation(False)])
+        inconclusive('failed run without evidence is INCONCLUSIVE',
+                     {'checks': [check_row(n, 'FAIL') for n in ('D1', 'D2')], 'builds': {}, 'd1': {},
+                      'commands': [], 'deviations': []}, 'D1 group A-full')
+        no_b = full_report()
+        for name in DIAG_GROUPS[2:]:
+            del no_b['d1']['groups'][name]
+        inconclusive('missing B groups stay INCONCLUSIVE', no_b, 'D1 group B-full')
+        no_a = full_report()
+        del no_a['d1']['groups'][DIAG_GROUPS[0]]
+        inconclusive('a missing A group stays INCONCLUSIVE', no_a, 'D1 group A-full')
+        partial = full_report()
+        partial['checks'][0] = check_row('D1', 'FAIL')
+        inconclusive('one failed check stays INCONCLUSIVE', partial, 'D1 FAIL')
+        waited = full_report()
         waited['checks'][1] = check_row('D2', 'WAIT')
         inconclusive('a WAIT check stays INCONCLUSIVE', waited, 'D2 WAIT')
-        # The blind-review repro: PASS rows (as carried by --diag-resume) over invalid D1 rows and empty D2-D4.
-        hollow = {'checks': [check_row(n, 'PASS') for n in ('D1', 'D2', 'D3', 'D4')], 'builds': {}, 'commands': [], 'deviations': [],
-                  'd1': {'trees': {'A-nvfp4': [{'label': 'x', 'status': 500, 'early_stop': None}],
-                                   'B-nvfp4': [{'label': 'x', 'status': 500, 'early_stop': None}]}},
-                  'd2': {}, 'd3': {}, 'd4': {}}
+        # PASS rows (as carried by --diag-resume) over empty payloads are not evidence.
+        hollow = {'checks': [check_row(n, 'PASS') for n in ('D1', 'D2')], 'builds': {}, 'commands': [], 'deviations': [],
+                  'd1': {}, 'd2': {}}
         status, reasons = diag_verdict(hollow)
-        checks.append(('carried PASS rows over invalid D1 and empty D2-D4 are INCONCLUSIVE',
-                       status == 'INCONCLUSIVE' and all(any(r.startswith(d) for r in reasons) for d in ('D1', 'D2', 'D3', 'D4'))
+        checks.append(('carried PASS rows over empty D1-D2 are INCONCLUSIVE',
+                       status == 'INCONCLUSIVE' and all(any(r.startswith(d) for r in reasons) for d in ('D1', 'D2'))
                        and not any(p in diag_markdown(hollow) for p in comparative)))
-        bad_d1 = full_report([observation(True)], [dict(observation(False), status=503)])
-        inconclusive('failed D1 reply is not an observation', bad_d1, 'D1 B has invalid')
-        bad_d1b = full_report([dict(observation(True), bytes=0)], [observation(False)])
-        inconclusive('empty D1 reply is not an observation', bad_d1b, 'D1 A has invalid')
-        bad_d2 = full_report([observation(True)], [observation(False)])
-        bad_d2['d2']['seeds'] = bad_d2['d2']['seeds'][:7]
-        inconclusive('missing D2 seed is INCONCLUSIVE', bad_d2, 'D2 lacks')
-        no_carry = full_report([observation(True)], [observation(False)])
-        no_carry['d2']['carry'] = {'status': 'unavailable (not verified)', 'segments': []}
-        inconclusive('missing D2 carry evidence is INCONCLUSIVE', no_carry, 'D2 has no carry')
-        bad_d3 = full_report([observation(True)], [observation(False)])
-        del bad_d3['d3']['groups'][DIAG_GROUPS[2]]
-        inconclusive('missing D3 group is INCONCLUSIVE', bad_d3, 'D3 group A-full')
-        bad_d3b = full_report([observation(True)], [observation(False)])
-        bad_d3b['d3']['groups'][DIAG_GROUPS[0]]['rows'] = [dict(r, status=500) for r in bad_d3b['d3']['groups'][DIAG_GROUPS[0]]['rows']]
-        inconclusive('failed D3 replies are INCONCLUSIVE', bad_d3b, 'has invalid replies')
-        bad_d4 = full_report([observation(True)], [observation(False)])
-        bad_d4['d4']['rows'][1] = {'id': 'j2', 'note': 'wav absent'}
-        inconclusive('D4 job without a result is INCONCLUSIVE', bad_d4, 'D4 lacks results for 1 of 2')
-        empty_d4 = full_report([observation(True)], [observation(False)])
-        empty_d4['d4'] = {'inputs': [], 'rows': []}
-        inconclusive('D4 with no jobs is INCONCLUSIVE', empty_d4, 'D4 has no jobs')
-        complete = full_report([observation(True), observation(False)], [observation(False)])
+        failed_replies = full_report()
+        failed_replies['d1']['groups'][DIAG_GROUPS[0]]['rows'] = [dict(r, status=500) for r in failed_replies['d1']['groups'][DIAG_GROUPS[0]]['rows']]
+        inconclusive('failed D1 replies are INCONCLUSIVE', failed_replies, 'has invalid replies')
+        empty_reply = full_report()
+        empty_reply['d1']['groups'][DIAG_GROUPS[3]]['rows'][0]['bytes'] = 0
+        inconclusive('an empty D1 reply is INCONCLUSIVE', empty_reply, 'has invalid replies')
+        bad_d2 = full_report()
+        bad_d2['d2']['rows'][1] = {'id': 'j2', 'note': 'wav absent'}
+        inconclusive('D2 job without a result is INCONCLUSIVE', bad_d2, 'D2 lacks results for 1 of 2')
+        empty_d2 = full_report()
+        empty_d2['d2'] = {'inputs': [], 'rows': []}
+        inconclusive('D2 with no jobs is INCONCLUSIVE', empty_d2, 'D2 has no jobs')
+        complete = full_report(capped=(DIAG_GROUPS[0],))
         status, reasons = diag_verdict(complete)
-        checks.append(('completed A/B run renders the comparative verdict',
-                       status == 'complete' and '**Verdict: B stops early less often than A**' in diag_markdown(complete)))
+        checks.append(('completed A/B run renders the frame-cap result per tree',
+                       status == 'complete' and '**Verdict: frame cap reached by A 2/10 and B 0/10 replies.**' in diag_markdown(complete)))
 
         # Every existing output path is refused unchanged; only a fresh path is claimed.
         sealed = base / 'sealed'
@@ -1683,22 +1228,15 @@ def claim_out():
 
 def carry_resume(jobs):
     """--diag-resume SUMMARY: prior PASS checks are carried into this run's summary instead of re-running,
-    so only the missing D1-D4 checks execute; the prior out dir's wavs stay readable for D4."""
+    so only the missing D1-D2 checks execute; the prior out dir's wavs stay readable for D2."""
     prior = json.loads(Path(DIAG_RESUME).read_text())
     done = {row['name']: row for row in prior.get('checks', []) if row.get('status') == 'PASS'}
     kept = [job for job in jobs if job[0] not in done]
     RESULTS.extend(done[name] for name, _, _, _ in jobs if name in done)
     if 'D1' in done:
         D1REC.update(prior.get('d1') or {})
-    elif 'D2' in done:
-        # D2's server also recorded D1's B column; keep that evidence when D1 alone re-runs.
-        D1REC['trees']['B-nvfp4'] = (prior.get('d1') or {}).get('trees', {}).get('B-nvfp4', [])
     if 'D2' in done:
         D2REC.update(prior.get('d2') or {})
-    if 'D3' in done:
-        D3REC.update(prior.get('d3') or {})
-    if 'D4' in done:
-        D4REC.update(prior.get('d4') or {})
     if not kept:
         summary()
     return kept
@@ -1710,23 +1248,12 @@ def diag_main():
         claim_out()
         ROOT.mkdir(parents=True, exist_ok=True)
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    try:
-        # First gate, before any build, unit pause, GPU lock or pilot (run 1 lost D1/D2/D4 here).
-        corpus_preflight()
-    except Exception as error:
-        RESULTS.append({'name': 'preflight-corpus', 'prs': [], 'start': now(), 'end': now(),
-                        'status': 'FAIL', 'error': f'{type(error).__name__}: {error}'})
-        log(RESULTS[-1]['error'])
-        if not PLAN:
-            summary()
-        return 1
     if not PLAN and not memory_preflight():
         return REFUSED
     prep()
     record_builds()
     acquire_gpu()
-    # D1 and D2 first (the deciding checks), then D3, then D4.
-    jobs = [('D1', [], d1, ()), ('D2', [], d2, ()), ('D3', [], d3, ()), ('D4', [], d4, ())]
+    jobs = [('D1', [33], d1, ()), ('D2', [33], d2, ())]
     if DIAG_RESUME and not PLAN:
         jobs = carry_resume(jobs)
     return run_jobs(jobs)
@@ -1737,7 +1264,7 @@ REFUSED = 75
 
 
 def memory_preflight():
-    """Second gate, before any build, pause, lock or pilot: below the full-profile floor record WAIT, write the
+    """First gate, before any build, pause, lock or pilot: below the full-profile floor record WAIT, write the
     INCONCLUSIVE summary and return False so diag_main exits REFUSED."""
     available = memavailable()
     if available >= PILOT_ADMISSION_FLOOR:
@@ -1759,7 +1286,8 @@ def summary():
     path = OUT / 'summary.json'
     report = json.loads(path.read_text()) if path.exists() else {}
     if RESULTS:
-        report.update({'checks': RESULTS, 'commands': COMMANDS, 'deviations': DEVIATIONS, 'build_reuse': REUSE})
+        report.update({'checks': RESULTS, 'commands': COMMANDS, 'deviations': DEVIATIONS, 'build_reuse': REUSE,
+                       'nvfp4_identity': NVFP4_IDENTITY})
     memory = []
     for path in OUT.glob('G*/**/memory.jsonl'):
         values = [json.loads(line)['memavailable_bytes'] for line in path.read_text().splitlines() if line.strip()]
@@ -1771,11 +1299,11 @@ def summary():
     report['paused'] = (OUT / 'paused.txt').read_text().splitlines() if (OUT / 'paused.txt').exists() else []
     report['resumed'] = json.loads((OUT / 'resumed.json').read_text()) if (OUT / 'resumed.json').exists() else {}
     report['listening'] = 'pending owner'
-    probe = OUT / 'cpu-probe.json'
-    report['cpu_probe'] = json.loads(probe.read_text()) if probe.exists() else {'status': 'unavailable (not verified)'}
-    report['per_pr'] = {str(pr): ('FAIL' if any(row['status'] == 'FAIL' for row in report.get('checks', []) if pr in row['prs']) else ('PASS' if len(report.get('checks', [])) == 9 else 'INCOMPLETE')) for pr in (26, 27, 28)}
+    checks = report.get('checks', [])
+    report['per_pr'] = {'33': 'FAIL' if any(row['status'] == 'FAIL' for row in checks) else
+                        ('PASS' if sorted(row['name'] for row in checks) == sorted(name for name, *_ in MAIN_JOBS) else 'INCOMPLETE')}
     save(OUT / 'summary.json', report)
-    lines = ['# GPU checks', '', 'Listening: pending owner', '', 'CPU text-boundary and speaker probe: ' + report['cpu_probe']['status'], '', '## Automatic checks']
+    lines = ['# GPU checks: PR #33 full model, A = main, B = TensorFold v1.1.9', '', 'Listening: pending owner', '', '## Automatic checks']
     for row in report.get('checks', []):
         lines.append(f"- {row['name']}: {row['status']} ({row.get('error', '')}); PRs {row['prs']}; {row['start']} to {row['end']}")
     lines += ['', '## Deviations', *['- ' + x for x in DEVIATIONS], '', '## Listening files', *report['audio'], '', '## Commands', '```sh', *report.get('commands', []), '```', '', 'Full measurements and pause/resume timestamps: summary.json and raw check JSON files.']
@@ -1792,9 +1320,6 @@ def main():
     if '--patch-selftest' in sys.argv:
         patch_selftest()
         return 0
-    if '--segments-selftest' in sys.argv:
-        segments_selftest()
-        return 0
     if '--diag-selftest' in sys.argv:
         diag_selftest()
         return 0
@@ -1810,12 +1335,11 @@ def main():
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     prep()
     acquire_gpu()
-    jobs = [(f'G1-{p}', [26, 27, 28], g1, (p,)) for p in ('full', 'nvfp4')]
-    jobs += [(f'G2-{p}', [27], g2, (p,)) for p in ('full', 'nvfp4')]
-    jobs += [(f'G3-{p}', [26], g3, (p,)) for p in (0, .5)]
-    jobs += [('G4', [26, 27, 28], g4, ())]
-    jobs += [(f'G5-{p}', [28], g5, (p,)) for p in ('full', 'nvfp4')]
-    return run_jobs(jobs)
+    return run_jobs(MAIN_JOBS)
+
+
+# PR #33 full-model A/B; NVFP4 is identical in both trees (see NVFP4_NOTE) and is not compared.
+MAIN_JOBS = [('G1-full', [33], g1, ()), ('G2-full', [33], g2, ()), ('G3-full', [33], g3, ())]
 
 
 if __name__ == '__main__':

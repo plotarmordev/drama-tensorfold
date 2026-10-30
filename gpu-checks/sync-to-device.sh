@@ -5,9 +5,8 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 w=$(cd "$here/.." && pwd)
 branch=$(git -C "$w" branch --show-current)
-git -C "$w" bundle create "$w/pr.bundle" main "$branch" a7752b4591da9b33bf6e7f8f2b478a638bc64bd1 3f44de621379bbe20f1ae6599a26465edf9dcbce
-ssh "$GPU_CHECK_SSH_HOST" mkdir -p "$w/gpu-checks" "$w/bench/corpus"
+# A = main f68738ea, B = PR #33's v1.1.9 tree 3f44de62 (runner.py SHAS); each tree carries its own bench corpus.
+git -C "$w" bundle create "$w/pr.bundle" main "$branch" f68738ea91de74dcf8bb698a26df44b5cf078396 3f44de621379bbe20f1ae6599a26465edf9dcbce
+ssh "$GPU_CHECK_SSH_HOST" mkdir -p "$w/gpu-checks"
 rsync -a "$here/" "$GPU_CHECK_SSH_HOST:$w/gpu-checks/"
 rsync -a "$w/pr.bundle" "$GPU_CHECK_SSH_HOST:$w/pr.bundle"
-# The device host has no git checkout, so the pinned corpus (runner.py CORPUS_SHA256 preflight) travels with the scripts.
-rsync -a "$w/bench/corpus/drama-bench-en-v1.jsonl" "$GPU_CHECK_SSH_HOST:$w/bench/corpus/drama-bench-en-v1.jsonl"

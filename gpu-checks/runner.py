@@ -306,6 +306,12 @@ def verify_patches(tree, profile, source):
     path = source / patch
     if not PLAN and not path.is_dir():
         raise RuntimeError(f'{tree}/{profile} patch series missing: {path}')
+    manifest = path / 'SHA256SUMS'
+    # Same rule as scripts/build-engine.sh: an empty full-model manifest declares an empty series, which
+    # `sha256sum -c` would reject. Any other profile's empty manifest still goes to the check and fails.
+    if profile == 'full' and manifest.is_file() and manifest.stat().st_size == 0 and not any(path.glob('*.patch')):
+        log(f'{tree}/{profile} patch series is empty by manifest; no checksums to verify')
+        return
     command(['sha256sum', '-c', 'SHA256SUMS'], cwd=path)
 
 
@@ -343,6 +349,21 @@ def patch_selftest():
         pass
     else:
         raise RuntimeError('A/full accepted a checksum mismatch')
+    # An empty full manifest with no patches is an empty series and skips the check; NVFP4 never does.
+    (base / 'A/engine/patches/0001-fixture.patch').unlink()
+    (base / 'A/engine/patches/SHA256SUMS').write_text('')
+    mark = len(COMMANDS)
+    verify_patches('A', 'full', base / 'A')
+    if any('sha256sum' in x for x in COMMANDS[mark:]):
+        raise RuntimeError('A/full empty series ran a checksum command')
+    (base / 'B/engine/nvfp4/patches/0001-fixture.patch').unlink()
+    (base / 'B/engine/nvfp4/patches/SHA256SUMS').write_text('')
+    try:
+        verify_patches('B', 'nvfp4', base / 'B')
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise RuntimeError('B/nvfp4 accepted an empty manifest')
     shutil.rmtree(base)
     log('patch selftest PASS')
 

@@ -190,7 +190,7 @@ feature. Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`
 | Request-local speech sampling and exact integer seeds, with parsed-JSON boundary docs | HTTP `temperature`, `top_p`, `top_k`, `seed` | [#1277](https://github.com/ashhart/TensorFold/pull/1277) |
 | Canonical speaker tags 0..15 in speech and catalog transcripts | speaker tags in text | [#1278](https://github.com/ashhart/TensorFold/pull/1278) |
 
-Every old patch's behaviour is in v1.1.9 with two differences. With the mid-silence rule on, `X-Silence-Mid-Trips`
+Every old patch's behaviour is in v1.1.9 (per upstream source; GPU A/B pending) with two differences. With the mid-silence rule on, `X-Silence-Mid-Trips`
 reports only whether the returned take tripped (0 or 1); takes discarded by silence/short/register redraws are no
 longer counted. A temperature of `-0` or `-1e-400` reaches the sampler as `+0` rather than `-0`; both were already
 greedy. `drama3-voice`, the upstream tool that writes attested voice files for `--voices`, is in TensorFold; the

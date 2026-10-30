@@ -68,8 +68,9 @@ patches=()
 if [[ -n $patch_dir ]]; then
   [[ -f $patch_dir/SHA256SUMS ]] || die "$patch_dir has no SHA256SUMS manifest"
   patches=("$patch_dir"/*.patch)
-  # An empty manifest declares an empty series: the pin already carries every feature.
-  ((${#patches[@]})) || [[ ! -s $patch_dir/SHA256SUMS ]] || die "$patch_dir has no *.patch files"
+  # An empty full-model manifest declares an empty series: the pin already carries every feature.
+  # The exemption is full-only, so an empty NVFP4 manifest still fails the build.
+  ((${#patches[@]})) || [[ $weights == full && ! -s $patch_dir/SHA256SUMS ]] || die "$patch_dir has no *.patch files"
   manifest_pattern='^[[:xdigit:]]{64}  ([^/[:space:]]+\.patch)$'
   listed_patches=()
   while IFS= read -r manifest_line || [[ -n $manifest_line ]]; do

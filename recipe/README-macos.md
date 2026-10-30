@@ -43,7 +43,7 @@ The build verifies its ordered patch checksums and does not require a CUDA compi
 Outputs are `build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native` and
 `build/tensorfold-nvfp4/zig-out/bin/{drama3-generate,drama3-voice}`.
 
-For the unchanged full-model recipe:
+For the full-model recipe (the Mac build at TensorFold v1.1.9 has not been run yet):
 
 ```sh
 hf download fishaudio/drama-3 --revision e0a9218aa48888270f06ef1ed9ea67622c0e17d2 --local-dir drama-3

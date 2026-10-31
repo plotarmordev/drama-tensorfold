@@ -34,8 +34,9 @@
 
 ### Added
 
-- `--parent-pid` on the macOS launcher: it stops the server, as for SIGTERM, once the supervisor
-  that started it exits (macOS has no parent-death signal).
+- `--parent-pid` on both launchers: each stops its server (the Linux one, its unit), as for SIGTERM,
+  once the supervisor that started it exits. macOS has no parent-death signal, and on Linux a
+  supervisor need not set one on the launcher.
 - Canonical speaker tags 0..15 in HTTP speech requests and reference transcripts,
   including native/Python catalog writers. Legacy CUDA long-form continuations
   retain the active speaker across splits and redraws; reference-count and malformed-tag

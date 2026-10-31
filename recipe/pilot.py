@@ -51,11 +51,16 @@ def main() -> int:
     parser.add_argument('--evidence-dir', type=Path, required=True)
     parser.add_argument('--port', type=int, default=18793)
     parser.add_argument('--ready-timeout', type=float, default=900)
+    parser.add_argument('--parent-pid', type=int, default=None,
+                        help='Stop the unit, as for SIGTERM, once this process is no longer the parent '
+                             '(for a supervisor that cannot set a parent-death signal on the launcher)')
     parser.add_argument('serve_args', nargs='*', metavar='SERVE_ARG',
                         help='Extra tensorfold-native serve flags, after --, e.g. -- --max-frames 2048')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('Port must be between 1 and 65535')
+    if args.parent_pid is not None and os.getppid() != args.parent_pid:
+        parser.error(f'--parent-pid {args.parent_pid} is not this launcher\'s parent')
     if args.weights is None and args.checkpoint is None:
         parser.error('Pass --weights nvfp4 or --weights full, or --checkpoint DIR')
     if args.weights == 'nvfp4' and args.backend != 'native':
@@ -132,6 +137,7 @@ def main() -> int:
         started = time.monotonic()
         started_at_epoch = time.time()
         ready_at = None
+        parent_exited = False
         worker = None
         watcher = None
         command = ['systemd-run', '--user', f'--unit={unit}', '--wait', '--pipe', '--collect',
@@ -153,7 +159,7 @@ def main() -> int:
                    'required_memavailable_bytes': required, 'cgroup_memory_max_bytes': CGROUP_CAP,
                    'headroom_floor_bytes': HEADROOM, 'abort_threshold_bytes': HEADROOM + STOP_MARGIN,
                    'unit': unit, 'server_command': server_command, 'launch_command': command,
-                   'started_at_epoch': started_at_epoch,
+                   'started_at_epoch': started_at_epoch, 'parent_pid': args.parent_pid,
                    'admission': 'operator-approved weights + 30 GiB; additional cgroup-cap reserve',
                    'allocator_caps_gib': allocator_caps,
                    'allocation_cap_excludes_driver_and_library_private_memory': True}
@@ -191,6 +197,9 @@ def main() -> int:
                 watcher = threading.Thread(target=watch_memory, daemon=True)
                 watcher.start()
                 while not stop.is_set() and worker.poll() is None:
+                    if args.parent_pid is not None and os.getppid() != args.parent_pid:
+                        parent_exited = True  # the supervisor is gone: a planned stop, not a failure
+                        break
                     if ready_at is None:
                         if time.monotonic() - started > args.ready_timeout:
                             failure.append('Readiness deadline exceeded')
@@ -256,7 +265,8 @@ def main() -> int:
                 signal.signal(signum, handler)
             final = {'ready': ready_at is not None, 'elapsed_s': time.monotonic() - started,
                      'minimum_memavailable_bytes': minimum_available[0],
-                     'final_memavailable_bytes': memory_available(), 'failures': failure}
+                     'final_memavailable_bytes': memory_available(), 'parent_exited': parent_exited,
+                     'failures': failure}
             (evidence / 'completion.json').write_text(json.dumps(final, indent=2) + '\n')
             print(json.dumps(final), flush=True)
     return 1 if failure else 0

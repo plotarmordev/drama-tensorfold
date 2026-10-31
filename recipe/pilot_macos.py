@@ -23,9 +23,12 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import time
 
-import weight_selection
+# python3 -I leaves the script's own directory off sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import weight_selection  # noqa: E402
 
 GIB = 1024**3
 HEADROOM = 30 * GIB

@@ -1,6 +1,6 @@
 # Speaker-tagged dialogue
 
-The patched speech routes accept canonical tags `<|speaker:0|>` through
+The full-model engine (TensorFold v1.1.9) and the patched NVFP4 speech routes accept canonical tags `<|speaker:0|>` through
 `<|speaker:15|>` in request text and reference transcripts. Untagged requests
 still start as speaker 0. Tags are preserved in the model prompt:
 
@@ -36,6 +36,38 @@ Malformed tags such as `<|speaker:01|>`, IDs outside 0..15, structural prompt
 tokens and the existing size/reference limits remain rejected. In the legacy
 CUDA long-form path, continuation segments retain the active speaker across
 automatic cuts, forced paragraph boundaries and redraws.
+
+The legacy CUDA splitter keeps its existing character, segment, prompt and
+frame limits. It does not adopt the MLX chunker's policy of at most three
+distinct speakers per chunk. Accepting sixteen valid speaker IDs does not
+qualify the acoustic quality of sixteen speakers in a single chunk. The
+full-model and Metal profiles do not gain a long-form splitter from this feature.
+
+## Known full-model stopping limitation
+
+These results were first measured on the previous full-model pin, TensorFold `d1018b31`
+plus patches 0001–0015. On one GB10 with that CUDA full-model build, this page's two-speaker
+example reached the 1024-frame cap (47.55 seconds, `X-Finish-Reason: length`)
+in three of five seeds with a matching reference catalog. The same text without
+speaker tags stopped normally in all five. Relabeling both references and input
+to speakers 0/1 still reached the cap in two of five seeds; using the tagged
+input without a reference catalog did so in one of five. Neither variation is a
+reliable workaround; both were measured on the previous pin only.
+
+The CUDA NVFP4 profile, with its default guidance, stopped normally on all five
+tagged and all five untagged requests in this small check. The engine pins,
+weights and guidance differ, so these observations do not establish the cause
+or a guarantee for NVFP4. Metal was not tested in this follow-up. See the
+[settings and per-seed results](../results/dialogue-stopping-20261030.json).
+
+The current full-model pin, TensorFold v1.1.9, gave the same outcome on the same
+GPU: with seeds 1–5, the tagged dialogue reached the frame cap in three of five
+and the untagged text in none, with per-reply bytes, durations and RMS identical
+to the previous pin. The limitation is unchanged on v1.1.9, not fixed; the
+investigation is tracked in
+[issue #32](https://github.com/plotarmordev/drama-tensorfold/issues/32).
+Treat `X-Finish-Reason: length` as an incomplete generation. The cause remains
+unresolved; accepting a speaker tag does not guarantee natural termination.
 
 The public [Sogni-AI/drama3-mlx prompt tests](https://github.com/Sogni-AI/drama3-mlx/blob/ecc235039ccd5f982f66a6982184f57432354ab4/tests/test_prompt.py#L38)
 provide the behavioral reference. These changes extend TensorFold's existing

@@ -9,6 +9,7 @@ published; the JSON files retain the measured results and synthetic-input hashes
 
 | File | What it holds |
 |---|---|
+| [`dialogue-stopping-20261030.json`](dialogue-stopping-20261030.json) | GB10 CUDA speaker-tagged stopping diagnostic: full-model frame-cap failures, untagged controls, reference/label variants and NVFP4 comparison; no listening or quality claim |
 | [`macos-nvfp4.json`](macos-nvfp4.json) | Native Metal NVFP4/CFG support on M5 Ultra: 28 HTTP checks, paired/separate PCM identity, registered operator gates with the initial fixture failure retained; no speed or quality-equivalence claim |
 | [`macos-pr17-repair.json`](macos-pr17-repair.json) | Current full-model Metal cache/lifecycle repair: 48/48 paired corpus captures identical, transition/cancellation/multilane parity, bounded voice-switch RSS; no speed claim |
 | [`before-after-02/`](before-after-02/README.md) | Reference against native: latency, RTF, first audio, cold start, frame-cap replies |

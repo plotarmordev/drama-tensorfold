@@ -49,8 +49,9 @@ use their native greedy path for zero temperature or `top_k: 1`; the legacy CUDA
 profile retains its existing repetition-aware sampler.
 
 The public [Sogni-AI/drama3-mlx API](https://github.com/Sogni-AI/drama3-mlx/blob/ecc235039ccd5f982f66a6982184f57432354ab4/drama3_mlx/model.py#L79)
-is the behavioral reference for exposing these controls. These patches are
-independent native Zig implementations; no Python inference dependency is added.
+is the behavioral reference for exposing these controls. The full-model engine serves them from
+upstream TensorFold v1.1.9 (#1277) and the NVFP4 profiles from their patches; all are
+independent native Zig implementations, and no Python inference dependency is added.
 
 CPU regressions exercise validation and the values actually submitted through
 the HTTP route. Device/model determinism and audio-quality qualification are

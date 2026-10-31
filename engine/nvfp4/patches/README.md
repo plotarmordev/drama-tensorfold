@@ -9,6 +9,7 @@ selected patch exactly once, verifies its digest, then applies the series.
 | `0001-protected-speech-chunks.patch` | Protected markup and CJK long-form boundaries; test fixture drain ordering | [TensorFold #5](https://github.com/plotarmordev/TensorFold/pull/5) |
 | `0002-speech-sampling-controls.patch` | Request sampling through whole/streamed, reference, CFG and long-form redraw paths | [TensorFold #6](https://github.com/plotarmordev/TensorFold/pull/6) |
 | `0003-dialogue-speakers.patch` | Canonical speaker IDs and continuation across long-form splits/history/redraws | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
+| `0004-remove-unused-redraw-salt.patch` | Remove the unused seed-salt helper superseded by request sampling | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
 
 Patch 0002 adds [request sampling](../../../recipe/README-sampling.md). Each
 long-form segment starts with the supplied seed; its retries add their own
@@ -18,6 +19,9 @@ Patch 0003 adds [speaker-tagged dialogue](../../../recipe/README-dialogue.md)
 on top of patches 0001 and 0002. Protected chunk boundaries keep markers intact;
 each continuation receives the speaker active at its start. Combined regressions
 exercise a hard cut inside long words with explicit sampling and an exact seed.
+
+Patch 0004 removes `Redraws.salt`, whose two callers moved to the request
+sampling implementation in patch 0002. It changes no live sampling path.
 
 Protected constructs are complete model special tokens, balanced bracketed
 spans and correctly nested, exact-name ASCII tags without attributes. Unclosed

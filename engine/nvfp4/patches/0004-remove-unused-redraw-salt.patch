@@ -1,0 +1,28 @@
+From e06a0cda2fd9fa6adcb5a309581b7691173bd1ce Mon Sep 17 00:00:00 2001
+From: Mauvis Ledford <20738+krunkosaurus@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 19:36:07 +0800
+Subject: [PATCH] server: remove unused redraw seed helper
+
+---
+ zig/src/server/speech_redraw.zig | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/zig/src/server/speech_redraw.zig b/zig/src/server/speech_redraw.zig
+index fd34beac..e5c4df27 100644
+--- a/zig/src/server/speech_redraw.zig
++++ b/zig/src/server/speech_redraw.zig
+@@ -69,11 +69,6 @@ pub const Redraws = struct {
+         return std.fmt.bufPrint(buf, "{d}", .{r.hollow orelse return null}) catch unreachable;
+     }
+ 
+-    /// The seed salt of a synthesis's attempt `k` (0 first, then its redraws): the server's salt plus `k`.
+-    pub fn salt(base: i64, k: u8) i64 {
+-        return base +% k;
+-    }
+-
+     /// Whether a draw of `text` that ended `reason` with `samples` at `rate` trips: silence, or a short stop.
+     pub fn trip(r: *const Redraws, reason: api.Reason, samples: usize, rate: u32, text: []const u8) ?Trip {
+         if (reason == .silence) return .silence;
+-- 
+2.46.0
+

@@ -66,9 +66,11 @@ esac
 shopt -s nullglob
 patches=()
 if [[ -n $patch_dir ]]; then
-  patches=("$patch_dir"/*.patch)
-  ((${#patches[@]})) || die "$patch_dir has no *.patch files"
   [[ -f $patch_dir/SHA256SUMS ]] || die "$patch_dir has no SHA256SUMS manifest"
+  patches=("$patch_dir"/*.patch)
+  # An empty full-model manifest declares an empty series: the pin already carries every feature.
+  # The exemption is full-only, so an empty NVFP4 manifest still fails the build.
+  ((${#patches[@]})) || [[ $weights == full && ! -s $patch_dir/SHA256SUMS ]] || die "$patch_dir has no *.patch files"
   manifest_pattern='^[[:xdigit:]]{64}  ([^/[:space:]]+\.patch)$'
   listed_patches=()
   while IFS= read -r manifest_line || [[ -n $manifest_line ]]; do
@@ -83,9 +85,9 @@ if [[ -n $patch_dir ]]; then
     done
     ((matches == 1)) || die "patch manifest must list every selected patch exactly once"
   done
-  if command -v sha256sum >/dev/null; then
+  if ((${#patches[@]})) && command -v sha256sum >/dev/null; then
     (cd "$patch_dir" && sha256sum -c SHA256SUMS) || die "patch checksum verification failed"
-  else
+  elif ((${#patches[@]})); then
     (cd "$patch_dir" && shasum -a 256 -c SHA256SUMS) || die "patch checksum verification failed"
   fi
 fi

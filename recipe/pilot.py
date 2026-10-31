@@ -74,7 +74,8 @@ def main() -> int:
                           '--context', '8192', '--parallel', '1', '--no-drafts',
                           '--prompt-cache-gib', '0', '--keep-warm', '0', *serve_args]
         backend_environment = ['TENSORFOLD_MEMORY_RESERVE_GIB=34',
-                               'TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54']
+                               'TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54',
+                               *weight_selection.native_environment(args.weights)]
         allocator_caps = {'tracked_cuda_and_pinned_host_buffers': 54}
     elif args.serve_args:
         parser.error('Extra serve flags apply to the native backend only')

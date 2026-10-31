@@ -106,7 +106,9 @@ directory is refused. Prefer a new evidence directory for each attempt.
 `vm_stat` speculative pages are already included in free pages. Purgeable pages are not added;
 these categories must not be counted twice. `--min-available-gib` is an explicit admission
 override, not a memory cap; it must be finite and at least the abort floor. Other numeric
-controls must also be finite and valid.
+controls must also be finite and valid. `--external-admission` is for a supervisor that budgets
+memory itself: it skips the admission and the abort floor (and refuses `--min-available-gib`);
+the lock, the process-group cleanup and `--reserve-gib` are unchanged.
 
 Stop the launcher with Ctrl-C or SIGTERM. It settles only its own process group, with bounded
 TERM/KILL cleanup, and retains the unreaped leader identity while checking descendants.

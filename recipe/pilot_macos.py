@@ -156,6 +156,9 @@ def main() -> int:
                         help='Override admission, never below 34 GiB (default: weights + 30 GiB)')
     parser.add_argument('--reserve-gib', type=float, default=34,
                         help='TENSORFOLD_MEMORY_RESERVE_GIB passed to the server (not a hard cap)')
+    parser.add_argument('--external-admission', action='store_true',
+                        help='A supervisor that budgets memory itself admits this load: skip the free+inactive '
+                             'admission and the abort floor; the lock and process-group cleanup stay')
     parser.add_argument('serve_args', nargs='*', metavar='SERVE_ARG',
                         help='Extra tensorfold-native serve flags, after --')
     args = parser.parse_args()
@@ -221,6 +224,8 @@ def main() -> int:
             socket.inet_pton(socket.AF_INET, args.host)
             if args.backend != 'native':
                 raise ValueError('sglang-omni needs the CUDA reference stack; this launcher is native-only')
+            if args.external_admission and args.min_available_gib is not None:
+                raise ValueError('--external-admission skips admission; drop --min-available-gib')
             if args.min_available_gib is not None and args.min_available_gib < ABORT_AVAILABLE / GIB:
                 raise ValueError('Admission override cannot be below the 34 GiB abort threshold')
             for value in (args.reserve_gib, args.min_available_gib):
@@ -236,9 +241,11 @@ def main() -> int:
             weights = backbone + (checkpoint / 'codec.pth').stat().st_size
             available = memory_available()
             minimum_available = available
-            floor = (args.min_available_gib * GIB if args.min_available_gib is not None
+            floor = (None if args.external_admission
+                     else args.min_available_gib * GIB if args.min_available_gib is not None
                      else max(weights + HEADROOM, ABORT_AVAILABLE))
-            if available < floor:
+            abort_below = None if args.external_admission else ABORT_AVAILABLE
+            if floor is not None and available < floor:
                 raise MemoryError(
                     f'Need {floor/GIB:.2f} GiB available, have {available/GIB:.2f}; no model was started')
             with socket.socket() as port_check:
@@ -265,14 +272,16 @@ def main() -> int:
             }
             initial = {**provenance, 'backend': args.backend, 'weights_bytes': weights,
                        'initial_memavailable_bytes': available,
-                       'required_memavailable_bytes': int(floor),
-                       'headroom_floor_bytes': HEADROOM, 'abort_threshold_bytes': ABORT_AVAILABLE,
+                       'required_memavailable_bytes': None if floor is None else int(floor),
+                       'headroom_floor_bytes': HEADROOM, 'abort_threshold_bytes': abort_below,
                        'memory_source': 'vm_stat free+inactive',
                        'min_available_override_gib': args.min_available_gib,
                        'server_command': server_command, 'environment': environment,
                        'started_at_epoch': started_at_epoch,
-                       'admission': 'override' if args.min_available_gib is not None
-                                    else 'max(weights + 30 GiB, 34 GiB)',
+                       'admission': ('external: the caller admits the load by its own memory budget'
+                                     if args.external_admission
+                                     else 'override' if args.min_available_gib is not None
+                                     else 'max(weights + 30 GiB, 34 GiB)'),
                        'engine_memory_reserve_gib': args.reserve_gib,
                        'hard_memory_cap': False}
             (evidence / 'session.json').write_text(json.dumps(initial, indent=2) + '\n')
@@ -302,7 +311,7 @@ def main() -> int:
                     memory_log.write(json.dumps({'elapsed_s': time.monotonic() - started,
                                                  'memavailable_bytes': current}) + '\n')
                     memory_log.flush()
-                    if current < ABORT_AVAILABLE:
+                    if abort_below is not None and current < abort_below:
                         raise MemoryError(
                             f'available memory {current/GIB:.2f} GiB crossed the '
                             f'{ABORT_AVAILABLE/GIB:.0f} GiB abort threshold')

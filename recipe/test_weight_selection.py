@@ -5,6 +5,8 @@ from contextlib import ExitStack
 import hashlib
 import json
 from pathlib import Path
+import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -169,6 +171,76 @@ class WeightSelectionTests(unittest.TestCase):
         completion = json.loads((evidence / 'completion.json').read_text())
         self.assertIsNone(completion['server_pid'])
         self.download.assert_not_called()
+
+    def test_linux_guard_is_the_documented_floor_unless_admission_is_external(self):
+        self.assertEqual(pilot.guard(20 * GIB, False), (88 * GIB, 34 * GIB))
+        self.assertEqual(pilot.guard(70 * GIB, False), (100 * GIB, 34 * GIB))
+        self.assertEqual(pilot.guard(70 * GIB, True), (None, None))
+
+    def test_both_launchers_admit_externally_below_the_floor(self):
+        systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+        for launcher in (pilot, pilot_macos):
+            for external in (False, True):
+                with self.subTest(launcher=launcher.__name__, external=external):
+                    evidence = self.root / f'evidence-{launcher.__name__}-{external}'
+                    arguments = self.launcher_arguments('nvfp4')
+                    arguments[arguments.index('--evidence-dir') + 1] = str(evidence)
+                    arguments += ['--port', str(free_port()), '--reserve-gib', '2']
+                    if external:
+                        arguments.append('--external-admission')
+                    (self.root / 'runtime').mkdir(exist_ok=True)
+                    with patch.object(sys, 'argv', arguments), \
+                            patch.object(launcher, 'memory_available', return_value=10 * GIB), \
+                            patch.object(launcher.subprocess, 'run', return_value=systemctl), \
+                            patch.object(launcher.subprocess, 'Popen', side_effect=Spawned) as spawn:
+                        if launcher is pilot and external:
+                            with self.assertRaises(Spawned):
+                                launcher.main()
+                        elif launcher is pilot:
+                            with self.assertRaises(SystemExit):
+                                launcher.main()
+                        else:
+                            self.assertEqual(launcher.main(), 1)
+                    self.assertEqual(spawn.call_count, 1 if external else 0)
+                    if not external:
+                        continue
+                    session = json.loads((evidence / 'session.json').read_text())
+                    self.assertTrue(session['admission'].startswith('external'))
+                    self.assertIsNone(session['required_memavailable_bytes'])
+                    self.assertIsNone(session['abort_threshold_bytes'])
+                    self.assertEqual(session['engine_memory_reserve_gib'], 2)
+                    command = spawn.call_args.args[0]
+                    environment = spawn.call_args.kwargs.get('env') or {}
+                    self.assertTrue('TENSORFOLD_MEMORY_RESERVE_GIB=2' in command
+                                    or environment.get('TENSORFOLD_MEMORY_RESERVE_GIB') == '2')
+        self.download.assert_not_called()
+
+    def test_external_admission_refuses_an_admission_override_or_a_bad_reserve(self):
+        arguments = self.launcher_arguments('nvfp4') + ['--external-admission', '--min-available-gib', '40']
+        with patch.object(sys, 'argv', arguments), \
+                patch.object(pilot_macos, 'memory_available', return_value=100 * GIB), \
+                patch.object(pilot_macos.subprocess, 'Popen') as spawn:
+            self.assertEqual(pilot_macos.main(), 1)
+            spawn.assert_not_called()
+        completion = json.loads((self.root / 'evidence/completion.json').read_text())
+        self.assertIn('--external-admission skips admission', '\n'.join(completion['failures']))
+        for reserve in ('nan', '-1', 'inf'):
+            with self.subTest(reserve=reserve), \
+                    patch.object(sys, 'argv', self.launcher_arguments('nvfp4') + [f'--reserve-gib={reserve}']), \
+                    patch.object(pilot.subprocess, 'Popen') as spawn:
+                with self.assertRaises(SystemExit):
+                    pilot.main()
+                spawn.assert_not_called()
+
+
+class Spawned(Exception):
+    """Raised by a mocked Popen: the launcher got past admission and started the server."""
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
 
 
 

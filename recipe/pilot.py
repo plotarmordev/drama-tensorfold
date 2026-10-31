@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -31,6 +32,13 @@ def memory_available() -> int:
     raise RuntimeError('MemAvailable is unavailable; refusing an unguarded load')
 
 
+def guard(weights: int, external_admission: bool) -> tuple[int | None, int | None]:
+    """MemAvailable required before loading and the abort threshold; neither when the caller admits the load."""
+    if external_admission:
+        return None, None
+    return max(weights + HEADROOM, CGROUP_CAP + HEADROOM + STOP_MARGIN), HEADROOM + STOP_MARGIN
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--weights', choices=tuple(weight_selection.WEIGHTS),
@@ -51,11 +59,18 @@ def main() -> int:
     parser.add_argument('--evidence-dir', type=Path, required=True)
     parser.add_argument('--port', type=int, default=18793)
     parser.add_argument('--ready-timeout', type=float, default=900)
+    parser.add_argument('--reserve-gib', type=float, default=34,
+                        help='TENSORFOLD_MEMORY_RESERVE_GIB passed to the native server (not a hard cap)')
+    parser.add_argument('--external-admission', action='store_true',
+                        help='A supervisor that budgets host memory admits this load: skip the MemAvailable '
+                             'admission and the abort threshold; the cgroup and allocator caps and the lock stay')
     parser.add_argument('serve_args', nargs='*', metavar='SERVE_ARG',
                         help='Extra tensorfold-native serve flags, after --, e.g. -- --max-frames 2048')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('Port must be between 1 and 65535')
+    if not (math.isfinite(args.reserve_gib) and args.reserve_gib >= 0):
+        parser.error('--reserve-gib must be finite and non-negative')
     if args.weights is None and args.checkpoint is None:
         parser.error('Pass --weights nvfp4 or --weights full, or --checkpoint DIR')
     if args.weights == 'nvfp4' and args.backend != 'native':
@@ -73,12 +88,14 @@ def main() -> int:
                           '--port', str(args.port), '--name', 'fishaudio/drama-3',
                           '--context', '8192', '--parallel', '1', '--no-drafts',
                           '--prompt-cache-gib', '0', '--keep-warm', '0', *serve_args]
-        backend_environment = ['TENSORFOLD_MEMORY_RESERVE_GIB=34',
+        backend_environment = [f'TENSORFOLD_MEMORY_RESERVE_GIB={args.reserve_gib:g}',
                                'TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54',
                                *weight_selection.native_environment(args.weights)]
         allocator_caps = {'tracked_cuda_and_pinned_host_buffers': 54}
     elif args.serve_args:
         parser.error('Extra serve flags apply to the native backend only')
+    elif args.reserve_gib != 34:
+        parser.error('--reserve-gib applies to the native backend only')
     else:
         executable = root / 'venv/bin/sgl-omni'
         working_directory = root / 'sglang-omni'
@@ -116,8 +133,8 @@ def main() -> int:
         except BlockingIOError:
             parser.error('Another workload owns the GPU slot; no model was started')
         available = memory_available()
-        required = max(weights + HEADROOM, CGROUP_CAP + HEADROOM + STOP_MARGIN)
-        if available < required:
+        required, abort_below = guard(weights, args.external_admission)
+        if required is not None and available < required:
             parser.error(f'Need {required/GIB:.2f} GiB available, have {available/GIB:.2f}; no model was started')
         try:
             with socket.socket() as port_check:
@@ -151,10 +168,13 @@ def main() -> int:
                    *server_command]
         initial = {**provenance, 'backend': args.backend, 'weights_bytes': weights, 'initial_memavailable_bytes': available,
                    'required_memavailable_bytes': required, 'cgroup_memory_max_bytes': CGROUP_CAP,
-                   'headroom_floor_bytes': HEADROOM, 'abort_threshold_bytes': HEADROOM + STOP_MARGIN,
+                   'headroom_floor_bytes': HEADROOM, 'abort_threshold_bytes': abort_below,
                    'unit': unit, 'server_command': server_command, 'launch_command': command,
                    'started_at_epoch': started_at_epoch,
-                   'admission': 'operator-approved weights + 30 GiB; additional cgroup-cap reserve',
+                   'admission': ('external: the caller admits the load by its own memory budget'
+                                 if args.external_admission
+                                 else 'operator-approved weights + 30 GiB; additional cgroup-cap reserve'),
+                   'engine_memory_reserve_gib': args.reserve_gib,
                    'allocator_caps_gib': allocator_caps,
                    'allocation_cap_excludes_driver_and_library_private_memory': True}
         (evidence / 'session.json').write_text(json.dumps(initial, indent=2) + '\n')
@@ -173,8 +193,9 @@ def main() -> int:
                         output.write(json.dumps({'elapsed_s': time.monotonic() - started,
                                                  'memavailable_bytes': current}) + '\n')
                         output.flush()
-                        if current < HEADROOM + STOP_MARGIN:
-                            raise MemoryError(f'MemAvailable {current/GIB:.2f} GiB crossed the 34 GiB abort threshold')
+                        if abort_below is not None and current < abort_below:
+                            raise MemoryError(f'MemAvailable {current/GIB:.2f} GiB crossed the '
+                                              f'{abort_below/GIB:.0f} GiB abort threshold')
             except Exception as exc:
                 failure.append(f'{type(exc).__name__}: {exc}')
                 stop.set()

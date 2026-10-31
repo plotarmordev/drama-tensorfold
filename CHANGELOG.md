@@ -34,6 +34,9 @@
 
 ### Added
 
+- `--external-admission` on both launchers, for a supervisor that budgets memory itself: no
+  admission check and no abort threshold; the caps, the lock and process-group cleanup stay. The
+  Linux launcher also takes `--reserve-gib` (default 34, as before), as the macOS one does.
 - Canonical speaker tags 0..15 in HTTP speech requests and reference transcripts,
   including native/Python catalog writers. Legacy CUDA long-form continuations
   retain the active speaker across splits and redraws; reference-count and malformed-tag

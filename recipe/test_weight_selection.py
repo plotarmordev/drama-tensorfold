@@ -1,14 +1,18 @@
 """Deterministic checkpoint/launcher tests: no network, model, GPU or child process."""
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
+import socket
+import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pilot
 import pilot_macos
@@ -169,6 +173,41 @@ class WeightSelectionTests(unittest.TestCase):
         completion = json.loads((evidence / 'completion.json').read_text())
         self.assertIsNone(completion['server_pid'])
         self.download.assert_not_called()
+
+    def test_linux_launcher_stops_its_unit_once_the_parent_is_gone(self):
+        parent = os.getppid()
+        arguments = self.launcher_arguments('nvfp4') + ['--port', str(free_port()), '--parent-pid', str(parent)]
+        (self.root / 'runtime').mkdir()
+        systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+        worker = Mock(returncode=0)
+        worker.poll.return_value = None
+        with patch.object(sys, 'argv', arguments), \
+                patch.object(pilot, 'memory_available', return_value=100 * GIB), \
+                patch.object(pilot.os, 'getppid', side_effect=[parent, 1]), \
+                patch.object(pilot.subprocess, 'run', return_value=systemctl) as run, \
+                patch.object(pilot.subprocess, 'Popen', return_value=worker):
+            self.assertEqual(pilot.main(), 0)
+        completion = json.loads((self.root / 'evidence/completion.json').read_text())
+        self.assertTrue(completion['parent_exited'])
+        self.assertEqual(completion['failures'], [])
+        self.assertIn('stop', [call.args[0][2] for call in run.call_args_list if call.args[0][0] == 'systemctl'])
+        self.download.assert_not_called()
+
+    def test_linux_launcher_refuses_a_parent_pid_that_is_not_its_parent(self):
+        arguments = self.launcher_arguments('nvfp4') + ['--parent-pid', str(os.getppid() + 1)]
+        errors = io.StringIO()
+        with patch.object(sys, 'argv', arguments), patch.object(pilot.subprocess, 'Popen') as spawn, \
+                redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                pilot.main()
+            spawn.assert_not_called()
+        self.assertIn("is not this launcher's parent", errors.getvalue())
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
 
 
 

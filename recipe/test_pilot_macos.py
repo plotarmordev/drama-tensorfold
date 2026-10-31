@@ -196,6 +196,24 @@ with http.server.HTTPServer((host, port), Health) as server:
 '''
 
 
+# A supervisor that passes its own PID, waits for readiness, then exits without signalling anyone.
+PARENT = r'''
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+ready = Path(sys.argv[1])
+with open(sys.argv[2], 'w') as log:
+    child = subprocess.Popen([*sys.argv[3:], '--parent-pid', str(os.getpid())], stdout=log, stderr=subprocess.STDOUT)
+print(child.pid, flush=True)
+deadline = time.monotonic() + 10
+while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+    time.sleep(0.02)
+os._exit(0)
+'''
+
+
 @unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('PILOT_MACOS_INTEGRATION') == '1',
                      'explicit macOS subprocess smoke; not a unit test')
 class MacLifecycleSmokeTests(unittest.TestCase):
@@ -323,6 +341,36 @@ class MacLifecycleSmokeTests(unittest.TestCase):
         self.assertEqual(result['failures'], [])
         self.assertEqual(result['cleanup_failures'], [])
         self.assertFalse(self.is_live(server['pid']))
+        self.assert_lock_free()
+
+    def test_parent_exit_stops_the_server_and_releases_the_lock(self):
+        root, evidence = self.base / 'runtime-orphan', self.base / 'evidence-orphan'
+        output = self.base / 'launcher-orphan.log'
+        with socket.socket() as port_socket:
+            port_socket.bind(('127.0.0.1', 0))
+            port = port_socket.getsockname()[1]
+        launcher = [sys.executable, str(self.runner), str(Path(pilot.__file__).parent), str(self.base),
+                    '--native-bin', str(self.server), '--runtime-dir', str(root),
+                    '--checkpoint', str(self.checkpoint), '--gpu-lock', str(self.lock),
+                    '--evidence-dir', str(evidence), '--port', str(port), '--ready-timeout', '5']
+        parent = subprocess.run([sys.executable, '-c', PARENT, str(evidence / 'ready.json'), str(output), *launcher],
+                                capture_output=True, text=True, timeout=15, check=True)
+        self.assertTrue((evidence / 'ready.json').exists(), output.read_text())
+        server = json.loads((root / 'server.json').read_text())
+        self.wait_until(lambda: (evidence / 'completion.json').exists(), timeout=12)
+        result = json.loads((evidence / 'completion.json').read_text())
+        self.assertEqual(result['stop_signal'], signal.SIGTERM)
+        self.assertEqual(result['failures'], [])
+        self.assertTrue(result['group_settled'])
+        self.wait_until(lambda: not self.is_live(int(parent.stdout)), timeout=5)
+        self.assertFalse(self.is_live(server['pid']))
+        self.assert_lock_free()
+
+    def test_parent_pid_that_is_not_the_parent_starts_nothing(self):
+        attempt = self.start(('--parent-pid', '1'))
+        result = self.completed(attempt, 1)
+        self.assertIsNone(result['server_returncode'])
+        self.assertIn('is not this launcher', '\n'.join(result['failures']))
         self.assert_lock_free()
 
     def test_admission_failure_invalidates_reused_readiness(self):

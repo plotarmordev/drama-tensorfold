@@ -152,6 +152,9 @@ def main() -> int:
     parser.add_argument('--host', default='127.0.0.1',
                         help='IPv4 bind address for the server; the port check uses it too')
     parser.add_argument('--ready-timeout', type=float, default=900)
+    parser.add_argument('--parent-pid', type=int, default=None,
+                        help='Stop the server, as for SIGTERM, once this process is no longer the parent '
+                             '(macOS has no parent-death signal)')
     parser.add_argument('--min-available-gib', type=float, default=None,
                         help='Override admission, never below 34 GiB (default: weights + 30 GiB)')
     parser.add_argument('--reserve-gib', type=float, default=34,
@@ -209,6 +212,8 @@ def main() -> int:
         try:
             if not 1 <= args.port <= 65535:
                 raise ValueError('Port must be between 1 and 65535')
+            if args.parent_pid is not None and os.getppid() != args.parent_pid:
+                raise ValueError(f'--parent-pid {args.parent_pid} is not this launcher\'s parent')
             # Validate after invalidating reused evidence, including NaN/Inf that
             # argparse's float conversion accepts.
             for name in ('ready_timeout', 'min_available_gib', 'reserve_gib'):
@@ -274,6 +279,7 @@ def main() -> int:
                        'admission': 'override' if args.min_available_gib is not None
                                     else 'max(weights + 30 GiB, 34 GiB)',
                        'engine_memory_reserve_gib': args.reserve_gib,
+                       'parent_pid': args.parent_pid,
                        'hard_memory_cap': False}
             (evidence / 'session.json').write_text(json.dumps(initial, indent=2) + '\n')
             (root / 'launched-at').write_text(f'{started_at_epoch:.6f}\n')
@@ -293,6 +299,9 @@ def main() -> int:
                     initial['server_pgid'] = worker.pid
                     (evidence / 'session.json').write_text(json.dumps(initial, indent=2) + '\n')
                 while stop_signal is None and worker is not None:
+                    if args.parent_pid is not None and os.getppid() != args.parent_pid:
+                        stop_signal = signal.SIGTERM  # the supervisor is gone: a planned stop, not a failure
+                        break
                     states = group_states(worker.pid)
                     if states[worker.pid].startswith('Z'):
                         unexpected_exit = True

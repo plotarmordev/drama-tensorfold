@@ -59,6 +59,10 @@ The launcher:
 - samples `MemAvailable` every 100 ms and kills the whole unit if it falls below 34 GiB;
 - on exit, keeps the lock until systemd confirms the unit is inactive.
 
+A supervisor that starts the launcher can pass `--parent-pid` with its own PID: the launcher stops the unit, as for
+SIGTERM, once that process is gone, and refuses a PID that is not its parent. That covers a supervisor that cannot set
+a parent-death signal on the launcher; one that can need not pass it.
+
 The native server caps tracked CUDA and pinned-host buffers together at 54 GiB
 (`TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54`) and keeps 34 GiB of host headroom at admission
 (`TENSORFOLD_MEMORY_RESERVE_GIB=34`). The reference's PyTorch allocator budgets are 4 GiB for preprocessing,

@@ -1,8 +1,7 @@
 From 9e782dc995b191829c02be6f8779faac164f53d5 Mon Sep 17 00:00:00 2001
 From: Mauvis Ledford <20738+krunkosaurus@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 11:59:05 +0800
-Subject: [PATCH] Drama speech: preserve dialogue speakers across long-form
- requests
+Subject: [PATCH] server: preserve dialogue speakers across long-form requests
 
 ---
  CHANGELOG.md                              |   2 +

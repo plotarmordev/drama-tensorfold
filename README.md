@@ -169,9 +169,10 @@ The full-model engine (`--weights full`) is TensorFold v1.1.9 with no patches: e
 added is upstream. Each flagged feature stays off until you pass its flag, so a server started without them answers as plain
 TensorFold does. The Linux recipe sets `TF_DRAMA_PREFILL_ROWS=128` for native full-model and custom-checkpoint
 launches to keep batched prefill; TensorFold otherwise defaults to single-row prefill. NVFP4 and the sglang
-reference backend do not receive this setting. Per-request `temperature`, `top_p`, `top_k` and `seed` need no
-launch flag; the CUDA NVFP4 series (0002) and the Metal NVFP4 series (0004, 0005) carry the same request-level
-feature. Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
+reference backend do not receive this setting. Per-request `temperature`, `top_p`, `top_k` and `seed`, and speaker
+tags 0 to 15 in request text, need no launch flag; the CUDA NVFP4 series (0002, 0003) and the Metal NVFP4 series
+(0004-0006) carry the same two request-level features.
+Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 
 | In TensorFold 1.1.9 | Opt in with | Upstream |
 |---|---|---|

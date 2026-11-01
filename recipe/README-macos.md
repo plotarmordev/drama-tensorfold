@@ -110,8 +110,9 @@ controls must also be finite and valid.
 
 Stop the launcher with Ctrl-C or SIGTERM. A supervisor that starts the launcher can pass
 `--parent-pid` with its own PID: macOS has no parent-death signal, so the launcher checks its
-parent on each sample and stops the server, as for SIGTERM, once that process is gone. A PID that
-is not the launcher's parent is refused before anything starts. It settles only its own process group, with bounded
+parent on each sample and stops the server, as for SIGTERM, once that process is gone, recording
+`parent_exited: true` in `completion.json` with `stop_signal` left null. A PID that is not the
+launcher's parent is refused before anything starts. It settles only its own process group, with bounded
 TERM/KILL cleanup, and retains the unreaped leader identity while checking descendants.
 An unexpected server exit is a failure even when the server's exit status is zero. Observation
 errors fail closed. The server inherits the lock descriptor, so killing only the launcher

@@ -203,6 +203,7 @@ def main() -> int:
         group_settled = True
         unexpected_exit = False
         stop_signal = None
+        parent_exited = False
 
         def request_stop(signum: int, _frame: object) -> None:
             nonlocal stop_signal
@@ -300,7 +301,7 @@ def main() -> int:
                     (evidence / 'session.json').write_text(json.dumps(initial, indent=2) + '\n')
                 while stop_signal is None and worker is not None:
                     if args.parent_pid is not None and os.getppid() != args.parent_pid:
-                        stop_signal = signal.SIGTERM  # the supervisor is gone: a planned stop, not a failure
+                        parent_exited = True  # the supervisor is gone: a planned stop, not a failure
                         break
                     states = group_states(worker.pid)
                     if states[worker.pid].startswith('Z'):
@@ -353,7 +354,7 @@ def main() -> int:
                      'server_pid': worker.pid if worker is not None else None,
                      'server_pgid': worker.pid if worker is not None else None,
                      'server_returncode': worker.returncode if worker is not None else None,
-                     'stop_signal': stop_signal, 'group_settled': group_settled,
+                     'stop_signal': stop_signal, 'parent_exited': parent_exited, 'group_settled': group_settled,
                      'failures': failure, 'cleanup_failures': cleanup_failure}
             (evidence / 'completion.json').write_text(json.dumps(final, indent=2) + '\n')
             print(json.dumps(final), flush=True)

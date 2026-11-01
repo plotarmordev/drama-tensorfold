@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Both launchers start under `python3 -I`: each imports `weight_selection` from its own directory,
+  which isolated mode leaves off `sys.path`.
 - CUDA NVFP4 long-form splitting preserves paired delivery tags, bracketed cues and special tokens,
   including topic-shift handling, and recognizes CJK sentence/clause punctuation. An indivisible
   protected span may exceed the character target; existing prompt and frame limits still apply.

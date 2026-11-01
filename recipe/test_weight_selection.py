@@ -232,6 +232,60 @@ class WeightSelectionTests(unittest.TestCase):
                     pilot.main()
                 spawn.assert_not_called()
 
+    def test_linux_runtime_abort_fires_below_34_gib_unless_admission_is_external(self):
+        stopped = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+        for external in (False, True):
+            with self.subTest(external=external):
+                evidence = self.root / f'evidence-runtime-{external}'
+                arguments = self.launcher_arguments('nvfp4')
+                arguments[arguments.index('--evidence-dir') + 1] = str(evidence)
+                arguments += ['--port', str(free_port())]
+                if external:
+                    arguments.append('--external-admission')
+                (self.root / 'runtime').mkdir(exist_ok=True)
+                worker = LiveWorker()
+                with patch.object(sys, 'argv', arguments), \
+                        patch.object(pilot, 'memory_available', side_effect=worker.memory_available), \
+                        patch.object(pilot.subprocess, 'run', return_value=stopped) as run, \
+                        patch.object(pilot.subprocess, 'Popen', return_value=worker), \
+                        patch.object(pilot.urllib.request, 'urlopen') as health:
+                    health.return_value.__enter__.return_value.status = 200
+                    status = pilot.main()
+                kills = [c.args[0] for c in run.call_args_list if c.args[0][:3] == ['systemctl', '--user', 'kill']]
+                completion = json.loads((evidence / 'completion.json').read_text())
+                self.assertTrue(completion['ready'])
+                self.assertEqual(completion['minimum_memavailable_bytes'], 20 * GIB)
+                if external:
+                    self.assertEqual((status, kills, completion['failures']), (0, [], []))
+                else:
+                    self.assertEqual(status, 1)
+                    self.assertEqual(len(kills), 1)
+                    self.assertIn('--signal=SIGKILL', kills[0])
+                    self.assertEqual(completion['failures'],
+                                     ['MemoryError: MemAvailable 20.00 GiB crossed the 34 GiB abort threshold'])
+        self.download.assert_not_called()
+
+
+class LiveWorker:
+    """A server that stays up, while MemAvailable drops to 20 GiB, until the watcher has sampled twice."""
+
+    def __init__(self):
+        self.samples = 0
+        self.returncode = None
+
+    def memory_available(self):
+        self.samples += 1
+        return 100 * GIB if self.samples == 1 else 20 * GIB
+
+    def poll(self):
+        # The second low sample means the first one has been through the abort check.
+        if self.samples > 2:
+            self.returncode = 0
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
 
 class Spawned(Exception):
     """Raised by a mocked Popen: the launcher got past admission and started the server."""

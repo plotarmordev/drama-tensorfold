@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pilot
 import pilot_macos
@@ -248,8 +248,7 @@ class WeightSelectionTests(unittest.TestCase):
                         patch.object(pilot, 'memory_available', side_effect=worker.memory_available), \
                         patch.object(pilot.subprocess, 'run', return_value=stopped) as run, \
                         patch.object(pilot.subprocess, 'Popen', return_value=worker), \
-                        patch.object(pilot.urllib.request, 'urlopen') as health:
-                    health.return_value.__enter__.return_value.status = 200
+                        patch.object(pilot.urllib.request, 'urlopen', side_effect=worker.health):
                     status = pilot.main()
                 kills = [c.args[0] for c in run.call_args_list if c.args[0][:3] == ['systemctl', '--user', 'kill']]
                 completion = json.loads((evidence / 'completion.json').read_text())
@@ -267,19 +266,28 @@ class WeightSelectionTests(unittest.TestCase):
 
 
 class LiveWorker:
-    """A server that stays up, while MemAvailable drops to 20 GiB, until the watcher has sampled twice."""
+    """A ready server that stays up until the watcher has checked two samples of 20 GiB."""
 
     def __init__(self):
-        self.samples = 0
+        self.ready = False
+        self.low_samples = 0
         self.returncode = None
 
+    def health(self, *_args, **_kwargs):
+        self.ready = True
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        return response
+
     def memory_available(self):
-        self.samples += 1
-        return 100 * GIB if self.samples == 1 else 20 * GIB
+        if not self.ready:
+            return 100 * GIB
+        self.low_samples += 1
+        return 20 * GIB
 
     def poll(self):
         # The second low sample means the first one has been through the abort check.
-        if self.samples > 2:
+        if self.low_samples > 1:
             self.returncode = 0
         return self.returncode
 

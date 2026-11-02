@@ -59,6 +59,10 @@ The launcher:
 - samples `MemAvailable` every 100 ms and kills the whole unit if it falls below 34 GiB;
 - on exit, keeps the lock until systemd confirms the unit is inactive.
 
+A supervisor that starts the launcher can pass `--parent-pid` with its own PID: the launcher stops the unit, as for
+SIGTERM, once that process is gone, and refuses a PID that is not its parent. That covers a supervisor that cannot set
+a parent-death signal on the launcher; one that can need not pass it.
+
 When a supervisor that budgets host memory itself starts the launcher (one service running several models from one
 memory budget), `--external-admission` skips the `MemAvailable` admission and the 34 GiB abort: the supervisor has
 already reserved the room. The unit's 54 GiB cap, the allocator cap and the lock stay. `--reserve-gib` (default 34)

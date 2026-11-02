@@ -36,6 +36,10 @@
 
 ### Added
 
+- `--parent-pid` on both launchers: each stops its server (the Linux one, its unit), as for SIGTERM,
+  once the supervisor that started it exits, and records `parent_exited: true` in completion.json
+  (on macOS `stop_signal` stays null). macOS has no parent-death signal, and on Linux a
+  supervisor need not set one on the launcher.
 - `--external-admission` on both launchers, for a supervisor that budgets memory itself: no
   admission check and no abort threshold; the caps, the lock and process-group cleanup stay. The
   Linux launcher also takes `--reserve-gib` (default 34, as before), as the macOS one does.

@@ -59,6 +59,12 @@ The launcher:
 - samples `MemAvailable` every 100 ms and kills the whole unit if it falls below 34 GiB;
 - on exit, keeps the lock until systemd confirms the unit is inactive.
 
+When a supervisor that budgets host memory itself starts the launcher (one service running several models from one
+memory budget), `--external-admission` skips the `MemAvailable` admission and the 34 GiB abort: the supervisor has
+already reserved the room. The unit's 54 GiB cap, the allocator cap and the lock stay. `--reserve-gib` (default 34)
+sets the engine's `TENSORFOLD_MEMORY_RESERVE_GIB`: the engine budgets free memory less this reserve and refuses
+weights that do not fit, so a supervisor that admits loads with less free memory passes a smaller reserve.
+
 The native server caps tracked CUDA and pinned-host buffers together at 54 GiB
 (`TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54`) and keeps 34 GiB of host headroom at admission
 (`TENSORFOLD_MEMORY_RESERVE_GIB=34`). The reference's PyTorch allocator budgets are 4 GiB for preprocessing,

@@ -325,6 +325,24 @@ class MacLifecycleSmokeTests(unittest.TestCase):
         self.assertFalse(self.is_live(server['pid']))
         self.assert_lock_free()
 
+    def test_external_admission_starts_below_the_floor_and_never_aborts(self):
+        self.set_memory('20')
+        attempt = self.start(('--external-admission',))
+        server = self.ready(attempt)
+        session = json.loads((attempt[2] / 'session.json').read_text())
+        self.assertIsNone(session['required_memavailable_bytes'])
+        self.assertIsNone(session['abort_threshold_bytes'])
+        samples = (attempt[2] / 'memory.jsonl').read_text().count('\n')
+        self.set_memory('1')
+        self.wait_until(lambda: (attempt[2] / 'memory.jsonl').read_text().count('\n') >= samples + 5)
+        self.assertIsNone(attempt[0].poll(), attempt[3].read_text())
+        attempt[0].terminate()
+        result = self.completed(attempt, 0)
+        self.assertEqual(result['failures'], [])
+        self.assertEqual(result['stop_signal'], signal.SIGTERM)
+        self.assertFalse(self.is_live(server['pid']))
+        self.assert_lock_free()
+
     def test_admission_failure_invalidates_reused_readiness(self):
         evidence = self.base / 'reused'
         evidence.mkdir()

@@ -4,6 +4,10 @@
 
 ### Changed
 
+- `--weights nvfp4 --checkpoint DIR` also accepts the unpublished t5900-cover quant, verified against
+  `recipe/checksums/nvfp4-t5900cover.sha256` and never downloaded. Both local quants load and speak on the
+  Metal path; [`results/macos-nvfp4-quants.json`](results/macos-nvfp4-quants.json) picks t5900-cover to serve
+  beside a 171 GB local model.
 - The full-model engine pins TensorFold v1.1.9 with an empty patch series: every behaviour of the
   old patches 0001–0015 is upstream. A CUDA GPU A/B against the previous pin passed: corpus captures
   byte-identical, request sampling and speaker tags pass. Two differences remain: with the mid-silence rule on,

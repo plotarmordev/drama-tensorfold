@@ -33,3 +33,6 @@ runtime/
 # Voice clips, transcripts and voice files: they hold a person's voice
 clips/
 voices/
+
+# This Mac's recipe/speech_server.py settings; recipe/speech-server.example.ini documents them
+speech-server.ini

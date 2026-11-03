@@ -96,4 +96,6 @@ rejects a byte budget. Its 44 GiB engine allocator cap is unchanged.
   revision `e0a9218a`.
 - `checksums/nvfp4.sha256`: SHA-256 of the codec, the eight weight shards, their index, the configs and the
   tokenizer files of `plotarmordev/drama-3-NVFP4-Pruned` at revision `494db084`.
+- `checksums/nvfp4-t5900cover.sha256`: the same files of the unpublished `drama3-nvfp4-t5900cover-v1` quant,
+  accepted only from an explicit `--checkpoint`.
 - `sources.json`: the pinned reference and checkpoint revisions.

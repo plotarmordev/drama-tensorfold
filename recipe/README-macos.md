@@ -160,6 +160,31 @@ For streaming, add `"response_format":"pcm","stream":true` and use `curl -N`. Th
 mono signed 16-bit little-endian PCM at 44.1 kHz; `afplay` needs a suitable container such as WAV.
 Check the HTTP status and `X-Finish-Reason` rather than treating any saved file as successful audio.
 
+## Speech server
+
+`recipe/speech_server.py` runs the NVFP4 engine behind the same `/v1/audio/speech` API as the GB10
+host, from one config file. Copy [`speech-server.example.ini`](speech-server.example.ini) to
+`speech-server.ini` (git-ignored), set `checkpoint` and, for cloned voices, `voices` and `default_voice`, then
+create the lock file and start it from the repository root:
+
+```sh
+mkdir -p runtime && touch runtime/gpu.lock
+python3 recipe/speech_server.py speech-server.ini
+```
+
+It starts `pilot_macos.py` on `engine_port` and serves `port` once the engine prints `DRAMA_PILOT_READY`;
+Ctrl-C or SIGTERM stops both. The engine runs with `--max-frames 4096` and the silence guard
+(`--silence-floor-dbfs -40 --silence-seconds 10 --silence-redraws 1`). The Metal engine has no long-form
+splitter, so an input over 500 characters, up to the GB10's 2400, is spoken in segments cut at sentence
+ends (else spaces, never inside a tag or bracketed cue) and joined into one WAV or one PCM stream. A
+segment that ends in silence or at the frame cap does not end the reply. `X-Finish-Reason` is the last
+segment's; the reply's other engine headers come from one segment.
+
+On an Apple M5 Ultra with the t5900-cover quant, a 2425-character English passage in the built-in voice
+gave six segments and 150 s of audio in 104 s; one segment fell silent twice (guard and redraw) and the
+next segments were still spoken. Without the guard the same passage gave 320 s, 170 s of it silence
+after one take stopped speaking and ran to the frame cap.
+
 ## Attested reference voices
 
 Use a synthetic voice, your own voice, or a voice for which you have the required permission.

@@ -42,6 +42,12 @@
 
 ### Added
 
+- `recipe/speech_server.py` serves the Mac NVFP4 engine behind the GB10 host's `/v1/audio/speech` API
+  from one config file ([`recipe/speech-server.example.ini`](recipe/speech-server.example.ini)): the built-in
+  voice or catalogs from a configured folder, and inputs up to 2400 characters spoken in 500-character
+  segments, so a take that falls silent does not end the reply. See
+  [the speech server](recipe/README-macos.md#speech-server).
+
 - `scripts/test.sh` runs every test that needs no model, GPU or network on Linux or macOS and exits
   non-zero on any failure. Off Linux, `gpu-checks/selftest.sh` skips only its systemd pause/resume
   part, with one line.

@@ -87,6 +87,35 @@ class WeightSelectionTests(unittest.TestCase):
         self.download.assert_not_called()
         self.assertFalse((self.root / 'missing').exists())
 
+    def local_quant(self, target):
+        """An unpublished quant at TARGET, pinned only by the local manifest."""
+        target.mkdir()
+        entries = []
+        for name in ('model.safetensors.index.json', 'model.safetensors', 'codec.pth'):
+            content = f'local:{name}'.encode()
+            (target / name).write_bytes(content)
+            entries.append(f'{hashlib.sha256(content).hexdigest()}  {name}\n')
+        pins = selection.WEIGHTS['nvfp4']['local_pins'][0]
+        (self.recipe / 'checksums' / pins).write_text(''.join(entries))
+        return pins
+
+    def test_unpublished_quant_is_served_only_from_an_explicit_checkpoint(self):
+        override = self.root / 'local-quant'
+        pins = self.local_quant(override)
+        provenance = selection.prepare_checkpoint('nvfp4', override)
+        self.assertTrue(provenance['checkpoint_verified'])
+        self.assertEqual(Path(provenance['checkpoint_manifest']).name, pins)
+        self.assertIsNone(provenance['checkpoint_source'])
+        (override / 'model.safetensors').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, f'Restore it from the release folder that matches {pins}'):
+            selection.prepare_checkpoint('nvfp4', override)
+        default = selection.checkpoint_path('nvfp4', None)
+        default.rename(self.root / 'published')
+        self.local_quant(default)
+        with self.assertRaisesRegex(ValueError, 'hf download'):
+            selection.prepare_checkpoint('nvfp4', None)
+        self.download.assert_not_called()
+
     def test_existing_missing_or_corrupt_input_is_not_repaired(self):
         for mode in selection.WEIGHTS:
             target = selection.checkpoint_path(mode, None)

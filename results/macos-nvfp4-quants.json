@@ -1,0 +1,89 @@
+{
+  "scope": "Both local NVFP4 quants served by the pinned Metal NVFP4 engine from an explicit --checkpoint, beside the resident 171 GB local model: speech, real-time factor and memory. No quality comparison with the full model.",
+  "platform": {
+    "observed_gpu": "Apple M5 Ultra",
+    "ram_gib": 256
+  },
+  "engine": {
+    "head": "a6791c73da3745ebaabd5654386c26b20f55fe94",
+    "build": "scripts/build-engine.sh --weights nvfp4",
+    "native_sha256": "32c5e934c0a8cd2e9c4a60aaca21fb2c9081968ecc1159bf98718e7cbf32cc2c"
+  },
+  "launch": "recipe/pilot_macos.py --weights nvfp4 --checkpoint DIR (defaults --cfg-gamma 1.5 --cfg-batched, --context 8192, --parallel 1)",
+  "workload": "bench/corpus_capture.py --passes 2, builtin voice, 24 corpus items; pass 1 is the warm pass",
+  "quants": {
+    "drama3-nvfp4-t5900cover-v1": {
+      "release": "unpublished",
+      "manifest": "recipe/checksums/nvfp4-t5900cover.sha256",
+      "experts_held": 5900,
+      "experts_of": 10240,
+      "loaded": true,
+      "conversion_or_modification": false,
+      "speech": {
+        "requests": 48,
+        "http_200": 48,
+        "audio_s_per_pass": 343.3,
+        "repeat_pass_pcm_identical": "24/24",
+        "rms_dbfs_min": -33.0,
+        "rms_dbfs_median": -18.2,
+        "frame_cap_takes": [
+          "short-08",
+          "long-07"
+        ]
+      },
+      "rtf_warm_pass": {
+        "total": 0.501,
+        "median": 0.513,
+        "max": 0.602
+      },
+      "memory": {
+        "engine_wired_between_requests_gib": 25.0,
+        "peak_rss_gib": 16.09,
+        "peak_physical_footprint_gb": 9.0,
+        "min_free_plus_inactive_gib": 47.5
+      }
+    },
+    "drama3-nvfp4-trim7369-v1": {
+      "release": "plotarmordev/drama-3-NVFP4-Pruned@494db084",
+      "manifest": "recipe/checksums/nvfp4.sha256",
+      "experts_held": 7369,
+      "experts_of": 10240,
+      "loaded": true,
+      "conversion_or_modification": false,
+      "speech": {
+        "requests": 48,
+        "http_200": 48,
+        "audio_s_per_pass": 280.9,
+        "repeat_pass_pcm_identical": "24/24",
+        "rms_dbfs_min": -30.4,
+        "rms_dbfs_median": -17.6,
+        "frame_cap_takes": [
+          "medium-01"
+        ]
+      },
+      "rtf_warm_pass": {
+        "total": 0.508,
+        "median": 0.513,
+        "max": 0.653
+      },
+      "memory": {
+        "engine_wired_between_requests_gib": 27.5,
+        "peak_rss_gib": 16.45,
+        "peak_physical_footprint_gb": 9.1,
+        "min_free_plus_inactive_gib": 47.1
+      }
+    }
+  },
+  "beside_local_model": {
+    "host_gpu_allocation_gb_before": 195.0,
+    "host_gpu_allocation_gb_with_t5900cover": 222.2,
+    "drama_t5900cover_gpu_allocation_gb": 27.2,
+    "swap_used_mb_before_and_after": 354,
+    "note": "IOAccelerator \"Alloc system memory\" across all processes, including the 171 GB local model and a 4.5 GB reranker; neither was stopped or changed. The engine admits a load under 70% of RAM (179.2 GB) per process only."
+  },
+  "frame_cap_note": "A frame-cap take runs the full 4096 frames (47.6 s). For t5900cover, X-Finish-Reason was read on every item: length on the two listed, stop on the other 22. For trim7369 the cap take is identified by its 47.6 s length. Greedy decoding repeats every take byte for byte.",
+  "decision": {
+    "serve": "drama3-nvfp4-t5900cover-v1",
+    "why": "Loads and speaks on the Metal path with no conversion, the same warm RTF (0.50) as the released quant, 2.5 GiB less wired memory, and fits beside the 171 GB local model with swap unchanged."
+  }
+}

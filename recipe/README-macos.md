@@ -43,6 +43,27 @@ The build verifies its ordered patch checksums and does not require a CUDA compi
 Outputs are `build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native` and
 `build/tensorfold-nvfp4/zig-out/bin/{drama3-generate,drama3-voice}`.
 
+### A quant already on disk
+
+To serve a checkpoint that is already on this Mac, pass its directory; nothing is downloaded or converted:
+
+```sh
+python3 recipe/pilot_macos.py --weights nvfp4 --checkpoint /path/to/quant/model \
+  --runtime-dir runtime --gpu-lock runtime/gpu.lock --evidence-dir runs/quant-01
+```
+
+The launcher verifies the directory against `checksums/nvfp4.sha256` (the released pruned quant,
+`drama3-nvfp4-trim7369-v1`) or, when its shard index matches, an unpublished manifest such as
+`checksums/nvfp4-t5900cover.sha256` (`drama3-nvfp4-t5900cover-v1`). An unpublished quant is never
+downloaded, has no recorded source, and a changed file is refused rather than repaired.
+
+[`results/macos-nvfp4-quants.json`](../results/macos-nvfp4-quants.json) records both quants on an
+M5 Ultra beside a resident 171 GB local model. Both load and speak (48/48 corpus requests, warm
+RTF 0.50). **Serve `drama3-nvfp4-t5900cover-v1`**: 25.0 GiB wired between requests against
+27.5 GiB, and the host's GPU allocation rose from 195.0 to 222.2 GB with swap unchanged. Each
+quant has frame-cap takes (4096 frames) on some corpus items; quality against the full model was
+not measured.
+
 For the full-model recipe (the Mac build at TensorFold v1.1.9 has not been run yet):
 
 ```sh

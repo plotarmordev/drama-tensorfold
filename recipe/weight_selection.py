@@ -11,9 +11,11 @@ import time
 RECIPE = Path(__file__).resolve().parent
 REPO = RECIPE.parent
 WEIGHTS = {
-    'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256', 'build': 'tensorfold',
-             'serve': ()},
+    'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256', 'local_pins': (),
+             'build': 'tensorfold', 'serve': ()},
     'nvfp4': {'source': 'nvfp4_checkpoint', 'dir': 'drama-3-NVFP4-Pruned', 'pins': 'nvfp4.sha256',
+              # Unpublished quants: accepted only from an explicit --checkpoint, never downloaded.
+              'local_pins': ('nvfp4-t5900cover.sha256',),
               'build': 'tensorfold-nvfp4', 'serve': ('--cfg-gamma', '1.5', '--cfg-batched')},
 }
 GUIDANCE_FLAGS = ('--cfg-gamma', '--cfg-allow-request-gamma', '--cfg-batched')
@@ -55,6 +57,23 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def read_pins(pins: Path) -> list[list[str]]:
+    return [line.split(None, 1) for line in pins.read_text().splitlines() if line.strip()]
+
+
+def local_pins(choice: str, target: Path) -> Path | None:
+    """The unpublished manifest whose shard index the checkpoint carries, if any."""
+    index = target / 'model.safetensors.index.json'
+    if not index.is_file():
+        return None
+    digest = sha256(index)
+    for name in WEIGHTS[choice]['local_pins']:
+        pins = RECIPE / 'checksums' / name
+        if [digest, index.name] in read_pins(pins):
+            return pins
+    return None
+
+
 def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
     """Verify selected pins, downloading only an absent default (never an override).
 
@@ -68,8 +87,13 @@ def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
         return provenance
     spec = WEIGHTS[choice]
     source = json.loads((RECIPE / 'sources.json').read_text())[spec['source']]
-    pins = RECIPE / 'checksums' / spec['pins']
-    entries = [line.split(None, 1) for line in pins.read_text().splitlines() if line.strip()]
+    pins = override is not None and local_pins(choice, target)
+    if pins:
+        source, repair = None, f'Restore it from the release folder that matches {pins.name}'
+    else:
+        pins = RECIPE / 'checksums' / spec['pins']
+        repair = (f'Repair it with: hf download {source["repository"]} --revision {source["revision"]} '
+                  f'--local-dir {target}, or delete it and run again')
     if override is None and not target.exists() and not target.is_symlink():
         hf = shutil.which('hf')
         if hf is None:
@@ -79,11 +103,11 @@ def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
                         '--local-dir', str(target)], check=True)
     print(f'Checking {target} against {pins.relative_to(REPO)}', flush=True)
     started = time.monotonic()
-    bad = [name for digest, name in entries if not (target / name).is_file() or sha256(target / name) != digest]
+    bad = [name for digest, name in read_pins(pins)
+           if not (target / name).is_file() or sha256(target / name) != digest]
     if bad:
         raise ValueError(f'{target} does not match {pins}: {", ".join(bad)} missing or changed; no model was '
-                         f'started. Repair it with: hf download {source["repository"]} --revision '
-                         f'{source["revision"]} --local-dir {target}, or delete it and run again')
+                         f'started. {repair}')
     print(f'{target} matches {pins.relative_to(REPO)} ({time.monotonic() - started:.0f} s)', flush=True)
     provenance.update(checkpoint_source=source, checkpoint_manifest=str(pins), checkpoint_verified=True)
     return provenance

@@ -12,7 +12,8 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-if systemctl --user show -p LoadState --value gpuchk-selftest-sleep | grep -qx loaded; then
+platform=$(uname -s)
+if [[ $platform == Linux ]] && systemctl --user show -p LoadState --value gpuchk-selftest-sleep | grep -qx loaded; then
   echo 'Refusing to touch a pre-existing dummy unit' >&2
   exit 1
 fi
@@ -33,6 +34,10 @@ for pair in 75:0 1:1 2:2 0:0 143:143; do
   [[ $got == "${pair##*:}" ]]
 done
 rm -r "$shim"
+if [[ $platform != Linux ]]; then
+  echo 'skip pause/resume check: needs Linux user systemd'
+  exit 0
+fi
 systemd-run --user --unit=gpuchk-selftest-sleep sleep 600
 created=1
 pid=$(systemctl --user show -p MainPID --value gpuchk-selftest-sleep)

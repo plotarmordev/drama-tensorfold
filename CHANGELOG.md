@@ -39,7 +39,8 @@
 ### Added
 
 - `scripts/test.sh` runs every test that needs no model, GPU or network on Linux or macOS and exits
-  non-zero on any failure; on macOS the systemd pause/resume check prints one skip line.
+  non-zero on any failure. Off Linux, `gpu-checks/selftest.sh` skips only its systemd pause/resume
+  part, with one line.
 - `--parent-pid` on both launchers: each stops its server (the Linux one, its unit), as for SIGTERM,
   once the supervisor that started it exits, and records `parent_exited: true` in completion.json
   (on macOS `stop_signal` stays null). macOS has no parent-death signal, and on Linux a

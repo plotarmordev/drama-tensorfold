@@ -228,8 +228,8 @@ scripts/test.sh
 ```
 
 Runs every test that needs no model, GPU or network, on Linux or macOS, and exits non-zero on any failure. On
-macOS the `gpu-checks` pause/resume check, which needs Linux user systemd, prints one skip line; the
-Linux launcher tests use mocks and run on both.
+macOS `gpu-checks/selftest.sh` skips only its pause/resume part, which needs Linux user systemd, with one line;
+the Linux launcher tests use mocks and run on both.
 
 ## Contributing
 

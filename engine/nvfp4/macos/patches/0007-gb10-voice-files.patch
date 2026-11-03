@@ -1,0 +1,258 @@
+From ca3978097fa214dcfacdc79fdd5f4a7e25a399da Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 01:39:50 +0800
+Subject: [PATCH] server: load the CUDA engine's drama3-voice/1 and /2 files in
+ --voices
+
+---
+ CHANGELOG.md                               |  2 +
+ docs/drama-http-voices.md                  |  4 ++
+ zig/src/server/drama_voice.zig             | 84 +++++++++++++++++-----
+ zig/src/server/root.zig                    |  1 +
+ zig/src/server/speech_gb10_voices_test.zig | 84 ++++++++++++++++++++++
+ 5 files changed, 156 insertions(+), 19 deletions(-)
+ create mode 100644 zig/src/server/speech_gb10_voices_test.zig
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2169f747..995c21f3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
+ 
+ ## Unreleased
+ 
++- Drama `--voices` folders also load the CUDA engine's `drama3-voice/1` and `drama3-voice/2` files as written, with their `codes_sha256` checked and their attestation kept; no re-encoding or reference audio. See [GB10 voice files](docs/drama-http-voices.md#gb10-voice-files).
++
+ - Drama speech accepts dialogue tags `<|speaker:0|>` through `<|speaker:15|>` in whole and streamed HTTP requests and catalog reference transcripts. Untagged text still uses speaker 0, and catalogs still allow at most four reference passages. See [dialogue speakers](docs/drama-http-voices.md#dialogue-speakers).
+ 
+ - Drama speech requests accept `temperature`, `top_p`, `top_k` (1 through 64) and exact unsigned 64-bit `seed` values. Whole replies, streams, catalog voices and redraws retain the requested settings; omitted or null fields keep the existing defaults. Explicit seeds advance by the attempt number for redraws. See [speech sampling](docs/speech-sampling.md).
+diff --git a/docs/drama-http-voices.md b/docs/drama-http-voices.md
+index 17013be6..630f0377 100644
+--- a/docs/drama-http-voices.md
++++ b/docs/drama-http-voices.md
+@@ -24,6 +24,10 @@ Reference `text` is the exact transcript. Codes are frame-major signed integers,
+ 
+ The loader enforces the family's reference count, transcript length, frame count and codebook ranges before serving. It also rejects empty references, structural prompt tokens, malformed speaker tags, oversized files and oversized catalogs. The assembled prompt must still fit the engine's advertised prompt budget. Reference rows go through the same family `prompt.build` used by the generation CLI; only the tokenizer interface is adapted.
+ 
++### GB10 voice files
++
++The same folder also takes, unconverted, the files the CUDA engine's `--voices` loads: `drama3-voice/1` (one reference: `text`, `codes_sha256`, `frames`, `audio_sha256`, `encoder`, `source`, `vq_codes`) and `drama3-voice/2` (`source` and a `references` list of such entries). Their `vq_codes` are a codebook-major `[10, frames]` grid and must match `codes_sha256` (the SHA-256 of the grid as little-endian int32, codebook-major). Their `source.kind` is `model-invented`, `owner` or `consented`, with a nonempty `note`. Reference audio is never read. The same reference count, transcript, frame and code range limits apply.
++
+ ## Dialogue speakers
+ 
+ Speech input and reference transcripts accept `<|speaker:N|>` with decimal IDs from `0` through `15`. Tags can change speakers within one request. Untagged text defaults to speaker 0; a leading tag after Unicode whitespace is preserved. Leading zeros, negative IDs, non-ASCII digits, incomplete tags and IDs above 15 are rejected.
+diff --git a/zig/src/server/drama_voice.zig b/zig/src/server/drama_voice.zig
+index 41f24c96..6e3517e9 100644
+--- a/zig/src/server/drama_voice.zig
++++ b/zig/src/server/drama_voice.zig
+@@ -25,40 +25,86 @@ fn text(value: ?[]const u8, limit: usize) ![]const u8 {
+     return s;
+ }
+ 
++/// The ``source.kind`` values of this engine's catalogs, then of the GB10 host's drama3-voice files.
++const http_kinds = [_][]const u8{ "synthetic", "self", "consented" };
++const gb10_kinds = [_][]const u8{ "model-invented", "owner", "consented" };
++
++/// A drama3-http-voice/1 catalog, or a GB10 drama3-voice/1 (one reference) or /2 (several) file as written.
+ pub fn parse(a: Allocator, bytes: []const u8) ![]const prompt.Reference {
+     if (bytes.len > max_file_bytes) return error.BadVoice;
+     const doc = switch (try json.parse(a, bytes)) {
+         .ok => |v| v,
+         else => return error.BadVoice,
+     };
+-    if (!std.mem.eql(u8, doc.strField("format") orelse "", "drama3-http-voice/1")) return error.BadVoice;
+-    const source = doc.get("source") orelse return error.MissingAttestation;
+-    const kind = source.strField("kind") orelse return error.MissingAttestation;
+-    if (!std.mem.eql(u8, kind, "synthetic") and !std.mem.eql(u8, kind, "self") and !std.mem.eql(u8, kind, "consented")) return error.MissingAttestation;
+-    _ = text(source.strField("note"), 4096) catch return error.MissingAttestation;
+-    const values = (doc.get("references") orelse return error.BadVoice).items() orelse return error.BadVoice;
++    const format = doc.strField("format") orelse "";
++    const http = std.mem.eql(u8, format, "drama3-http-voice/1");
++    const several = std.mem.eql(u8, format, "drama3-voice/2");
++    if (!http and !several and !std.mem.eql(u8, format, "drama3-voice/1")) return error.BadVoice;
++    try attested(doc, if (http) &http_kinds else &gb10_kinds);
++    // a drama3-voice/1 file is its own one reference
++    const single = [_]json.Value{doc};
++    const values: []const json.Value = if (http or several) (doc.get("references") orelse return error.BadVoice).items() orelse return error.BadVoice else &single;
+     if (values.len == 0 or values.len > 4) return error.BadVoice;
+     const refs = try a.alloc(prompt.Reference, values.len);
+     for (values, refs) |value, *ref| {
+         const transcript = try text(value.strField("text"), 4096);
+         if (try checks.problem(a, transcript) != null) return error.BadVoice;
+-        const rows = (value.get("codes") orelse return error.BadVoice).items() orelse return error.BadVoice;
+-        if (rows.len == 0 or rows.len > max_frames) return error.BadVoice;
+-        const codes = try a.alloc([10]i32, rows.len);
+-        for (rows, codes) |row, *code| {
+-            const cells = row.items() orelse return error.BadVoice;
+-            if (cells.len != 10) return error.BadVoice;
+-            for (cells, 0..) |cell, i| {
+-                const n = cell.int64() orelse return error.BadVoice;
+-                if (n < 0 or n >= (if (i == 0) @as(i64, 4096) else 1024)) return error.BadVoice;
+-                code[i] = @intCast(n);
+-            }
+-        }
+-        ref.* = .{ .transcript = transcript, .codes = codes };
++        ref.* = .{ .transcript = transcript, .codes = try if (http) frameMajor(a, value) else codebookMajor(a, value) };
+     }
+     return refs;
+ }
+ 
++fn attested(doc: json.Value, kinds: []const []const u8) !void {
++    const source = doc.get("source") orelse return error.MissingAttestation;
++    const kind = source.strField("kind") orelse return error.MissingAttestation;
++    for (kinds) |k| {
++        if (std.mem.eql(u8, kind, k)) break;
++    } else return error.MissingAttestation;
++    _ = text(source.strField("note"), 4096) catch return error.MissingAttestation;
++}
++
++/// drama3-http-voice/1 ``codes``: frame-major rows of ten.
++fn frameMajor(a: Allocator, value: json.Value) ![]const [10]i32 {
++    const rows = (value.get("codes") orelse return error.BadVoice).items() orelse return error.BadVoice;
++    if (rows.len == 0 or rows.len > max_frames) return error.BadVoice;
++    const codes = try a.alloc([10]i32, rows.len);
++    for (rows, codes) |row, *frame| {
++        const cells = row.items() orelse return error.BadVoice;
++        if (cells.len != 10) return error.BadVoice;
++        for (cells, frame, 0..) |cell, *c, book| c.* = try checkedCode(cell, book);
++    }
++    return codes;
++}
++
++/// drama3-voice ``vq_codes``: a [10, frames] codebook-major grid, which must match its ``codes_sha256``
++/// (little-endian int32, codebook-major) as the GB10 host requires.
++fn codebookMajor(a: Allocator, value: json.Value) ![]const [10]i32 {
++    const books = (value.get("vq_codes") orelse return error.BadVoice).items() orelse return error.BadVoice;
++    if (books.len != 10) return error.BadVoice;
++    const frames = (books[0].items() orelse return error.BadVoice).len;
++    if (frames == 0 or frames > max_frames) return error.BadVoice;
++    const codes = try a.alloc([10]i32, frames);
++    var digest = std.crypto.hash.sha2.Sha256.init(.{});
++    for (books, 0..) |row, book| {
++        const cells = row.items() orelse return error.BadVoice;
++        if (cells.len != frames) return error.BadVoice;
++        for (cells, codes) |cell, *frame| {
++            frame[book] = try checkedCode(cell, book);
++            digest.update(&std.mem.toBytes(std.mem.nativeToLittle(i32, frame[book])));
++        }
++    }
++    const hex = std.fmt.bytesToHex(digest.finalResult(), .lower);
++    if (!std.mem.eql(u8, value.strField("codes_sha256") orelse "", &hex)) return error.BadVoice;
++    return codes;
++}
++
++/// One code: semantic codes in [0, 4096), residual codes in [0, 1024).
++fn checkedCode(cell: json.Value, book: usize) !i32 {
++    const n = cell.int64() orelse return error.BadVoice;
++    if (n < 0 or n >= (if (book == 0) @as(i64, 4096) else 1024)) return error.BadVoice;
++    return @intCast(n);
++}
++
+ pub fn load(a: Allocator, io: std.Io, path: []const u8) ![]const Voice {
+     var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+     defer dir.close(io);
+diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
+index ebcb27e1..13e17e00 100644
+--- a/zig/src/server/root.zig
++++ b/zig/src/server/root.zig
+@@ -55,6 +55,7 @@ test {
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_stream_test.zig"); // over a Unix socket pair
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_sampling_test.zig");
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_speakers_test.zig");
++    if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_gb10_voices_test.zig");
+     _ = @import("drama_voice_tool.zig");
+     _ = @import("speech_redraw.zig");
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_redraw_test.zig"); // over a Unix socket pair
+diff --git a/zig/src/server/speech_gb10_voices_test.zig b/zig/src/server/speech_gb10_voices_test.zig
+new file mode 100644
+index 00000000..b23b8652
+--- /dev/null
++++ b/zig/src/server/speech_gb10_voices_test.zig
+@@ -0,0 +1,84 @@
++//! GB10 drama3-voice/1 and /2 files in a --voices folder, spoken by name with their exact codes.
++const std = @import("std");
++const voice = @import("drama_voice.zig");
++const family = @import("drama_prompt");
++const wire = @import("speech_stream_test.zig");
++
++// Synthetic codes; each codes_sha256 was computed independently (little-endian int32, codebook-major).
++const one =
++    \\{"format":"drama3-voice/1","text":"A small cloud passes.",
++    \\"codes_sha256":"cf173f19446d39af21b10a6e73d039ba2259249a2dfd33878a8b53cdfdf1eae6","frames":2,
++    \\"audio_sha256":"0000000000000000000000000000000000000000000000000000000000000000",
++    \\"encoder":{"tool":"synthetic"},"source":{"kind":"model-invented","note":"Generated test codes."},
++    \\"vq_codes":[[7,8],[1,9],[2,8],[3,7],[4,6],[5,5],[6,4],[7,3],[8,2],[9,1]]}
++;
++const several =
++    \\{"format":"drama3-voice/2","source":{"kind":"owner","note":"Generated test codes."},"references":[
++    \\{"text":"Rain taps.","codes_sha256":"57201e705b6a94e9bd2527df0469bc112adfe5387e4e9bde7e3741c86bb55ed1",
++    \\"audio_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
++    \\"vq_codes":[[17],[9],[8],[7],[6],[5],[4],[3],[2],[1]]},
++    \\{"text":"<|speaker:3|> Wind hums.","codes_sha256":"d82a10181a9d1115b567ab031bc397a013d5eb7c38c4e61ae93884844e2480b4",
++    \\"audio_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
++    \\"vq_codes":[[4095],[1023],[0],[1],[2],[3],[4],[5],[6],[7]]}]}
++;
++
++const CliTokenizer = struct {
++    pub fn specialTokenId(_: @This(), _: []const u8) ?u32 {
++        return 1000;
++    }
++    pub fn encode(_: @This(), a: std.mem.Allocator, input: []const u8) ![]u32 {
++        const ids = try a.alloc(u32, input.len);
++        for (input, ids) |byte, *id| id.* = byte;
++        return ids;
++    }
++};
++
++test "voices: GB10 drama3-voice/1 and /2 files speak by name with their codes frame by frame" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    var tmp = std.testing.tmpDir(.{});
++    defer tmp.cleanup();
++    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "one.json", .data = one });
++    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "several.json", .data = several });
++    const voices = try voice.load(a, std.testing.io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
++    const one_codes = [_][10]i32{ .{ 7, 1, 2, 3, 4, 5, 6, 7, 8, 9 }, .{ 8, 9, 8, 7, 6, 5, 4, 3, 2, 1 } };
++    const rain = [_][10]i32{.{ 17, 9, 8, 7, 6, 5, 4, 3, 2, 1 }};
++    const wind = [_][10]i32{.{ 4095, 1023, 0, 1, 2, 3, 4, 5, 6, 7 }};
++    const Case = struct { name: []const u8, refs: []const family.Reference };
++    const cases = [_]Case{
++        .{ .name = "one", .refs = &.{.{ .transcript = "A small cloud passes.", .codes = &one_codes }} },
++        .{ .name = "several", .refs = &.{ .{ .transcript = "Rain taps.", .codes = &rain }, .{ .transcript = "<|speaker:3|> Wind hums.", .codes = &wind } } },
++    };
++    for (cases) |case| {
++        const want = try family.build(a, CliTokenizer{}, "hi", case.refs);
++        var script: wire.Script = .{ .steps = &.{wire.frame}, .voices = voices, .expected_rows = want.frames, .inline_ = true };
++        const request = try std.fmt.allocPrint(a, "{{\"model\":\"m\",\"input\":\"hi\",\"voice\":\"{s}\",\"response_format\":\"pcm\"}}", .{case.name});
++        var s: wire.Served = undefined;
++        try s.open(&script, .{ .served_name = "m", .model_ids = &.{"m"} }, "", "HTTP/1.1", request, 2000);
++        defer s.deinit();
++        try wire.expectHeader(try s.readHead(), " 200 ");
++        _ = try s.readRest();
++        s.join(&script);
++        try std.testing.expect(script.rows_equal);
++        try std.testing.expectEqual(want.reference_rows, script.reference_rows[0]);
++    }
++}
++
++test "voices: GB10 files are refused when codes, digest or attestation do not hold" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const Case = struct { from: []const u8, to: []const u8, err: anyerror };
++    for ([_]Case{
++        .{ .from = "\"cf17", .to = "\"0f17", .err = error.BadVoice },
++        .{ .from = "[7,8],[1,9]", .to = "[7,8],[1024,9]", .err = error.BadVoice },
++        .{ .from = "[9,1]]", .to = "[9]]", .err = error.BadVoice },
++        .{ .from = "model-invented", .to = "synthetic", .err = error.MissingAttestation },
++        .{ .from = "drama3-voice/1", .to = "drama3-voice/3", .err = error.BadVoice },
++    }) |case| {
++        try std.testing.expectError(case.err, voice.parse(a, try std.mem.replaceOwned(u8, a, one, case.from, case.to)));
++    }
++    try std.testing.expectError(error.BadVoice, voice.parse(a, try std.mem.replaceOwned(u8, a, several, "\"text\":\"Rain taps.\",", "")));
++    try std.testing.expectError(error.MissingAttestation, voice.parse(a, try std.mem.replaceOwned(u8, a, several, "\"kind\":\"owner\"", "\"kind\":\"self\"")));
++}
+-- 
+2.54.0 (Apple Git-157)
+

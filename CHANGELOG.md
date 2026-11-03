@@ -48,6 +48,12 @@
   segments, so a take that falls silent does not end the reply. See
   [the speech server](recipe/README-macos.md#speech-server).
 
+- The Mac NVFP4 engine (Metal patch 0007) and so `recipe/speech_server.py` serve the GB10 host's voice
+  files as they are: `drama3-voice/1` (one reference) and `drama3-voice/2` (several), in the `voices`
+  folder beside `drama3-http-voice/1` catalogs. Their codebook-major codes are checked against
+  `codes_sha256`; nothing is re-encoded, no reference audio is read and the `source` attestation is
+  kept. See [the speech server](recipe/README-macos.md#speech-server).
+
 - `scripts/test.sh` runs every test that needs no model, GPU or network on Linux or macOS and exits
   non-zero on any failure. Off Linux, `gpu-checks/selftest.sh` skips only its systemd pause/resume
   part, with one line.

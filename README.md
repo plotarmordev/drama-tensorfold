@@ -127,8 +127,9 @@ the license's Section III(c), which needs a separate license from Fish Audio.
 request-local sampling; see [ranges, defaults and redraw behavior](recipe/README-sampling.md).
 Other synthesis modifiers are refused. `GET /v1/voices` lists the voices.
 The Linux CUDA NVFP4 engine accepts its encoder's `drama3-voice` catalogs and request `references`
-as codec codes (not audio). The Mac NVFP4 engine instead uses attested `drama3-http-voice/1`
-catalogs and refuses request-supplied references; see the [Mac voice commands](recipe/README-macos.md#attested-reference-voices).
+as codec codes (not audio). The Mac NVFP4 engine loads the same `drama3-voice/1` and `/2` files, and its
+own attested `drama3-http-voice/1` catalogs, from `--voices`, and refuses request-supplied references; see the
+[Mac speech server](recipe/README-macos.md#speech-server) and [voice commands](recipe/README-macos.md#attested-reference-voices).
 Guidance-enabled replies carry the configured γ in `X-Cfg-Gamma`; builtin voices remain unguided.
 
 Request text and reference transcripts accept canonical speaker tags 0 through 15.
@@ -171,7 +172,8 @@ TensorFold does. The Linux recipe sets `TF_DRAMA_PREFILL_ROWS=128` for native fu
 launches to keep batched prefill; TensorFold otherwise defaults to single-row prefill. NVFP4 and the sglang
 reference backend do not receive this setting. Per-request `temperature`, `top_p`, `top_k` and `seed`, and speaker
 tags 0 to 15 in request text, need no launch flag; the CUDA NVFP4 series (0002, 0003) and the Metal NVFP4 series
-(0004-0006) carry the same two request-level features.
+(0004-0006) carry the same two request-level features. Metal patch 0007 loads the CUDA engine's `drama3-voice`
+files in `--voices`.
 Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 
 | In TensorFold 1.1.9 | Opt in with | Upstream |

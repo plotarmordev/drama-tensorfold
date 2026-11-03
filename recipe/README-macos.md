@@ -185,6 +185,25 @@ gave six segments and 150 s of audio in 104 s; one segment fell silent twice (gu
 next segments were still spoken. Without the guard the same passage gave 320 s, 170 s of it silence
 after one take stopped speaking and ran to the frame cap.
 
+### Cloned voices
+
+Point `voices` at a folder of voice files and set `default_voice` to one file's name (its stem) for requests
+that name no voice; unset, they get the built-in voice. A request's `voice` picks a file by name, and
+`GET /v1/voices` lists them:
+
+```ini
+voices = runtime/voices
+default_voice = my-voice
+```
+
+The folder takes the GB10 host's files as they are, `drama3-voice/1` (one reference: `text`, `vq_codes`,
+`encoder`, `source`) and `drama3-voice/2` (several references and `source`), as well as this engine's
+`drama3-http-voice/1` catalogs ([below](#attested-reference-voices)). Copy the GB10 host's catalog folder
+here unchanged: nothing is re-encoded and no reference audio is needed. Each file's `vq_codes` must match its
+`codes_sha256` and its `source` must attest the voice (`model-invented`, `owner` or `consented`, with a note),
+as on the GB10; a file that fails, or more than four references, stops the start rather than being skipped.
+Restart the server to load new files.
+
 ## Attested reference voices
 
 Use a synthetic voice, your own voice, or a voice for which you have the required permission.

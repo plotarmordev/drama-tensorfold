@@ -196,14 +196,13 @@ is performed. Pruned routing masks dropped original IDs before softmax and retai
 
 ## Correctness gates
 
-CPU tests and bounded subprocess smoke are separate from model work:
+CPU tests and bounded subprocess smoke are separate from model work; `scripts/test.sh` runs both:
 
 ```sh
-python3 -m unittest discover -s recipe -p 'test_*.py'
-PILOT_MACOS_INTEGRATION=1 python3 -m unittest discover -s recipe -p test_pilot_macos.py
+scripts/test.sh
 ```
 
-The opt-in lifecycle cases use harmless short-lived subprocesses and dummy checkpoint files,
+The lifecycle cases it enables on macOS use harmless short-lived subprocesses and dummy checkpoint files,
 not model weights. They exercise real process groups, locks, loopback HTTP and cancellation.
 Never run the following model checks without a coordinated compute window.
 

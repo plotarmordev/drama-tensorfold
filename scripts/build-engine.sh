@@ -78,7 +78,8 @@ if [[ -n $patch_dir ]]; then
     listed_patches+=("${BASH_REMATCH[1]}")
   done < "$patch_dir/SHA256SUMS"
   ((${#listed_patches[@]} == ${#patches[@]})) || die "patch manifest must list every selected patch exactly once"
-  for patch in "${patches[@]}"; do
+  # The ${...+} form keeps macOS's bash 3.2 from calling an empty array unbound under set -u.
+  for patch in ${patches[@]+"${patches[@]}"}; do
     matches=0
     for listed_patch in "${listed_patches[@]}"; do
       if [[ $listed_patch == "${patch##*/}" ]]; then matches=$((matches + 1)); fi

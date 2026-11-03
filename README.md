@@ -221,6 +221,16 @@ cloning tools (`drama_voice_clip.py`, `drama_voice.py`, `tensorfold-native voice
 [`qualification/`](qualification/README.md) and [`results/`](results/README.md) measure that engine; check out
 `0f54000` to rebuild it.
 
+## Tests
+
+```sh
+scripts/test.sh
+```
+
+Runs every test that needs no model, GPU or network, on Linux or macOS, and exits non-zero on any failure. On
+macOS `gpu-checks/selftest.sh` skips only its pause/resume part, which needs Linux user systemd, with one line;
+the Linux launcher tests use mocks and run on both.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md). Every speed or quality claim carries

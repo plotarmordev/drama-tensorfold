@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- `scripts/build-engine.sh --weights full` no longer stops on its empty patch series under macOS's
+  bash 3.2 (`patches[@]: unbound variable`).
 - Both launchers start under `python3 -I`: each imports `weight_selection` from its own directory,
   which isolated mode leaves off `sys.path`.
 - CUDA NVFP4 long-form splitting preserves paired delivery tags, bracketed cues and special tokens,
@@ -36,6 +38,9 @@
 
 ### Added
 
+- `scripts/test.sh` runs every test that needs no model, GPU or network on Linux or macOS and exits
+  non-zero on any failure. Off Linux, `gpu-checks/selftest.sh` skips only its systemd pause/resume
+  part, with one line.
 - `--parent-pid` on both launchers: each stops its server (the Linux one, its unit), as for SIGTERM,
   once the supervisor that started it exits, and records `parent_exited: true` in completion.json
   (on macOS `stop_signal` stays null). macOS has no parent-death signal, and on Linux a

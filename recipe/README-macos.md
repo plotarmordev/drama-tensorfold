@@ -185,6 +185,12 @@ gave six segments and 150 s of audio in 104 s; one segment fell silent twice (gu
 next segments were still spoken. Without the guard the same passage gave 320 s, 170 s of it silence
 after one take stopped speaking and ran to the frame cap.
 
+On a Mac where another model holds most of the memory, the launcher's admission (weights + 30 GiB free
+to start, abort below 34 GiB) refuses the engine at start or stops it mid-reply. Set
+`external_admission = true` to leave admission to the machine: the engine starts with
+`--external-admission` ([above](#launch-and-stop)), with no start floor and no running abort; the lock and
+process-group cleanup stay.
+
 ### Cloned voices
 
 Point `voices` at a folder of voice files and set `default_voice` to one file's name (its stem) for requests

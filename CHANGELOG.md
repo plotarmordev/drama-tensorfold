@@ -54,6 +54,10 @@
   `codes_sha256`; nothing is re-encoded, no reference audio is read and the `source` attestation is
   kept. See [the speech server](recipe/README-macos.md#speech-server).
 
+- `external_admission = true` in the speech server's config starts the engine with `--external-admission`:
+  no start floor and no running abort, for a Mac where another model holds most of the memory. Unset or
+  false, nothing changes. See [the speech server](recipe/README-macos.md#speech-server).
+
 - `scripts/test.sh` runs every test that needs no model, GPU or network on Linux or macOS and exits
   non-zero on any failure. Off Linux, `gpu-checks/selftest.sh` skips only its systemd pause/resume
   part, with one line.

@@ -69,6 +69,8 @@ def pilot_command(server: configparser.SectionProxy) -> list[str]:
         command += ['--voices', place('voices')]
     if 'default_voice' in server:
         command += ['--default-voice', server['default_voice']]
+    if server.getboolean('external_admission', fallback=False):
+        command.insert(command.index('--'), '--external-admission')
     return command
 
 

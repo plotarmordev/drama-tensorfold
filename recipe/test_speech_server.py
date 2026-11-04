@@ -133,6 +133,19 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.post(input=LONG, voice='synthetic-a').status, 200)
         self.assertEqual({request['voice'] for request in self.engine.requests}, {'synthetic-a'})
 
+    def test_external_admission_is_left_to_the_machine_only_when_set(self):
+        base = '[server]\ncheckpoint = model\ngpu_lock = gpu.lock\nruntime_dir = runtime\nevidence_dir = runs\n'
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder, 'speech-server.ini')
+            config.write_text(base)
+            default = speech_server.pilot_command(speech_server.read_config(config))
+            config.write_text(base + 'external_admission = true\n')
+            external = speech_server.pilot_command(speech_server.read_config(config))
+        self.assertNotIn('--external-admission', default)
+        # a launcher flag, before the serve flags
+        self.assertEqual(external, default[:default.index('--')] + ['--external-admission']
+                         + default[default.index('--'):])
+
     def test_long_form_does_not_stop_at_a_silent_segment(self):
         self.assertEqual(len(LONG), 2400)
         pieces = speech_server.segments(LONG)

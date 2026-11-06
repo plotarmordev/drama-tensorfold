@@ -185,12 +185,14 @@ gave six segments and 150 s of audio in 104 s; one segment fell silent twice (gu
 next segments were still spoken. Without the guard the same passage gave 320 s, 170 s of it silence
 after one take stopped speaking and ran to the frame cap.
 
-The engine can also sample end of speech at a take's first frame: a clean `stop` with no audio after about
-2 s of prompt, and without a request `seed` the draw comes from the prompt, so the same text gives the same
-empty take again. The server never passes such a take on: it draws that segment again with `seed` set to
-the request's seed (or 0) plus 1, then plus 2, and if all three draws are empty it answers `502` with a
-`server_error`, before any audio of that reply is sent. Once a stream has sent audio, a later segment that
-stays empty ends it without a terminating chunk, as an engine error does.
+The engine can also sample end of speech at a take's first frame, after about 2 s of prompt; without a
+request `seed` the draw comes from the prompt, so the same text gives the same empty take again. Metal
+patch 0008 makes the engine answer such a take, whole or streamed, with `500` "the model ended speech before
+its first audio frame" instead of `200` with no audio. The server never passes it on: on that error, or on
+empty audio from an engine without the patch, it draws that segment again with `seed` set to the request's
+seed (or 0) plus 1, then plus 2, and if all three draws are empty it answers `502` with a `server_error`,
+before any audio of that reply is sent. Once a stream has sent audio, a later segment that stays empty ends
+it without a terminating chunk, as an engine error does.
 
 On a Mac where another model holds most of the memory, the launcher's admission (weights + 30 GiB free
 to start, abort below 34 GiB) refuses the engine at start or stops it mid-reply. Set

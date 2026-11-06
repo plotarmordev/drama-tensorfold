@@ -20,6 +20,11 @@
 
 ### Fixed
 
+- `recipe/speech_server.py` no longer answers a take with no audio as success. The Metal engine can
+  sample end of speech at a take's first frame (a clean `stop` with 0 samples), and its prompt-derived
+  seed repeats that for the same text; the server draws the segment again with the request seed (or 0)
+  plus 1, then plus 2, and answers `502` `server_error` if every draw is empty. Short inputs now go
+  through the same path. See [the speech server](recipe/README-macos.md#speech-server).
 - `scripts/build-engine.sh --weights full` no longer stops on its empty patch series under macOS's
   bash 3.2 (`patches[@]: unbound variable`).
 - Both launchers start under `python3 -I`: each imports `weight_selection` from its own directory,

@@ -4,19 +4,21 @@
 Usage: python3 recipe/speech_server.py CONFIG.ini   (settings: recipe/speech-server.example.ini)
 
 Starts recipe/pilot_macos.py on the engine port and, once it is ready, serves the public port in front of it.
-Every request is relayed unchanged except a speech input longer than one segment. The Metal engine has no
-long-form splitter, and one long take can stop speaking yet run on in silence to --max-frames (4096 frames,
-190 s). So a long input is spoken segment by segment and the audio joined, and the engine's silence guard
-(-40 dBFS for 10 s, results/silence-guard-floor.json) ends a take that falls silent, redrawing a whole one
-once. Cuts fall at sentence ends, else at spaces, never inside a special token, tag, paired tag or bracketed
-cue. A segment that ends in silence or at the frame cap does not end the reply; the reply's X-Finish-Reason is
-its last segment's.
+Every request is relayed unchanged except speech. The Metal engine has no long-form splitter, and one long take
+can stop speaking yet run on in silence to --max-frames (4096 frames, 190 s). So a long input is spoken segment
+by segment and the audio joined, and the engine's silence guard (-40 dBFS for 10 s,
+results/silence-guard-floor.json) ends a take that falls silent, redrawing a whole one once. Cuts fall at
+sentence ends, else at spaces, never inside a special token, tag, paired tag or bracketed cue. A segment that
+ends in silence or at the frame cap does not end the reply; the reply's X-Finish-Reason is its last segment's.
+A take with no audio at all is drawn again with another seed; if every draw is empty, the reply is a 502 error,
+never an empty success.
 """
 from __future__ import annotations
 
 import configparser
 import http.client
 import http.server
+import itertools
 import json
 from pathlib import Path
 import re
@@ -39,6 +41,11 @@ SEGMENT_CHARS = 500
 # The engine's own input limit; a longer input is relayed for the engine to refuse.
 MAX_INPUT_CHARS = 4096
 WAV_HEADER = 44
+# The engine can sample end of speech at a take's first frame. Without a request seed it draws from the prompt,
+# so the same text repeats it; such a take is drawn again with another seed. Metal patch 0008 refuses it with a
+# 500 naming NO_AUDIO; an engine without the patch answers a clean stop with no audio.
+EMPTY_REDRAWS = 2
+NO_AUDIO = b'the model ended speech before its first audio frame'
 LANE_RETRIES = 50
 LANE_WAIT_S = 0.1
 HOP_BY_HOP = {'connection', 'content-length', 'host', 'keep-alive', 'trailer', 'transfer-encoding'}
@@ -86,7 +93,9 @@ def segment_end(masked: str, start: int) -> int:
 
 
 def segments(text: str) -> list[str]:
-    """``text`` in segments of at most SEGMENT_CHARS; each opens with the speaker tag in force."""
+    """``text`` in segments of at most SEGMENT_CHARS opening with the speaker tag in force; one is as sent."""
+    if len(text.strip()) <= SEGMENT_CHARS:
+        return [text]
     masked = PROTECTED.sub(lambda span: '_' * len(span.group()), text)
     pieces: list[str] = []
     start, speaker = 0, ''
@@ -100,16 +109,22 @@ def segments(text: str) -> list[str]:
     return pieces
 
 
-def long_form(body: bytes) -> dict | None:
-    """The speech request when its input needs more than one segment; otherwise the engine takes it as sent."""
+def speech_request(body: bytes) -> dict | None:
+    """The speech request this server speaks; anything else is relayed for the engine to refuse."""
     try:
         request = json.loads(body)
     except ValueError:
         return None
     text = request.get('input') if isinstance(request, dict) else None
-    if isinstance(text, str) and len(text) <= MAX_INPUT_CHARS and len(text.strip()) > SEGMENT_CHARS:
-        return request
-    return None
+    return request if isinstance(text, str) and len(text) <= MAX_INPUT_CHARS else None
+
+
+def draws(request: dict, text: str) -> Iterator[bytes]:
+    """The engine request for each take of ``text``: as asked, then redraw k at the request seed (or 0) + k."""
+    take = {**request, 'input': text}
+    yield json.dumps(take).encode()
+    for k in range(1, EMPTY_REDRAWS + 1):
+        yield json.dumps({**take, 'seed': ((take.get('seed') or 0) + k) % 2**64}).encode()
 
 
 def chunks(reply: BinaryIO, trailer: dict[str, str]) -> Iterator[bytes]:
@@ -120,6 +135,20 @@ def chunks(reply: BinaryIO, trailer: dict[str, str]) -> Iterator[bytes]:
     while (line := reply.readline().decode('latin-1')).strip():
         name, _, value = line.partition(':')
         trailer[name.strip().lower()] = value.strip()
+
+
+def whole_audio(headers: http.client.HTTPMessage, reply: BinaryIO) -> bytes | None:
+    """A whole take's body, or None when it holds no audio."""
+    body = reply.read(int(headers['Content-Length']))
+    return body if len(body) > (WAV_HEADER if headers['Content-Type'] == 'audio/wav' else 0) else None
+
+
+def stream_audio(reply: BinaryIO, trailer: dict[str, str]) -> Iterator[bytes] | None:
+    """A streamed take's chunks, filling ``trailer``, or None when it ends before any."""
+    trailer.clear()
+    audio = chunks(reply, trailer)
+    first = next(audio, None)
+    return None if first is None else itertools.chain([first], audio)
 
 
 def joined_wav(parts: list[bytes]) -> bytes:
@@ -137,14 +166,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-        if self.path != SPEECH:
+        request = speech_request(body) if self.path == SPEECH else None
+        if request is None:
             return self.relay(body)
         # one speech request at a time: another must not take the single engine lane between segments
         with self.server.speech:
-            request = long_form(body)
-            if request is None:
-                self.relay(body)
-            elif request.get('stream'):
+            if request.get('stream'):
                 self.stream(request)
             else:
                 self.whole(request)
@@ -164,8 +191,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(data)
         self.close_connection = True
 
-    def speak(self, request: dict, text: str) -> tuple[int, http.client.HTTPMessage, BinaryIO]:
-        body = json.dumps({**request, 'input': text}).encode()
+    def speak(self, body: bytes) -> tuple[int, http.client.HTTPMessage, BinaryIO]:
         # the engine frees its lane just after the previous segment's reply, so a 503 is brief
         for _ in range(LANE_RETRIES):
             with self.upstream(body) as engine:
@@ -177,6 +203,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             reply.read(int(headers['Content-Length']))
             time.sleep(LANE_WAIT_S)
         return status, headers, reply
+
+    def take(self, request: dict, text: str, listen) -> tuple[int, http.client.HTTPMessage, object] | None:
+        """The first take of ``text`` that ``listen`` hears audio in, or a refusal; None if all are empty."""
+        for k, body in enumerate(draws(request, text)):
+            if k:
+                self.log_message('the engine spoke no audio; redraw %d of %d', k, EMPTY_REDRAWS)
+            status, headers, reply = self.speak(body)
+            if status != 200:
+                refusal = reply.read(int(headers['Content-Length']))
+                if status == 500 and NO_AUDIO in refusal:
+                    continue
+                return status, headers, refusal
+            audio = listen(headers, reply)
+            if audio is not None:
+                return status, headers, audio
+        return None
 
     def send_head(self, status: int, headers: http.client.HTTPMessage) -> None:
         # the engine closes after every reply, and so does this server
@@ -192,11 +234,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def no_audio(self) -> None:
+        headers = http.client.HTTPMessage()
+        headers['Content-Type'] = 'application/json'
+        message = f'Drama 3 spoke no audio in {EMPTY_REDRAWS + 1} draws with different seeds'
+        self.answer(502, headers, json.dumps({'error': {'message': message, 'type': 'server_error'}}).encode())
+
     def whole(self, request: dict) -> None:
         parts = []
         for text in segments(request['input']):
-            status, headers, reply = self.speak(request, text)
-            body = reply.read(int(headers['Content-Length']))
+            take = self.take(request, text, whole_audio)
+            if take is None:
+                return self.no_audio()
+            status, headers, body = take
             if status != 200:
                 return self.answer(status, headers, body)
             parts.append(body)
@@ -207,21 +257,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         started = False
         trailer: dict[str, str] = {}
         for text in segments(request['input']):
-            status, headers, reply = self.speak(request, text)
-            if status != 200:
+            take = self.take(request, text, lambda _, reply: stream_audio(reply, trailer))
+            if take is None or take[0] != 200:
                 if started:
                     # audio is already out: no terminating chunk, so the client sees an incomplete body
                     self.close_connection = True
                     return
-                return self.answer(status, headers, reply.read(int(headers['Content-Length'])))
+                return self.no_audio() if take is None else self.answer(*take)
+            _, headers, audio = take
             if not started:
                 self.send_head(200, headers)
                 self.send_header('Transfer-Encoding', 'chunked')
                 self.send_header('Trailer', 'X-Finish-Reason')
                 self.end_headers()
                 started = True
-            trailer.clear()
-            for data in chunks(reply, trailer):
+            for data in audio:
                 self.wfile.write(b'%x\r\n%s\r\n' % (len(data), data))
         reason = trailer.get('x-finish-reason')
         self.wfile.write(b'0\r\n' + (f'X-Finish-Reason: {reason}\r\n'.encode() if reason else b'') + b'\r\n')

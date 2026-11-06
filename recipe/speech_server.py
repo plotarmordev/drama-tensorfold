@@ -41,9 +41,11 @@ SEGMENT_CHARS = 500
 # The engine's own input limit; a longer input is relayed for the engine to refuse.
 MAX_INPUT_CHARS = 4096
 WAV_HEADER = 44
-# The engine can sample end of speech at a take's first frame: a clean stop with no audio. Without a request
-# seed it draws from the prompt, so the same text repeats it; such a take is drawn again with another seed.
+# The engine can sample end of speech at a take's first frame. Without a request seed it draws from the prompt,
+# so the same text repeats it; such a take is drawn again with another seed. Metal patch 0008 refuses it with a
+# 500 naming NO_AUDIO; an engine without the patch answers a clean stop with no audio.
 EMPTY_REDRAWS = 2
+NO_AUDIO = b'the model ended speech before its first audio frame'
 LANE_RETRIES = 50
 LANE_WAIT_S = 0.1
 HOP_BY_HOP = {'connection', 'content-length', 'host', 'keep-alive', 'trailer', 'transfer-encoding'}
@@ -209,7 +211,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.log_message('the engine spoke no audio; redraw %d of %d', k, EMPTY_REDRAWS)
             status, headers, reply = self.speak(body)
             if status != 200:
-                return status, headers, reply.read(int(headers['Content-Length']))
+                refusal = reply.read(int(headers['Content-Length']))
+                if status == 500 and NO_AUDIO in refusal:
+                    continue
+                return status, headers, refusal
             audio = listen(headers, reply)
             if audio is not None:
                 return status, headers, audio

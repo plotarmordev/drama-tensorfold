@@ -28,13 +28,17 @@ def wav(data: bytes) -> bytes:
 class Engine(http.server.ThreadingHTTPServer):
     """Built-in voice plus the catalogs in ``voices``; finish reasons are taken from ``reasons`` in turn.
 
+    The first ``empty`` takes stop at once with no audio, as the Metal engine does when it samples end of
+    speech at frame 0.
+
     As the real engine does, it answers 503 once right after a reply, before its lane is free again.
     """
 
-    def __init__(self, voices: set[str], reasons: list[str]):
+    def __init__(self, voices: set[str], reasons: list[str], empty: int):
         super().__init__(('127.0.0.1', 0), EngineHandler)
         self.voices = {'default'} | voices
         self.reasons = reasons
+        self.empty = empty
         self.requests: list[dict] = []
         self.busy = False
 
@@ -66,6 +70,9 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
         self.server.busy = True
         audio = request['input'].encode()
         reason = self.server.reasons.pop(0) if self.server.reasons else 'stop'
+        if self.server.empty:
+            self.server.empty -= 1
+            audio, reason = b'', 'stop'
         self.send_response(200)
         if request.get('stream'):
             self.send_header('Content-Type', 'audio/pcm')
@@ -86,8 +93,8 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
 
 
 class ServerTests(unittest.TestCase):
-    def start(self, voices=frozenset(), reasons=()):
-        self.engine = Engine(set(voices), list(reasons))
+    def start(self, voices=frozenset(), reasons=(), empty=0):
+        self.engine = Engine(set(voices), list(reasons), empty)
         self.proxy = speech_server.Proxy(('127.0.0.1', 0), self.engine.server_address)
         self.proxy.RequestHandlerClass.log_message = lambda *_: None
         for server in (self.engine, self.proxy):
@@ -170,6 +177,28 @@ class ServerTests(unittest.TestCase):
             audio += rest[data_start:data_start + size]
             rest = rest[data_start + size + 2:]
         self.assertEqual(audio, ''.join(speech_server.segments(LONG)).encode())
+
+    def test_an_empty_take_is_redrawn_with_another_seed(self):
+        text = 'The train leaves at seven fifteen.'
+        self.start(empty=1)
+        reply = self.post(input=text)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.read(), wav(text.encode()))
+        self.assertEqual([request.get('seed') for request in self.engine.requests], [None, 1])
+        self.start(empty=2)
+        self.assertIn(b'\r\n\r\n22\r\nThe train', self.raw_stream(input=text, seed=2**64 - 1))
+        self.assertEqual([request['seed'] for request in self.engine.requests], [2**64 - 1, 0, 1])
+
+    def test_only_empty_takes_answer_a_clear_error_not_success(self):
+        self.start(empty=3)
+        reply = self.post(input='The train leaves at seven fifteen.')
+        self.assertEqual(reply.status, 502)
+        self.assertEqual(json.loads(reply.read())['error']['type'], 'server_error')
+        self.assertEqual(len(self.engine.requests), 3)
+        self.start(empty=3)
+        head = self.raw_stream(input='The train leaves at seven fifteen.')
+        self.assertTrue(head.startswith(b'HTTP/1.1 502'))
+        self.assertIn(b'"server_error"', head)
 
     def test_bad_request_returns_the_engine_refusal_and_speaks_nothing_more(self):
         self.start()

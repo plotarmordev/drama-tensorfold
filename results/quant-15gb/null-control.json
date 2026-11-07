@@ -1,0 +1,212 @@
+{
+ "identity": {
+  "Q": {
+   "items": 24,
+   "identical": 24
+  },
+  "QB": {
+   "items": 24,
+   "identical": 24
+  }
+ },
+ "null_vs_release": {
+  "Q": {
+   "pairs": 96,
+   "failed_only_variant": 0,
+   "failed_only_release": 0,
+   "mcnemar_exact_p": 1.0,
+   "wer_diff_mean": 0.0028823958333333336,
+   "wer_diff_ci95_items": [
+    -0.00020020833333333338,
+    0.007575833333333334
+   ],
+   "byte_identical_takes": 0
+  },
+  "QB": {
+   "pairs": 96,
+   "failed_only_variant": 7,
+   "failed_only_release": 2,
+   "mcnemar_exact_p": 0.1796875,
+   "wer_diff_mean": 0.03432916666666667,
+   "wer_diff_ci95_items": [
+    0.007083333333333334,
+    0.067764375
+   ],
+   "byte_identical_takes": 0
+  }
+ },
+ "release_vs_full": {
+  "Q": {
+   "pairs": 96,
+   "failed_only_variant": 0,
+   "failed_only_release": 0,
+   "mcnemar_exact_p": 1.0,
+   "wer_diff_mean": -0.0010725,
+   "wer_diff_ci95_items": [
+    -0.0035752083333333334,
+    0.0007862500000000001
+   ],
+   "byte_identical_takes": 0
+  },
+  "QB": {
+   "pairs": 96,
+   "failed_only_variant": 3,
+   "failed_only_release": 7,
+   "mcnemar_exact_p": 0.34375,
+   "wer_diff_mean": -0.03312729166666667,
+   "wer_diff_ci95_items": [
+    -0.08005625,
+    0.0052790625
+   ],
+   "byte_identical_takes": 0
+  }
+ },
+ "vs_pooled_release": {
+  "Q": {
+   "release_takes": 192,
+   "release_failed": 0,
+   "release_wer_mean": 0.014564322916666667,
+   "variants": {
+    "v1-dense8": {
+     "takes": 96,
+     "failed": 0,
+     "wer_mean": 0.017349270833333333,
+     "wer_diff_mean": 0.0027849479166666665,
+     "wer_diff_ci95_items": [
+      5.468749999999994e-06,
+      0.0071653645833333335
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "v2-trim5892": {
+     "takes": 96,
+     "failed": 1,
+     "wer_mean": 0.01571125,
+     "wer_diff_mean": 0.0011469270833333331,
+     "wer_diff_ci95_items": [
+      -0.003680781250000001,
+      0.006683125
+     ],
+     "failed_fisher_p": 0.3333333333333333
+    },
+    "v3-stack": {
+     "takes": 96,
+     "failed": 0,
+     "wer_mean": 0.013682708333333335,
+     "wer_diff_mean": -0.0008816145833333336,
+     "wer_diff_ci95_items": [
+      -0.004550625000000001,
+      0.001729270833333333
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "t5900-cover": {
+     "takes": 96,
+     "failed": 0,
+     "wer_mean": 0.015048333333333334,
+     "wer_diff_mean": 0.00048401041666666644,
+     "wer_diff_ci95_items": [
+      -0.0003050520833333334,
+      0.001691145833333333
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "t5400-cover": {
+     "takes": 96,
+     "failed": 0,
+     "wer_mean": 0.014231458333333334,
+     "wer_diff_mean": -0.00033286458333333356,
+     "wer_diff_ci95_items": [
+      -0.003958125000000001,
+      0.002229895833333333
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "t6400-cover": {
+     "takes": 96,
+     "failed": 1,
+     "wer_mean": 0.028483020833333334,
+     "wer_diff_mean": 0.013918697916666667,
+     "wer_diff_ci95_items": [
+      -0.0043595312500000006,
+      0.047298802083333334
+     ],
+     "failed_fisher_p": 0.3333333333333333
+    }
+   }
+  },
+  "QB": {
+   "release_takes": 192,
+   "release_failed": 15,
+   "release_wer_mean": 0.0463475,
+   "variants": {
+    "v1-dense8": {
+     "takes": 96,
+     "failed": 8,
+     "wer_mean": 0.059100520833333337,
+     "wer_diff_mean": 0.012753020833333333,
+     "wer_diff_ci95_items": [
+      -0.014452395833333333,
+      0.04127375
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "v2-trim5892": {
+     "takes": 96,
+     "failed": 7,
+     "wer_mean": 0.05414635416666667,
+     "wer_diff_mean": 0.0077988541666666675,
+     "wer_diff_ci95_items": [
+      -0.01807625,
+      0.03543114583333334
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "v3-stack": {
+     "takes": 96,
+     "failed": 11,
+     "wer_mean": 0.0524909375,
+     "wer_diff_mean": 0.006143437500000001,
+     "wer_diff_ci95_items": [
+      -0.0268865625,
+      0.04074395833333334
+     ],
+     "failed_fisher_p": 0.3829556725227089
+    },
+    "t5900-cover": {
+     "takes": 96,
+     "failed": 8,
+     "wer_mean": 0.058473333333333335,
+     "wer_diff_mean": 0.012125833333333334,
+     "wer_diff_ci95_items": [
+      -0.014455416666666667,
+      0.0395778125
+     ],
+     "failed_fisher_p": 1.0
+    },
+    "t5400-cover": {
+     "takes": 96,
+     "failed": 11,
+     "wer_mean": 0.07462427083333334,
+     "wer_diff_mean": 0.028276770833333336,
+     "wer_diff_ci95_items": [
+      -0.018674479166666667,
+      0.08452197916666666
+     ],
+     "failed_fisher_p": 0.3829556725227089
+    },
+    "t6400-cover": {
+     "takes": 96,
+     "failed": 9,
+     "wer_mean": 0.06549729166666667,
+     "wer_diff_mean": 0.019149791666666666,
+     "wer_diff_ci95_items": [
+      -0.025928229166666667,
+      0.0756215625
+     ],
+     "failed_fisher_p": 0.655901882908579
+    }
+   }
+  }
+ }
+}

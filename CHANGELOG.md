@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- [`results/quant-15gb/`](results/quant-15gb/README.md): the 5,900-expert NVFP4 quant, published as
+  `plotarmordev/drama-3-NVFP4-Pruned-5900`, against the 20.8 GB quant and the full model on one GB10.
+
 ### Changed
 
 - `--weights nvfp4 --checkpoint DIR` also accepts the unpublished t5900-cover quant, verified against

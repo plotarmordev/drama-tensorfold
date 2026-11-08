@@ -138,7 +138,7 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--backend', choices=('native', 'sglang-omni'), default='native')
     parser.add_argument('--weights', choices=tuple(weight_selection.WEIGHTS),
-                        help='Download (first run), verify and serve pinned weights; nvfp4 adds '
+                        help='Download (first run), verify and serve pinned weights; the NVFP4 quants add '
                              '--cfg-gamma 1.5 --cfg-batched unless guidance follows --')
     parser.add_argument('--native-bin', type=Path,
                         help='Patched executable (default with --weights: its engine in build/)')

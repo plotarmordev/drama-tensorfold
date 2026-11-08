@@ -44,7 +44,7 @@ class WeightSelectionTests(unittest.TestCase):
                 entries.append(f'{hashlib.sha256(content).hexdigest()}  {name}\n')
             (self.recipe / 'checksums' / spec['pins']).write_text(''.join(entries))
             executable = selection.native_path(mode, None)
-            executable.parent.mkdir(parents=True)
+            executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_bytes(b'not an executable model')
             executable.chmod(0o700)
         self.download = self.stack.enter_context(
@@ -67,7 +67,11 @@ class WeightSelectionTests(unittest.TestCase):
         for mode in ('full', None):
             with self.subTest(mode=mode):
                 self.assertEqual(selection.native_environment(mode), ['TF_DRAMA_PREFILL_ROWS=128'])
-        self.assertEqual(selection.native_environment('nvfp4'), [])
+        for mode in ('nvfp4', 'nvfp4-5900'):
+            with self.subTest(mode=mode):
+                self.assertEqual(selection.native_environment(mode), [])
+                self.assertEqual(selection.serve_arguments(mode, []), ['--cfg-gamma', '1.5', '--cfg-batched'])
+                self.assertEqual(selection.native_path(mode, None), selection.native_path('nvfp4', None))
 
     def test_explicit_paths_override_defaults_but_not_manifest(self):
         override = self.root / 'custom-checkpoint'
@@ -87,33 +91,30 @@ class WeightSelectionTests(unittest.TestCase):
         self.download.assert_not_called()
         self.assertFalse((self.root / 'missing').exists())
 
-    def local_quant(self, target):
-        """An unpublished quant at TARGET, pinned only by the local manifest."""
-        target.mkdir()
-        entries = []
-        for name in ('model.safetensors.index.json', 'model.safetensors', 'codec.pth'):
-            content = f'local:{name}'.encode()
-            (target / name).write_bytes(content)
-            entries.append(f'{hashlib.sha256(content).hexdigest()}  {name}\n')
-        pins = selection.WEIGHTS['nvfp4']['local_pins'][0]
-        (self.recipe / 'checksums' / pins).write_text(''.join(entries))
-        return pins
+    def test_either_quant_downloads_its_own_pinned_revision_and_manifest(self):
+        # The fixture hf moves the prepared files into its --local-dir.
+        self.download.side_effect = lambda command, **_kwargs: (
+            self.root / f'fixture-{Path(command[-1]).name}').rename(command[-1])
+        for mode, source in (('nvfp4', 'nvfp4_checkpoint'), ('nvfp4-5900', 'nvfp4_5900_checkpoint')):
+            with self.subTest(mode=mode):
+                target = selection.checkpoint_path(mode, None)
+                target.rename(self.root / f'fixture-{target.name}')
+                pinned = self.sources[source]
+                with patch.object(selection.shutil, 'which', return_value='/fixture/hf'):
+                    provenance = selection.prepare_checkpoint(mode, None)
+                self.assertEqual(self.download.call_args.args[0],
+                                 ['/fixture/hf', 'download', pinned['repository'], '--revision',
+                                  pinned['revision'], '--local-dir', str(target)])
+                self.assertEqual(provenance['checkpoint_source'], pinned)
+                self.assertEqual(provenance['checkpoint_manifest'],
+                                 str(self.recipe / 'checksums' / selection.WEIGHTS[mode]['pins']))
+                self.assertTrue(provenance['checkpoint_verified'])
 
-    def test_unpublished_quant_is_served_only_from_an_explicit_checkpoint(self):
-        override = self.root / 'local-quant'
-        pins = self.local_quant(override)
-        provenance = selection.prepare_checkpoint('nvfp4', override)
-        self.assertTrue(provenance['checkpoint_verified'])
-        self.assertEqual(Path(provenance['checkpoint_manifest']).name, pins)
-        self.assertIsNone(provenance['checkpoint_source'])
-        (override / 'model.safetensors').write_bytes(b'changed')
-        with self.assertRaisesRegex(ValueError, f'Restore it from the release folder that matches {pins}'):
-            selection.prepare_checkpoint('nvfp4', override)
-        default = selection.checkpoint_path('nvfp4', None)
-        default.rename(self.root / 'published')
-        self.local_quant(default)
-        with self.assertRaisesRegex(ValueError, 'hf download'):
-            selection.prepare_checkpoint('nvfp4', None)
+    def test_one_quant_is_refused_against_the_other_quants_manifest(self):
+        for mode, other in (('nvfp4', 'nvfp4-5900'), ('nvfp4-5900', 'nvfp4')):
+            repository = self.sources[selection.WEIGHTS[mode]['source']]['repository']
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, f'hf download {repository} '):
+                selection.prepare_checkpoint(mode, selection.checkpoint_path(other, None))
         self.download.assert_not_called()
 
     def test_existing_missing_or_corrupt_input_is_not_repaired(self):

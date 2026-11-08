@@ -8,7 +8,7 @@
 [![weights: NVFP4 recommended](https://img.shields.io/badge/weights-NVFP4_recommended-76b900?style=flat-square)](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned)
 
 > [!TIP]
-> **We recommend the [NVFP4 pruned weights](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned).** About half
+> **We recommend the [20.8 GB NVFP4 pruned weights](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned).** About half
 > the memory of the full model, with the same measured quality: 19.35 GiB peak GPU memory against 36.95 GiB, 20.76 GiB
 > on disk against 38.63 GiB, and a word error rate of 1.31 % against 1.42 % (paired difference -0.11 pp
 > [-0.35, +0.08], 0 failed takes of 96 on either). First audio arrives sooner, 1.955 s against 2.428 s at p50. The
@@ -17,6 +17,14 @@
 >
 > The [Quickstart](#quickstart) serves them with `--weights nvfp4`: it builds their engine, downloads the weights
 > on first run and applies the guidance they were measured with.
+>
+> **Smaller: the [5,900-expert quant](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900)**, `--weights
+> nvfp4-5900`, downloaded and checked the same way. 18.34 GiB on disk against 20.76 GiB, 16.93 GiB peak GPU memory
+> against 19.35 GiB, and a cold start of 20.1 s against 26.1 s. With a reference voice it matches the 20.8 GB quant:
+> word error rate 1.50 % against 1.31 % (paired +0.19 pp [-0.02, +0.49]), 0 failed takes of 96 on either. With
+> the built-in voice it does worse: 5.85 % against 2.92 % (paired +2.93 pp [+0.43, +5.81]), 8 failed takes of 96
+> against 5. The 20.8 GB quant stays the GB10 default; on a Mac short of memory, serve the 5,900 quant
+> ([macOS](recipe/README-macos.md)). Measured on one GB10: [results/quant-15gb](results/quant-15gb/README.md).
 >
 > **Built with Fish Audio.** The quant is a modified version of
 > [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) under the Fish Audio Community License v1.0
@@ -59,10 +67,11 @@ GPU_LOCK=/path/to/your/shared/gpu.lock && mkdir -p runtime
 python3 recipe/pilot.py --weights nvfp4 --runtime-dir runtime --gpu-lock "$GPU_LOCK" --evidence-dir runs/pilot-01
 ```
 
-For the full model, write `--weights full` in both commands.
+For the full model, write `--weights full` in both commands. For the 5,900-expert quant, keep the engine build and
+start with `--weights nvfp4-5900`: it shares the NVFP4 engine and guidance.
 
 The first start downloads the weights at the revision pinned in [`recipe/sources.json`](recipe/sources.json),
-into `drama-3-NVFP4-Pruned/` or `drama-3/`. Every start checks them against [`recipe/checksums`](recipe/checksums)
+into `drama-3-NVFP4-Pruned/`, `drama-3-NVFP4-Pruned-5900/` or `drama-3/`. Every start checks them against [`recipe/checksums`](recipe/checksums)
 and refuses missing or changed files; for the 21 GiB NVFP4 weights that takes about 11 seconds on a GB10.
 On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTREAM) plus
 [`engine/nvfp4/patches`](engine/nvfp4/patches) and serves with

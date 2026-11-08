@@ -46,8 +46,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--weights', choices=tuple(weight_selection.WEIGHTS),
                         help='Download (first run), verify and serve these pinned weights with the engine '
-                             'scripts/build-engine.sh --weights builds for them; nvfp4 also applies its measured '
-                             'guidance, --cfg-gamma 1.5 --cfg-batched, unless a guidance flag follows --')
+                             'scripts/build-engine.sh --weights builds for them; the NVFP4 quants also apply their '
+                             'measured guidance, --cfg-gamma 1.5 --cfg-batched, unless a guidance flag follows --')
     parser.add_argument('--backend', choices=('native', 'sglang-omni'), default='native')
     parser.add_argument('--native-bin', type=Path,
                         help='tensorfold-native executable (default with --weights: its build in build/)')
@@ -81,7 +81,8 @@ def main() -> int:
         parser.error('--reserve-gib must be finite and non-negative')
     if args.weights is None and args.checkpoint is None:
         parser.error('Pass --weights nvfp4 or --weights full, or --checkpoint DIR')
-    if args.weights == 'nvfp4' and args.backend != 'native':
+    engine = args.weights and weight_selection.WEIGHTS[args.weights]['engine']
+    if engine == 'nvfp4' and args.backend != 'native':
         parser.error('Only the native backend serves the NVFP4 weights')
     root = args.runtime_dir.resolve()
     checkpoint = weight_selection.checkpoint_path(args.weights, args.checkpoint)
@@ -116,7 +117,7 @@ def main() -> int:
         backend_environment = []
         allocator_caps = {'preprocessing': 4, 'tts_engine': 44, 'vocoder': 6}
     if not executable.is_file() or not os.access(executable, os.X_OK):
-        hint = f'; build it with scripts/build-engine.sh --weights {args.weights}' if args.weights and not args.native_bin else ''
+        hint = f'; build it with scripts/build-engine.sh --weights {engine}' if engine and not args.native_bin else ''
         parser.error(f'Missing executable server: {executable}{hint}')
     if args.library_dir:
         directories = [p.resolve() for p in args.library_dir]

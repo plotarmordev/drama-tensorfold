@@ -145,7 +145,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.post(input=LONG, voice='synthetic-a').status, 200)
         self.assertEqual({request['voice'] for request in self.engine.requests}, {'synthetic-a'})
 
-    def test_external_admission_is_left_to_the_machine_only_when_set(self):
+    def test_weights_and_external_admission_follow_the_config(self):
         base = '[server]\ncheckpoint = model\ngpu_lock = gpu.lock\nruntime_dir = runtime\nevidence_dir = runs\n'
         with tempfile.TemporaryDirectory() as folder:
             config = Path(folder, 'speech-server.ini')
@@ -153,6 +153,10 @@ class ServerTests(unittest.TestCase):
             default = speech_server.pilot_command(speech_server.read_config(config))
             config.write_text(base + 'external_admission = true\n')
             external = speech_server.pilot_command(speech_server.read_config(config))
+            config.write_text(base + 'weights = nvfp4\n')
+            released = speech_server.pilot_command(speech_server.read_config(config))
+        self.assertEqual(default[default.index('--weights') + 1], 'nvfp4-5900')
+        self.assertEqual(released[released.index('--weights') + 1], 'nvfp4')
         self.assertNotIn('--external-admission', default)
         # a launcher flag, before the serve flags
         self.assertEqual(external, default[:default.index('--')] + ['--external-admission']

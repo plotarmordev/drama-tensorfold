@@ -51,7 +51,8 @@ Built with Fish Audio.
 
 This repository contains no Fish Audio model weights and no codec checkpoint. Users download the Drama 3 weights
 and codec checkpoint separately from Hugging Face (https://huggingface.co/fishaudio/drama-3), or the NVFP4 pruned
-derivative (https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned) that recipe/pilot.py downloads. Those
+derivatives (https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned and
+https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) that recipe/pilot.py downloads. Those
 files are licensed under the Fish Audio Community License, Version 1.0
 (https://huggingface.co/fishaudio/drama-3/blob/e0a9218aa48888270f06ef1ed9ea67622c0e17d2/LICENSE), not under this
 repository's license. Anyone who redistributes them must keep this attribution notice with them, as that

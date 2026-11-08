@@ -17,11 +17,12 @@ python3 recipe/pilot.py --weights nvfp4 \
   --evidence-dir "$EVIDENCE_DIR"
 ```
 
-`--weights nvfp4` or `--weights full` picks the pinned checkpoint, `checksums/nvfp4.sha256` or
-`checksums/checkpoint.sha256`, and its engine build in `build/tensorfold-nvfp4` or `build/tensorfold` from
-`scripts/build-engine.sh --weights …`. On first use the launcher downloads the checkpoint with `hf download` at the
-revision in `sources.json`, into `drama-3-NVFP4-Pruned/` or `drama-3/` at the repository root. Every start then
-hashes every pinned file and refuses, before it takes the GPU lock, if one is missing or changed. With `nvfp4` it adds
+`--weights nvfp4`, `--weights nvfp4-5900` or `--weights full` picks the pinned checkpoint, `checksums/nvfp4.sha256`,
+`checksums/nvfp4-t5900cover.sha256` or `checksums/checkpoint.sha256`, and its engine build in `build/tensorfold-nvfp4`
+(both quants) or `build/tensorfold` from `scripts/build-engine.sh --weights nvfp4|full`. On first use the launcher
+downloads the checkpoint with `hf download` at the revision in `sources.json`, into `drama-3-NVFP4-Pruned/`,
+`drama-3-NVFP4-Pruned-5900/` or `drama-3/` at the repository root. Every start then
+hashes every pinned file and refuses, before it takes the GPU lock, if one is missing or changed. With either quant it adds
 `--cfg-gamma 1.5 --cfg-batched`, the guidance the quant was measured with, unless a `--cfg-gamma`,
 `--cfg-allow-request-gamma` or `--cfg-batched` of your own follows `--`. `--checkpoint` and `--native-bin` override
 the directory and executable, but a selected `--weights` manifest is still checked against an overridden
@@ -96,6 +97,6 @@ rejects a byte budget. Its 44 GiB engine allocator cap is unchanged.
   revision `e0a9218a`.
 - `checksums/nvfp4.sha256`: SHA-256 of the codec, the eight weight shards, their index, the configs and the
   tokenizer files of `plotarmordev/drama-3-NVFP4-Pruned` at revision `494db084`.
-- `checksums/nvfp4-t5900cover.sha256`: the same files of the unpublished `drama3-nvfp4-t5900cover-v1` quant,
-  accepted only from an explicit `--checkpoint`.
+- `checksums/nvfp4-t5900cover.sha256`: the same files of the 5,900-expert quant (`drama3-nvfp4-t5900cover-v1`),
+  `plotarmordev/drama-3-NVFP4-Pruned-5900` at revision `4bfe2c32`.
 - `sources.json`: the pinned reference and checkpoint revisions.

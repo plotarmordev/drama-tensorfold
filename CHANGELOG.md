@@ -9,10 +9,13 @@
 
 ### Changed
 
-- `--weights nvfp4 --checkpoint DIR` also accepts the unpublished t5900-cover quant, verified against
-  `recipe/checksums/nvfp4-t5900cover.sha256` and never downloaded. Both local quants load and speak on the
-  Metal path; [`results/macos-nvfp4-quants.json`](results/macos-nvfp4-quants.json) picks t5900-cover to serve
-  beside a 171 GB local model.
+- `--weights nvfp4-5900` downloads `plotarmordev/drama-3-NVFP4-Pruned-5900` at revision `4bfe2c32` into
+  `drama-3-NVFP4-Pruned-5900/` and verifies it against `recipe/checksums/nvfp4-t5900cover.sha256` on every
+  start, as `--weights nvfp4` does the 20.8 GB quant; both share the NVFP4 engine and guidance.
+  `--weights nvfp4 --checkpoint DIR` no longer accepts the 5,900-expert quant: select it by name. The speech
+  server's new `weights` setting defaults to `nvfp4-5900`, the quant
+  [`results/macos-nvfp4-quants.json`](results/macos-nvfp4-quants.json) picks to serve beside a 171 GB local model;
+  the 20.8 GB quant stays the GB10 default.
 - The full-model engine pins TensorFold v1.1.9 with an empty patch series: every behaviour of the
   old patches 0001–0015 is upstream. A CUDA GPU A/B against the previous pin passed: corpus captures
   byte-identical, request sampling and speaker tags pass. Two differences remain: with the mid-silence rule on,

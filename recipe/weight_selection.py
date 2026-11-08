@@ -10,13 +10,16 @@ import time
 
 RECIPE = Path(__file__).resolve().parent
 REPO = RECIPE.parent
+NVFP4_SERVE = ('--cfg-gamma', '1.5', '--cfg-batched')
+# 'engine' is the scripts/build-engine.sh --weights profile that builds 'build'; both quants share one.
 WEIGHTS = {
-    'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256', 'local_pins': (),
-             'build': 'tensorfold', 'serve': ()},
+    'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256',
+             'engine': 'full', 'build': 'tensorfold', 'serve': ()},
     'nvfp4': {'source': 'nvfp4_checkpoint', 'dir': 'drama-3-NVFP4-Pruned', 'pins': 'nvfp4.sha256',
-              # Unpublished quants: accepted only from an explicit --checkpoint, never downloaded.
-              'local_pins': ('nvfp4-t5900cover.sha256',),
-              'build': 'tensorfold-nvfp4', 'serve': ('--cfg-gamma', '1.5', '--cfg-batched')},
+              'engine': 'nvfp4', 'build': 'tensorfold-nvfp4', 'serve': NVFP4_SERVE},
+    'nvfp4-5900': {'source': 'nvfp4_5900_checkpoint', 'dir': 'drama-3-NVFP4-Pruned-5900',
+                   'pins': 'nvfp4-t5900cover.sha256',
+                   'engine': 'nvfp4', 'build': 'tensorfold-nvfp4', 'serve': NVFP4_SERVE},
 }
 GUIDANCE_FLAGS = ('--cfg-gamma', '--cfg-allow-request-gamma', '--cfg-batched')
 
@@ -46,7 +49,7 @@ def serve_arguments(choice: str | None, arguments: list[str]) -> list[str]:
 
 def native_environment(choice: str | None) -> list[str]:
     # Preserve batched prefill when the pilot clears the inherited environment.
-    return [] if choice == 'nvfp4' else ['TF_DRAMA_PREFILL_ROWS=128']
+    return [] if choice and WEIGHTS[choice]['engine'] == 'nvfp4' else ['TF_DRAMA_PREFILL_ROWS=128']
 
 
 def sha256(path: Path) -> str:
@@ -59,19 +62,6 @@ def sha256(path: Path) -> str:
 
 def read_pins(pins: Path) -> list[list[str]]:
     return [line.split(None, 1) for line in pins.read_text().splitlines() if line.strip()]
-
-
-def local_pins(choice: str, target: Path) -> Path | None:
-    """The unpublished manifest whose shard index the checkpoint carries, if any."""
-    index = target / 'model.safetensors.index.json'
-    if not index.is_file():
-        return None
-    digest = sha256(index)
-    for name in WEIGHTS[choice]['local_pins']:
-        pins = RECIPE / 'checksums' / name
-        if [digest, index.name] in read_pins(pins):
-            return pins
-    return None
 
 
 def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
@@ -87,13 +77,9 @@ def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
         return provenance
     spec = WEIGHTS[choice]
     source = json.loads((RECIPE / 'sources.json').read_text())[spec['source']]
-    pins = override is not None and local_pins(choice, target)
-    if pins:
-        source, repair = None, f'Restore it from the release folder that matches {pins.name}'
-    else:
-        pins = RECIPE / 'checksums' / spec['pins']
-        repair = (f'Repair it with: hf download {source["repository"]} --revision {source["revision"]} '
-                  f'--local-dir {target}, or delete it and run again')
+    pins = RECIPE / 'checksums' / spec['pins']
+    repair = (f'Repair it with: hf download {source["repository"]} --revision {source["revision"]} '
+              f'--local-dir {target}, or delete it and run again')
     if override is None and not target.exists() and not target.is_symlink():
         hf = shutil.which('hf')
         if hf is None:

@@ -57,7 +57,8 @@ SPEAKER = re.compile(r'<\|speaker:\d+\|>')
 
 
 def read_config(path: Path) -> configparser.SectionProxy:
-    parser = configparser.ConfigParser(defaults={'host': '127.0.0.1', 'port': '18793', 'engine_port': '18794'})
+    parser = configparser.ConfigParser(defaults={'weights': 'nvfp4-5900', 'host': '127.0.0.1', 'port': '18793',
+                                                 'engine_port': '18794'})
     with path.open() as config:
         parser.read_file(config)
     return parser['server']
@@ -68,7 +69,7 @@ def pilot_command(server: configparser.SectionProxy) -> list[str]:
     def place(key: str) -> str:
         return str(Path(server[key]).resolve())
 
-    command = [sys.executable, str(RECIPE / 'pilot_macos.py'), '--weights', 'nvfp4',
+    command = [sys.executable, str(RECIPE / 'pilot_macos.py'), '--weights', server['weights'],
                '--checkpoint', place('checkpoint'), '--runtime-dir', place('runtime_dir'),
                '--gpu-lock', place('gpu_lock'), '--evidence-dir', place('evidence_dir'), '--evidence-reuse',
                '--port', server['engine_port'], '--', *ENGINE_FLAGS]

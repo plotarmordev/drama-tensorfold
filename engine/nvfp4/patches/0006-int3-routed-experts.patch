@@ -1,4 +1,4 @@
-From a633bf3e48f9795aa713a66be779deb7532e3335 Mon Sep 17 00:00:00 2001
+From c56108f0c82b08fcb5e72e02e682972579a40724 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 13:09:45 +0800
 Subject: [PATCH] drama: int3 routed experts (3.5 bits) in the CUDA NVFP4
@@ -30,7 +30,7 @@ loader stages as int3.
  zig/src/core/quant/nvfp4.zig                  |  47 ++++++-
  zig/src/cuda/experts.zig                      |  98 +++++++++++--
  zig/src/cuda/modelopt.zig                     |  13 +-
- .../families/drama/backbone_compact_test.zig  |  60 ++++++--
+ .../families/drama/backbone_compact_test.zig  |  69 +++++++--
  zig/src/families/drama/backbone_fp4.zig       | 111 ++++++++++++++-
  zig/src/families/drama/backbone_weights.zig   |  70 ++++-----
  zig/src/families/drama/nvfp4_encoded.zig      |  16 ++-
@@ -39,7 +39,7 @@ loader stages as int3.
  zig/src/families/drama/quant_provenance.zig   |   7 +-
  zig/tests/cuda/drama_nvfp4_moe_tests.zig      | 100 ++++++++++++-
  zig/tests/cuda/drama_nvfp4_ref.zig            | 133 +++++++++++++++---
- 17 files changed, 890 insertions(+), 216 deletions(-)
+ 17 files changed, 898 insertions(+), 217 deletions(-)
 
 diff --git a/docs/quantization.md b/docs/quantization.md
 index 4719a9b39..5c9f37820 100644
@@ -952,7 +952,7 @@ index 4338ef4db..e0873ed97 100644
  };
  
 diff --git a/zig/src/families/drama/backbone_compact_test.zig b/zig/src/families/drama/backbone_compact_test.zig
-index a74ad6f00..377240c77 100644
+index a74ad6f00..ec96a922f 100644
 --- a/zig/src/families/drama/backbone_compact_test.zig
 +++ b/zig/src/families/drama/backbone_compact_test.zig
 @@ -10,6 +10,7 @@ const Source = @import("backbone_source.zig").Source;
@@ -963,33 +963,43 @@ index a74ad6f00..377240c77 100644
  const Allocator = std.mem.Allocator;
  const testing = std.testing;
  
-@@ -99,11 +100,11 @@ fn fp8Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
+@@ -99,22 +100,30 @@ fn fp8Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
      return .{ .data = data, .wins = wins.items };
  }
  
 -/// Layer 3 with 256 NVFP4 experts: codes, valid e4m3 scales and positive globals in overlapping windows.
 -fn fp4Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
-+/// Layer 3 with 256 NVFP4 or int3 experts: codes, valid e4m3 scales and positive globals in overlapping windows.
++/// Layer 3 with 256 NVFP4 or int3 experts: valid e4m3 scales and positive globals in overlapping windows; NVFP4's
++/// codes are random, int3's are pack_int3's hand-checked planes (drama_nvfp4_gptq_test.py) from every window's start.
 +fn fp4Layer(a: Allocator, format: nvfp4.Format) !struct { data: []u8, wins: []Win } {
      var prng = std.Random.DefaultPrng.init(0xF4);
      const rnd = prng.random();
 -    const codes_len = I * H / 2 + 3 * E * 4096;
-+    const codes_len = I * nvfp4.codeCols(H, format) + 3 * E * 4096;
++    const stride = 4098; // whole 6-byte int3 plane groups
++    const codes_len = I * nvfp4.codeCols(H, format) + 3 * E * stride;
      const scales_len = I * H / 16 + 3 * E * 64;
      const data = try a.alloc(u8, codes_len + scales_len + 3 * E * 4);
-     rnd.bytes(data[0..codes_len]);
-@@ -113,8 +114,9 @@ fn fp4Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
+-    rnd.bytes(data[0..codes_len]);
++    switch (format) {
++        .nvfp4 => rnd.bytes(data[0..codes_len]),
++        .int3 => for (data[0..codes_len], 0..) |*b, i| {
++            b.* = ([6]u8{ 0xE0, 0x70, 0xCC, 0x33, 0xAA, 0x55 })[i % 6];
++        },
++    }
+     for (data[codes_len..][0..scales_len]) |*b| b.* = rnd.uintLessThan(u8, 0x7F);
+     for (std.mem.bytesAsSlice(f32, data[codes_len + scales_len ..])) |*g| g.* = 1e-3 + rnd.float(f32);
+     var wins: std.ArrayList(Win) = .empty;
      for (0..E) |e| for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }, 0..) |p, j| {
          const n: usize, const k: usize = if (j < 2) .{ I, H } else .{ H, I };
          const at = e * 3 + j;
 +        const cols = nvfp4.codeCols(k, format);
          const base = try std.fmt.allocPrint(a, pre ++ "experts.{d}.{s}.weight", .{ e, p });
 -        try wins.append(a, .{ .name = base, .dtype = "U8", .shape = try a.dupe(usize, &.{ n, k / 2 }), .at = at * 4096, .len = n * k / 2 });
-+        try wins.append(a, .{ .name = base, .dtype = "U8", .shape = try a.dupe(usize, &.{ n, cols }), .at = at * 4096, .len = n * cols });
++        try wins.append(a, .{ .name = base, .dtype = "U8", .shape = try a.dupe(usize, &.{ n, cols }), .at = at * stride, .len = n * cols });
          try wins.append(a, .{ .name = try std.fmt.allocPrint(a, "{s}_scale", .{base}), .dtype = "F8_E4M3", .shape = try a.dupe(usize, &.{ n, k / 16 }), .at = codes_len + at * 64, .len = n * k / 16 });
          try wins.append(a, .{ .name = try std.fmt.allocPrint(a, "{s}_scale_2", .{base}), .dtype = "F32", .shape = &.{}, .at = codes_len + scales_len + at * 4, .len = 4 });
      };
-@@ -277,15 +279,18 @@ const Fixture = struct {
+@@ -277,15 +286,18 @@ const Fixture = struct {
          return std.fs.path.join(f.arena_state.allocator(), &.{ f.root, sub });
      }
  
@@ -1011,7 +1021,7 @@ index a74ad6f00..377240c77 100644
          const index_path = try std.fs.path.join(a, &.{ dst, "model.safetensors.index.json" });
          const index = try std.json.parseFromSliceLeaky(std.json.Value, a, try f.tmp.dir.readFileAlloc(testing.io, index_path, a, .limited(1 << 24)), .{});
          const map = index.object.get("metadata").?.object.get(compact.experts_key).?.object;
-@@ -311,7 +316,7 @@ test "FP8: every expert held puts the full load's bytes; held experts route, and
+@@ -311,7 +323,7 @@ test "FP8: every expert held puts the full load's bytes; held experts route, and
      const layer3 = try fp8Layer(a);
      try writeShard(a, f.tmp.dir, "full", layer3.data, layer3.wins, "");
      try writeShard(a, f.tmp.dir, "all", layer3.data, layer3.wins, try mapMeta(a, null));
@@ -1020,7 +1030,7 @@ index a74ad6f00..377240c77 100644
      var full = try Loaded.open(a, f.root, "full");
      defer full.close();
      var all = try Loaded.open(a, f.root, "all");
-@@ -363,9 +368,9 @@ test "NVFP4: the compact layer stages each held expert's codes, scales and globa
+@@ -363,9 +375,9 @@ test "NVFP4: the compact layer stages each held expert's codes, scales and globa
      var f = try Fixture.init();
      defer f.deinit();
      const a = f.arena_state.allocator();
@@ -1032,7 +1042,7 @@ index a74ad6f00..377240c77 100644
      var full = try Loaded.open(a, f.root, "full");
      defer full.close();
      var small = try Loaded.open(a, f.root, "small");
-@@ -382,6 +387,41 @@ test "NVFP4: the compact layer stages each held expert's codes, scales and globa
+@@ -382,6 +394,41 @@ test "NVFP4: the compact layer stages each held expert's codes, scales and globa
      };
  }
  
@@ -1042,7 +1052,7 @@ index a74ad6f00..377240c77 100644
 +    const a = f.arena_state.allocator();
 +    const fp8_layer = try fp8Layer(a);
 +    try writeShard(a, f.tmp.dir, "fp8", fp8_layer.data, fp8_layer.wins, "");
-+    // the packer's output: every expert's int3 planes, scales and globals, a file of its own named for the layer
++    // the packer's output: every expert's int3 planes as pack_int3 writes them, scales and globals, in a file named for the layer
 +    const encoded = try fp4Layer(a, .int3);
 +    try writeShard(a, f.tmp.dir, "enc", encoded.data, encoded.wins, "");
 +    try f.tmp.dir.rename("enc/model.safetensors", f.tmp.dir, "enc/layer-03.safetensors", testing.io);

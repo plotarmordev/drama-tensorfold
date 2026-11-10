@@ -1,0 +1,464 @@
+From a504de26a892c4c525477653d7a3039c7da858c8 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 12:56:25 +0800
+Subject: [PATCH] drama3 metal: int3 routed experts (3.5 bits) in
+ d3_nvfp4_up/down
+
+A layer whose expert codes are [n, 3k/8] bytes is int3: each 16-input block is
+three little-endian u16 planes (sign, hi, lo) coding the E2M1 values 0, 2, 4
+and 6, under the same E4M3 block-16 scales and FP32 global as NVFP4. The
+loader picks the format from the tensor header; the kernels branch on one
+argument, so NVFP4 arithmetic is unchanged. The device gate runs every packed
+case for both formats, and its shared-gate combine reference now accepts
+either side of a BF16 rounding tie the kernel's f32 sigmoid can land on.
+---
+ zig/kernels/metal/drama3/nvfp4.metal          | 27 +++++++++--
+ zig/src/families/drama3/metal/forward.zig     |  8 ++--
+ zig/src/families/drama3/metal/kernels.zig     |  8 ++--
+ zig/src/families/drama3/metal/quant_check.zig | 47 +++++++++++++------
+ .../families/drama3/metal/quant_format.zig    | 15 ++++--
+ .../drama3/metal/quant_format_test.zig        | 37 +++++++++++----
+ .../families/drama3/metal/quant_reference.zig | 22 +++++++--
+ zig/src/families/drama3/metal/weights.zig     | 27 ++++++-----
+ zig/tests/contract/metal_drama3_nvfp4.zig     |  2 +-
+ 9 files changed, 137 insertions(+), 56 deletions(-)
+
+diff --git a/zig/kernels/metal/drama3/nvfp4.metal b/zig/kernels/metal/drama3/nvfp4.metal
+index 451869bf6..11ca250c6 100644
+--- a/zig/kernels/metal/drama3/nvfp4.metal
++++ b/zig/kernels/metal/drama3/nvfp4.metal
+@@ -1,9 +1,11 @@
+ // Packed row-major NVFP4: E2M1 nibbles, unsigned E4M3 block16 scales, FP32 projection globals.
++// Int3 (3.5 bits) shares scales and globals; each 16-input block is 6 bytes: u16 planes sign, hi, lo (bit i = input i),
++// coding 2 * (2 hi + lo) = the E2M1 values {0, 2, 4, 6}.
+ #include "d3_common.h"
+ 
+ struct Fp4Projection { device const uchar* w; device const uchar* s; device const float* global; };
+ struct Fp4Expert { Fp4Projection g, u, d; };
+-struct Fp4Args { uint K, N, prompt, cap, slots; };
++struct Fp4Args { uint K, N, prompt, cap, slots, int3; };
+ 
+ inline float fp4_value(uchar code) {
+   const float values[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+@@ -26,6 +28,23 @@ inline float fp4_row(Fp4Projection w, uint n, uint K, device const bf16* x, uint
+   }
+   return simd_sum(acc) * w.global[0];
+ }
++inline float int3_row(Fp4Projection w, uint n, uint K, device const bf16* x, uint lane) {
++  float acc = 0.0f;
++  for (uint k = lane * 16; k < K; k += 512) {
++    device const uchar* p = w.w + (ulong)n * (K / 16 * 6) + k / 16 * 6;
++    const uint sign = p[0] | uint(p[1]) << 8, hi = p[2] | uint(p[3]) << 8, lo = p[4] | uint(p[5]) << 8;
++    float block = 0.0f;
++    for (uint j = 0; j < 16; ++j) {
++      const float v = float(2 * ((hi >> j) & 1) + ((lo >> j) & 1)) * 2.0f;
++      block = fma((sign >> j) & 1 ? -v : v, b2f(x[k + j]), block);
++    }
++    acc = fma(block, fp4_scale(w.s[(ulong)n * (K / 16) + k / 16]), acc);
++  }
++  return simd_sum(acc) * w.global[0];
++}
++inline float expert_row(Fp4Projection w, uint n, constant Fp4Args& a, device const bf16* x, uint lane) {
++  return a.int3 ? int3_row(w, n, a.K, x, lane) : fp4_row(w, n, a.K, x, lane);
++}
+ 
+ [[max_total_threads_per_threadgroup(128)]] kernel void d3_nvfp4_up(
+     device const bf16* x [[buffer(0)]], device const Fp4Expert* table [[buffer(1)]],
+@@ -41,8 +60,8 @@ inline float fp4_row(Fp4Projection w, uint n, uint K, device const bf16* x, uint
+   for (int j = 0; j < cnt; ++j) {
+     const uint pair = a.prompt ? uint(members[(ulong)e * a.cap + j]) : tg.y;
+     device const bf16* row = x + (ulong)(pair / a.slots) * a.K;
+-    const float g = rb(fp4_row(w.g, n, a.K, row, lane));
+-    const float u = rb(fp4_row(w.u, n, a.K, row, lane));
++    const float g = rb(expert_row(w.g, n, a, row, lane));
++    const float u = rb(expert_row(w.u, n, a, row, lane));
+     if (lane == 0) out[(ulong)pair * a.N + n] = f2b(g / (1.0f + precise::exp(-g)) * u);
+   }
+ }
+@@ -60,7 +79,7 @@ inline float fp4_row(Fp4Projection w, uint n, uint K, device const bf16* x, uint
+   const Fp4Expert w = table[e];
+   for (int j = 0; j < cnt; ++j) {
+     const uint pair = a.prompt ? uint(members[(ulong)e * a.cap + j]) : tg.y;
+-    const float v = fp4_row(w.d, n, a.K, x + (ulong)pair * a.K, lane);
++    const float v = expert_row(w.d, n, a, x + (ulong)pair * a.K, lane);
+     if (lane == 0) out[(ulong)pair * a.N + n] = v;
+   }
+ }
+diff --git a/zig/src/families/drama3/metal/forward.zig b/zig/src/families/drama3/metal/forward.zig
+index 72f1f4bbd..089d61e3c 100644
+--- a/zig/src/families/drama3/metal/forward.zig
++++ b/zig/src/families/drama3/metal/forward.zig
+@@ -69,9 +69,9 @@ fn moe(e: *Engine, L: *const wts.Layer, t: usize) void {
+     const prompt = t > 1;
+     if (prompt) k.plan(g, e.picks, pairs, e.counts, e.members, e.o.max_rows * cfg.top_k);
+     const r: k.Route = .{ .table = L.experts, .picks = e.picks, .counts = e.counts, .members = e.members, .cap = e.o.max_rows * cfg.top_k, .pairs = pairs, .prompt = prompt, .experts = L.expert_count };
+-    if (L.nvfp4) {
+-        k.expertsNvfp4(g, true, e.xn, r, H, cfg.expert_width, e.gu);
+-        k.expertsNvfp4(g, false, e.gu, r, cfg.expert_width, H, e.down);
++    if (L.format != .fp8) {
++        k.expertsNvfp4(g, true, e.xn, r, H, cfg.expert_width, e.gu, L.format == .int3);
++        k.expertsNvfp4(g, false, e.gu, r, cfg.expert_width, H, e.down, L.format == .int3);
+     } else {
+         // The legacy FP8 path retains its activation quantization and reduction arithmetic.
+         k.actQuant(g, e.xn, H, e.xq, H, e.xsc, t, H);
+@@ -79,7 +79,7 @@ fn moe(e: *Engine, L: *const wts.Layer, t: usize) void {
+         k.actQuant(g, e.gu, cfg.expert_width, e.gq, cfg.expert_width, e.gsc, pairs, cfg.expert_width);
+         k.experts(g, false, e.gq, e.gsc, r, cfg.expert_width, H, e.down);
+     }
+-    if (L.nvfp4)
++    if (L.format != .fp8)
+         k.moeCombineNvfp4(g, e.x, e.down, e.rw, e.shout, e.xn, L.moe_in + (2 * cfg.shared_width + cfg.experts) * H * 2, H, t)
+     else
+         k.moeCombine(g, e.x, e.down, e.rw, e.shout, e.sp, mp, 2 * cfg.shared_width + cfg.experts, H, t);
+diff --git a/zig/src/families/drama3/metal/kernels.zig b/zig/src/families/drama3/metal/kernels.zig
+index 189573114..0b5814de5 100644
+--- a/zig/src/families/drama3/metal/kernels.zig
++++ b/zig/src/families/drama3/metal/kernels.zig
+@@ -119,10 +119,10 @@ pub fn experts(g: *Gpu, up: bool, x: u64, xsc: u64, r: Route, kdim: usize, n: us
+     g.go(if (up) .d3_expert_up else .d3_expert_down, .{ n / @as(usize, if (up) 8 else 16), gy, 1 }, 128, &.{ x, xsc, r.table, r.picks, r.counts, r.members, out }, a);
+ }
+ 
+-/// NVFP4 reads BF16 activation rows directly and writes BF16 SwiGLU / FP32 down; no activation quantization.
+-pub fn expertsNvfp4(g: *Gpu, up: bool, x: u64, r: Route, kdim: usize, n: usize, out: u64) void {
+-    const A = extern struct { K: u32, N: u32, prompt: u32, cap: u32, slots: u32 };
+-    const a: A = .{ .K = u(kdim), .N = u(n), .prompt = @intFromBool(r.prompt), .cap = u(r.cap), .slots = 8 };
++/// NVFP4 or int3 reads BF16 activation rows directly and writes BF16 SwiGLU / FP32 down; no activation quantization.
++pub fn expertsNvfp4(g: *Gpu, up: bool, x: u64, r: Route, kdim: usize, n: usize, out: u64, int3: bool) void {
++    const A = extern struct { K: u32, N: u32, prompt: u32, cap: u32, slots: u32, int3: u32 };
++    const a: A = .{ .K = u(kdim), .N = u(n), .prompt = @intFromBool(r.prompt), .cap = u(r.cap), .slots = 8, .int3 = @intFromBool(int3) };
+     g.go(if (up) .d3_nvfp4_up else .d3_nvfp4_down, .{ n / 4, if (r.prompt) r.experts else r.pairs, 1 }, 128, &.{ x, r.table, r.picks, r.counts, r.members, out }, a);
+ }
+ 
+diff --git a/zig/src/families/drama3/metal/quant_check.zig b/zig/src/families/drama3/metal/quant_check.zig
+index 36d4f2649..71b651a10 100644
+--- a/zig/src/families/drama3/metal/quant_check.zig
++++ b/zig/src/families/drama3/metal/quant_check.zig
+@@ -1,4 +1,4 @@
+-//! Deterministic device gate: packed projections, SwiGLU, pruning and mixed FP8/NVFP4 vs independent FP64.
++//! Deterministic device gate: packed NVFP4/int3 projections, SwiGLU, pruning and mixed FP8/NVFP4 vs independent FP64.
+ const std = @import("std");
+ const Gpu = @import("gpu.zig").Gpu;
+ const k = @import("kernels.zig");
+@@ -52,25 +52,33 @@ const Projection = struct {
+     global: u64,
+     n: usize,
+     dim: usize,
+-    fn init(g: *Gpu, n: usize, dim: usize, seed: usize) !Projection {
+-        const w = try g.alloc(n * dim / 2);
++    int3: bool,
++    fn init(g: *Gpu, int3: bool, n: usize, dim: usize, seed: usize) !Projection {
++        const code_bytes = n * q.codeBytes(if (int3) .int3 else .nvfp4, dim);
++        const w = try g.alloc(code_bytes);
+         const s = try g.alloc(n * dim / 16);
+-        for (g.host(w, n * dim / 2), 0..) |*b, j| b.* = @truncate((j * 37 + seed * 19) % 256);
++        for (g.host(w, code_bytes), 0..) |*b, j| b.* = @truncate((j * 37 + seed * 19) % 256);
+         for (g.host(s, n * dim / 16), 0..) |*b, j| b.* = @intCast((j + seed * 11) % 127);
+         const global: f32 = @as(f32, @floatFromInt(seed + 1)) / 1024;
+         const gp = try put(g, std.mem.asBytes(&global), true);
+         try g.indirect.append(g.gpa, g.ref(w).buf);
+         try g.indirect.append(g.gpa, g.ref(s).buf);
+-        return .{ .w = w, .s = s, .global = gp, .n = n, .dim = dim };
++        return .{ .w = w, .s = s, .global = gp, .n = n, .dim = dim, .int3 = int3 };
+     }
+     fn scalar(p: Projection, g: *Gpu, row: usize, x: []align(1) const u16) f64 {
+         const global: f32 = @bitCast(std.mem.readInt(u32, g.host(p.global, 4)[0..4], .little));
+-        return ref.projection(g.host(p.w, p.n * p.dim / 2), g.host(p.s, p.n * p.dim / 16), global, row, p.dim, x);
++        const code_bytes = p.n * q.codeBytes(if (p.int3) .int3 else .nvfp4, p.dim);
++        return ref.projection(p.int3, g.host(p.w, code_bytes), g.host(p.s, p.n * p.dim / 16), global, row, p.dim, x);
+     }
+ };
+ 
+ /// Run only in an exclusive GPU window. The caller opens the newly built drama3 metallib, not a model checkpoint.
+ pub fn run(g: *Gpu) !void {
++    try formatCheck(g, false);
++    try formatCheck(g, true);
++}
++
++fn formatCheck(g: *Gpu, int3: bool) !void {
+     try g.flush();
+     const first = g.bufs.items.len;
+     const indirect_first = g.indirect.items.len;
+@@ -79,9 +87,9 @@ pub fn run(g: *Gpu) !void {
+         g.indirect.shrinkRetainingCapacity(indirect_first);
+         g.releaseFrom(first);
+     }
+-    const gate = try Projection.init(g, I, H, 0);
+-    const up = try Projection.init(g, I, H, 1);
+-    const down = try Projection.init(g, H, I, 2);
++    const gate = try Projection.init(g, int3, I, H, 0);
++    const up = try Projection.init(g, int3, I, H, 1);
++    const down = try Projection.init(g, int3, H, I, 2);
+     var pointers: [E * 9]u64 = undefined;
+     for (0..E) |e| for ([_]Projection{ gate, up, down }, 0..) |p, j| {
+         pointers[e * 9 + j * 3] = g.gpuAddress(p.w);
+@@ -110,8 +118,8 @@ pub fn run(g: *Gpu) !void {
+         k.routerCompact(g, logits, 256, 0, picks, rw, slots, rows);
+         if (rows > 1) k.plan(g, picks, rows * E, counts, members, pairs);
+         const route: k.Route = .{ .table = table, .picks = picks, .counts = counts, .members = members, .cap = pairs, .pairs = rows * E, .prompt = rows > 1, .experts = E };
+-        k.expertsNvfp4(g, true, x, route, H, I, gu);
+-        k.expertsNvfp4(g, false, gu, route, I, H, output);
++        k.expertsNvfp4(g, true, x, route, H, I, gu, int3);
++        k.expertsNvfp4(g, false, gu, route, I, H, output, int3);
+         try g.flush();
+         for (0..rows * E) |pair| {
+             const picked = std.mem.readInt(i32, g.host(picks + pair * 4, 4)[0..4], .little);
+@@ -131,12 +139,16 @@ pub fn run(g: *Gpu) !void {
+             }
+         }
+         try combine(g, output, rw, x, rows);
++        if (int3) {
++            try rawProjection(g, route, gate, x, output, rows, "drama3 int3 gate FP32");
++            continue;
++        }
+         try rawProjection(g, route, gate, x, output, rows, "drama3 NVFP4 gate FP32");
+         try rawProjection(g, route, up, x, output, rows, "drama3 NVFP4 up FP32");
+         try fp8Layer(g, route, x, gu, output, rows);
+     }
+-    up_score.report("drama3 NVFP4 gate/up SwiGLU decode+prompt");
+-    down_score.report("drama3 NVFP4 down FP32 decode+prompt");
++    up_score.report(if (int3) "drama3 int3 gate/up SwiGLU decode+prompt" else "drama3 NVFP4 gate/up SwiGLU decode+prompt");
++    down_score.report(if (int3) "drama3 int3 down FP32 decode+prompt" else "drama3 NVFP4 down FP32 decode+prompt");
+ }
+ 
+ fn combine(g: *Gpu, down: u64, weights: u64, x: u64, rows: usize) !void {
+@@ -162,8 +174,13 @@ fn combine(g: *Gpu, down: u64, weights: u64, x: u64, rows: usize) !void {
+             }
+             const sh = ref.fromBf16(bfRows(g, shared, rows * H)[row * H + col]);
+             const old = ref.roundBf16(@as(f64, @floatFromInt((row * H + col) % 13)) / 32);
+-            const want = ref.roundBf16(old + ref.roundBf16(gate * sh + ref.roundBf16(sum)));
+             const got = ref.fromBf16(bfRows(g, residual, rows * H)[row * H + col]);
++            // The kernel's f32 dot and sigmoid may land the MoE term on either side of a BF16 rounding tie.
++            const moe = gate * sh + ref.roundBf16(sum);
++            const slack = @abs(moe) * 0x1p-20;
++            const lo = ref.roundBf16(old + ref.roundBf16(moe - slack));
++            const hi = ref.roundBf16(old + ref.roundBf16(moe + slack));
++            const want = if (@abs(got - lo) < @abs(got - hi)) lo else hi;
+             try score.add(got, want, 0.00001 + @abs(want) / 128, col);
+         }
+     }
+@@ -182,7 +199,7 @@ fn rawProjection(g: *Gpu, original_route: k.Route, p: Projection, x: u64, output
+     const repeated = try g.alloc(rows * E * H * 2);
+     for (0..rows * E) |pair|
+         @memcpy(g.host(repeated + pair * H * 2, H * 2), g.host(x + (pair / E) * H * 2, H * 2));
+-    k.expertsNvfp4(g, false, repeated, route, H, I, output);
++    k.expertsNvfp4(g, false, repeated, route, H, I, output, p.int3);
+     try g.flush();
+     var score: Score = .{};
+     for (0..rows * E) |pair| for (0..I) |col| {
+diff --git a/zig/src/families/drama3/metal/quant_format.zig b/zig/src/families/drama3/metal/quant_format.zig
+index a3e4959b3..a949a0cfb 100644
+--- a/zig/src/families/drama3/metal/quant_format.zig
++++ b/zig/src/families/drama3/metal/quant_format.zig
+@@ -59,9 +59,18 @@ pub fn checkNames(h: *const Held, names: anytype) !void {
+     }
+ }
+ 
+-pub fn nvfp4(w: Tensor, s: Tensor, g: Tensor, n: usize, k: usize) !void {
+-    if (k % 16 != 0 or !w.is(.u8, &.{ n, k / 2 }) or !s.is(.f8_e4m3, &.{ n, k / 16 }) or !g.is(.f32, &.{})) return error.BadNvfp4Shape;
+-    if (w.bytes.len != n * k / 2 or s.bytes.len != n * k / 16 or g.bytes.len != 4) return error.BadNvfp4Shape;
++pub const Format = enum { fp8, nvfp4, int3 };
++
++/// A row's code bytes for k inputs: NVFP4 nibbles, or int3's three 16-bit planes (sign, hi, lo) a 16-input block.
++pub fn codeBytes(f: Format, k: usize) usize {
++    return if (f == .int3) k / 16 * 6 else k / 2;
++}
++
++/// NVFP4 and int3 share E4M3 block16 scales and an FP32 global; only the code row width differs.
++pub fn block16(f: Format, w: Tensor, s: Tensor, g: Tensor, n: usize, k: usize) !void {
++    const row = codeBytes(f, k);
++    if (k % 16 != 0 or !w.is(.u8, &.{ n, row }) or !s.is(.f8_e4m3, &.{ n, k / 16 }) or !g.is(.f32, &.{})) return error.BadNvfp4Shape;
++    if (w.bytes.len != n * row or s.bytes.len != n * k / 16 or g.bytes.len != 4) return error.BadNvfp4Shape;
+     for (s.bytes) |b| if (b == 0x7f or b > 0x80) return error.BadNvfp4Scale;
+     const global: f32 = @bitCast(std.mem.readInt(u32, g.bytes[0..4], .little));
+     if (!(global > 0 and std.math.isFinite(global))) return error.BadScale;
+diff --git a/zig/src/families/drama3/metal/quant_format_test.zig b/zig/src/families/drama3/metal/quant_format_test.zig
+index 747124a51..e221b8dbd 100644
+--- a/zig/src/families/drama3/metal/quant_format_test.zig
++++ b/zig/src/families/drama3/metal/quant_format_test.zig
+@@ -10,32 +10,49 @@ fn tensor(dtype: st.DType, shape: []const usize, bytes: []const u8) st.Tensor {
+     return t;
+ }
+ 
+-test "NVFP4 rejects shape dtype negative nan scales and invalid globals" {
++test "NVFP4 and int3 reject shape dtype negative nan scales and invalid globals" {
+     const codes: [32]u8 = @splat(0x98);
+     var scales: [4]u8 = @splat(0x38);
+     var global: f32 = 1;
+     const w = tensor(.u8, &.{ 1, 32 }, &codes);
+     const s = tensor(.f8_e4m3, &.{ 1, 4 }, &scales);
+     const g = tensor(.f32, &.{}, std.mem.asBytes(&global));
+-    try q.nvfp4(w, s, g, 1, 64);
++    try q.block16(.nvfp4, w, s, g, 1, 64);
+     for ([_]u8{ 0x7f, 0x81, 0xff }) |bad| {
+         scales[0] = bad;
+-        try std.testing.expectError(error.BadNvfp4Scale, q.nvfp4(w, s, g, 1, 64));
++        try std.testing.expectError(error.BadNvfp4Scale, q.block16(.nvfp4, w, s, g, 1, 64));
+     }
+     for ([_]u8{ 0, 0x80 }) |zero| {
+         scales[0] = zero;
+-        try q.nvfp4(w, s, g, 1, 64);
++        try q.block16(.nvfp4, w, s, g, 1, 64);
+     }
+     for ([_]f32{ 0, -1, std.math.inf(f32), std.math.nan(f32) }) |bad| {
+         global = bad;
+-        try std.testing.expectError(error.BadScale, q.nvfp4(w, s, g, 1, 64));
++        try std.testing.expectError(error.BadScale, q.block16(.nvfp4, w, s, g, 1, 64));
+     }
+     global = 1;
+-    try std.testing.expectError(error.BadNvfp4Shape, q.nvfp4(tensor(.f8_e4m3, &.{ 1, 32 }, &codes), s, g, 1, 64));
+-    try std.testing.expectError(error.BadNvfp4Shape, q.nvfp4(w, tensor(.f8_e4m3, &.{ 4, 1 }, &scales), g, 1, 64));
+-    try std.testing.expectError(error.BadNvfp4Shape, q.nvfp4(w, s, tensor(.f32, &.{1}, std.mem.asBytes(&global)), 1, 64));
+-    try std.testing.expectError(error.BadNvfp4Shape, q.nvfp4(tensor(.u8, &.{ 1, 32 }, codes[0..31]), s, g, 1, 64));
+-    try std.testing.expectError(error.BadNvfp4Shape, q.nvfp4(w, s, tensor(.f32, &.{}, &.{}), 1, 64));
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.nvfp4, tensor(.f8_e4m3, &.{ 1, 32 }, &codes), s, g, 1, 64));
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.nvfp4, w, tensor(.f8_e4m3, &.{ 4, 1 }, &scales), g, 1, 64));
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.nvfp4, w, s, tensor(.f32, &.{1}, std.mem.asBytes(&global)), 1, 64));
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.nvfp4, tensor(.u8, &.{ 1, 32 }, codes[0..31]), s, g, 1, 64));
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.nvfp4, w, s, tensor(.f32, &.{}, &.{}), 1, 64));
++    // int3 rows are 6 bytes a 16-input block; an NVFP4-width row is not int3 and the reverse.
++    const int3_w = tensor(.u8, &.{ 1, 24 }, codes[0..24]);
++    try q.block16(.int3, int3_w, s, g, 1, 64);
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.int3, w, s, g, 1, 64));
++    try std.testing.expectError(error.BadNvfp4Shape, q.block16(.nvfp4, int3_w, s, g, 1, 64));
++}
++
++test "int3 reference decodes sign hi lo planes to the E2M1 values 0 2 4 6" {
++    // Inputs 0..3 code +0, +2, +4, +6; inputs 4..7 the same negative; input 15 a negative zero.
++    const sign: u16 = 0x80f0;
++    const hi: u16 = 0x00cc;
++    const lo: u16 = 0x00aa;
++    var row: [6]u8 = undefined;
++    for ([_]u16{ sign, hi, lo }, 0..) |plane, i| std.mem.writeInt(u16, row[i * 2 ..][0..2], plane, .little);
++    for ([_]f64{ 0, 2, 4, 6, -0.0, -2, -4, -6 }, 0..) |want, i| try std.testing.expectEqual(want, ref.int3(&row, i));
++    try std.testing.expectEqual(@as(f64, 0), ref.int3(&row, 15));
++    for ([_]f64{ 0, 2, 4, 6 }, [_]u8{ 0, 4, 6, 7 }) |v, code| try std.testing.expectEqual(v, ref.fp4(code));
+ }
+ 
+ fn mapText(a: std.mem.Allocator, ids: []const u8, omit: bool) ![]u8 {
+diff --git a/zig/src/families/drama3/metal/quant_reference.zig b/zig/src/families/drama3/metal/quant_reference.zig
+index 51a7d7207..3625eadaa 100644
+--- a/zig/src/families/drama3/metal/quant_reference.zig
++++ b/zig/src/families/drama3/metal/quant_reference.zig
+@@ -47,12 +47,26 @@ pub fn roundBf16(x: f64) f64 {
+     return if (da < db or (da == db and low % 2 == 0)) a else b;
+ }
+ 
+-pub fn projection(codes: []const u8, scales: []const u8, global: f32, n: usize, k: usize, x: []align(1) const u16) f64 {
++/// Input i's int3 value: bit i % 16 of its block's little-endian u16 planes sign, hi, lo; 2 * (2 hi + lo) signed.
++pub fn int3(row: []const u8, i: usize) f64 {
++    const block = row[i / 16 * 6 ..][0..6];
++    const bit: u4 = @intCast(i % 16);
++    const plane = struct {
++        fn get(b: *const [2]u8, at: u4) f64 {
++            return @floatFromInt(std.mem.readInt(u16, b, .little) >> at & 1);
++        }
++    }.get;
++    const v = 2 * (2 * plane(block[2..4], bit) + plane(block[4..6], bit));
++    return if (plane(block[0..2], bit) == 1) -v else v;
++}
++
++pub fn projection(int3_codes: bool, codes: []const u8, scales: []const u8, global: f32, n: usize, k: usize, x: []align(1) const u16) f64 {
++    const row_bytes = if (int3_codes) k / 16 * 6 else k / 2;
++    const row = codes[n * row_bytes ..][0..row_bytes];
+     var sum: f64 = 0;
+     for (0..k) |i| {
+-        const byte = codes[n * (k / 2) + i / 2];
+-        const code = if (i % 2 == 0) byte % 16 else byte / 16;
+-        sum += fp4(code) * fp8(scales[n * (k / 16) + i / 16]) * fromBf16(x[i]);
++        const v = if (int3_codes) int3(row, i) else fp4(if (i % 2 == 0) row[i / 2] % 16 else row[i / 2] / 16);
++        sum += v * fp8(scales[n * (k / 16) + i / 16]) * fromBf16(x[i]);
+     }
+     return sum * global;
+ }
+diff --git a/zig/src/families/drama3/metal/weights.zig b/zig/src/families/drama3/metal/weights.zig
+index 36f543a1b..2dd59e5c1 100644
+--- a/zig/src/families/drama3/metal/weights.zig
++++ b/zig/src/families/drama3/metal/weights.zig
+@@ -1,4 +1,4 @@
+-//! Drama 3 Metal weights: BF16 dense projections and packed FP8/NVFP4 experts with original-ID compaction.
++//! Drama 3 Metal weights: BF16 dense projections and packed FP8/NVFP4/int3 experts with original-ID compaction.
+ const std = @import("std");
+ const mtl = @import("metal");
+ const core = @import("core");
+@@ -21,10 +21,10 @@ pub const Layer = struct {
+     attn: Attn = undefined,
+     moe_in: u64, // [1288, 2048]
+     shared_down: u64, // [2048, 512]
+-    experts: u64, // Compact slot table: 6 FP8 pointers or 9 NVFP4 pointers per held expert.
++    experts: u64, // Compact slot table: 6 FP8 pointers or 9 NVFP4/int3 pointers per held expert.
+     expert_slots: u64,
+     expert_count: usize,
+-    nvfp4: bool,
++    format: quant.Format,
+ };
+ 
+ pub const TowerLayer = struct {
+@@ -122,7 +122,8 @@ fn mapShards(g: *Gpu, sh: *const Shards) ![]u64 {
+     return out;
+ }
+ 
+-/// Compact slots preserve ascending original IDs; each layer has one expert format, selected from tensor headers.
++/// Compact slots preserve ascending original IDs; each layer has one expert format, selected from tensor headers
++/// (u8 codes [n, k/2] are NVFP4, [n, 3k/8] int3).
+ fn expertTable(l: *Loader, li: usize, maps: []const u64, held: *const quant.Held) !void {
+     const layer = &l.w.layers[li];
+     const ids = held.ids[li][0..held.counts[li]];
+@@ -139,24 +140,28 @@ fn expertTable(l: *Loader, li: usize, maps: []const u64, held: *const quant.Held
+     const parts = [_]struct { []const u8, [2]usize }{ .{ "gate_proj", .{ n, k } }, .{ "up_proj", .{ n, k } }, .{ "down_proj", .{ k, n } } };
+     var nb: [3][192]u8 = undefined;
+     const first = try l.sh.get(fmt(&nb[0], "model.language_model.layers.{d}.mlp.experts.{d}.gate_proj.weight", .{ li, ids[0] }));
+-    layer.nvfp4 = first.dtype == .u8;
+-    if (!layer.nvfp4 and first.dtype != .f8_e4m3) return error.UnsupportedExpertDtype;
+-    const stride: usize = if (layer.nvfp4) 9 else 6;
++    layer.format = switch (first.dtype) {
++        .f8_e4m3 => .fp8,
++        .u8 => if (first.rank == 2 and first.shape[1] == quant.codeBytes(.int3, k)) .int3 else .nvfp4,
++        else => return error.UnsupportedExpertDtype,
++    };
++    const packed16 = layer.format != .fp8;
++    const stride: usize = if (packed16) 9 else 6;
+     layer.experts = try l.g.alloc(ids.len * stride * 8);
+     const ptrs = std.mem.bytesAsSlice(u64, l.g.host(layer.experts, ids.len * stride * 8));
+     for (ids, 0..) |e, slot| {
+         for (parts, 0..) |p, j| {
+             const wname = fmt(&nb[0], "model.language_model.layers.{d}.mlp.experts.{d}.{s}.weight", .{ li, e, p[0] });
+-            const sname = fmt(&nb[1], "{s}{s}", .{ wname, if (layer.nvfp4) "_scale" else "_scale_inv" });
++            const sname = fmt(&nb[1], "{s}{s}", .{ wname, if (packed16) "_scale" else "_scale_inv" });
+             const wt = try l.sh.get(wname);
+             const sc = try l.sh.get(sname);
+             const wl = try l.sh.locate(wname);
+             const sl = try l.sh.locate(sname);
+             const base = slot * stride + j * (stride / 3);
+-            if (layer.nvfp4) {
++            if (packed16) {
+                 const gname = fmt(&nb[2], "{s}_scale_2", .{wname});
+                 const gl = try l.sh.get(gname);
+-                try quant.nvfp4(wt, sc, gl, p[1][0], p[1][1]);
++                try quant.block16(layer.format, wt, sc, gl, p[1][0], p[1][1]);
+                 const loc = try l.sh.locate(gname);
+                 if (loc.offset % 4 != 0) return error.MisalignedScale;
+                 ptrs[base + 2] = l.g.gpuAddress(maps[loc.file] + loc.offset);
+@@ -265,6 +270,6 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
+         T.final_norm = try l.one(tn(&nb[0], p, idx, "final_layernorm.weight"), &.{H});
+     }
+     for (0..cfg.codebooks - 1) |hi| w.heads[hi] = try l.one(fmt(&nb[0], "audio_decoder_mtp.heads.{d}.weight", .{hi}), &.{ cfg.codebook_size, H });
+-    std.log.info("drama3: {d:.2} GB of BF16/copied weights, {d:.2} GB of packed FP8/NVFP4 experts read in place", .{ @as(f64, @floatFromInt(w.bytes)) / 1e9, @as(f64, @floatFromInt(w.mapped)) / 1e9 });
++    std.log.info("drama3: {d:.2} GB of BF16/copied weights, {d:.2} GB of packed FP8/NVFP4/int3 experts read in place", .{ @as(f64, @floatFromInt(w.bytes)) / 1e9, @as(f64, @floatFromInt(w.mapped)) / 1e9 });
+     return w;
+ }
+diff --git a/zig/tests/contract/metal_drama3_nvfp4.zig b/zig/tests/contract/metal_drama3_nvfp4.zig
+index 28a96485b..ba902b0ef 100644
+--- a/zig/tests/contract/metal_drama3_nvfp4.zig
++++ b/zig/tests/contract/metal_drama3_nvfp4.zig
+@@ -29,7 +29,7 @@ pub fn spec(variant: Variant) c.Spec {
+     };
+ }
+ 
+-const Args = extern struct { K: u32, N: u32, prompt: u32, cap: u32, slots: u32 };
++const Args = extern struct { K: u32, N: u32, prompt: u32, cap: u32, slots: u32, int3: u32 = 0 };
+ const Packed = struct { w: rig_.Ref, s: rig_.Ref, global: rig_.Ref };
+ const Sample = struct { want: f64, magnitude: f64, range: ref.Interval };
+ 
+-- 
+2.54.0 (Apple Git-157)
+

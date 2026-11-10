@@ -1,0 +1,112 @@
+From 75b31c4bc7086ccccf89d7bf4f8068ae4e341394 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:00:00 +0800
+Subject: [PATCH] drama3: load a compact lm_head holding only the candidate
+ rows
+
+A checkpoint whose index metadata lists drama_head_rows stores lm_head as
+those rows alone, [4097, 2048] for Drama 3: EOS, then the semantic band.
+The loader accepts it when the list is exactly the candidate ids in order
+and copies it whole; a full [vocab, 2048] head still loads as before.
+---
+ zig/build/drama3_host.zig                     |  2 +-
+ .../families/drama3/metal/quant_format.zig    | 11 +++++++++-
+ .../drama3/metal/quant_format_test.zig        | 22 +++++++++++++++++++
+ zig/src/families/drama3/metal/weights.zig     |  5 +++--
+ 4 files changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
+index 910885947..a6d21862a 100644
+--- a/zig/build/drama3_host.zig
++++ b/zig/build/drama3_host.zig
+@@ -48,7 +48,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
+     native(b, step, family, core, api, null, "drama_metal_native_host");
+     const quant = b.addRunArtifact(b.addTest(.{
+         .root_module = family,
+-        .filters = &.{ "NVFP4", "expert metadata", "independent scalar reference", "CFG" },
++        .filters = &.{ "NVFP4", "expert metadata", "compact head", "independent scalar reference", "CFG" },
+     }));
+     b.step("test-drama-metal-quant-host", "Packed expert formats, pruning and CFG state without GPU execution").dependOn(&quant.step);
+ }
+diff --git a/zig/src/families/drama3/metal/quant_format.zig b/zig/src/families/drama3/metal/quant_format.zig
+index a3e4959b3..cfa43a891 100644
+--- a/zig/src/families/drama3/metal/quant_format.zig
++++ b/zig/src/families/drama3/metal/quant_format.zig
+@@ -39,10 +39,19 @@ pub fn parseHeld(value: std.json.Value) !Held {
+ pub fn heldMetadata(metadata: ?std.json.Value) !Held {
+     const meta = metadata orelse return .{};
+     if (meta != .object) return error.BadExpertMap;
+-    if (meta.object.get("drama_head_rows") != null) return error.UnsupportedCompactHead;
+     return if (meta.object.get("drama_experts")) |v| try parseHeld(v) else .{};
+ }
+ 
++/// Whether lm_head holds only the candidate rows: metadata `drama_head_rows` must then list exactly `ids`, in order.
++pub fn compactHead(metadata: ?std.json.Value, ids: []const i32) !bool {
++    const meta = metadata orelse return false;
++    if (meta != .object) return error.BadHeadRows;
++    const rows = meta.object.get("drama_head_rows") orelse return false;
++    if (rows != .array or rows.array.items.len != ids.len) return error.BadHeadRows;
++    for (rows.array.items, ids) |row, id| if (row != .integer or row.integer != id) return error.BadHeadRows;
++    return true;
++}
++
+ pub fn checkNames(h: *const Held, names: anytype) !void {
+     var it = names;
+     const pre = "model.language_model.layers.";
+diff --git a/zig/src/families/drama3/metal/quant_format_test.zig b/zig/src/families/drama3/metal/quant_format_test.zig
+index 747124a51..786a76769 100644
+--- a/zig/src/families/drama3/metal/quant_format_test.zig
++++ b/zig/src/families/drama3/metal/quant_format_test.zig
+@@ -73,6 +73,28 @@ test "expert metadata is complete ascending unique and keeps at least eight orig
+     try std.testing.expectError(error.BadExpertMap, q.parseHeld(tree.value));
+ }
+ 
++test "a compact head is accepted only when its row list is exactly the candidate ids in order" {
++    const a = std.testing.allocator;
++    const ids = [_]i32{ 7, 20, 21, 22 };
++    const cases = [_]struct { []const u8, anyerror!bool }{
++        .{ "{}", false },
++        .{ "{\"drama_experts\": {}}", false },
++        .{ "{\"drama_head_rows\": [7, 20, 21, 22]}", true },
++        .{ "{\"drama_head_rows\": [20, 21, 22, 7]}", error.BadHeadRows },
++        .{ "{\"drama_head_rows\": [7, 20, 21]}", error.BadHeadRows },
++        .{ "{\"drama_head_rows\": [7, 20, 21, 22, 23]}", error.BadHeadRows },
++        .{ "{\"drama_head_rows\": [7, 20, 21, 22.0]}", error.BadHeadRows },
++        .{ "{\"drama_head_rows\": \"7,20,21,22\"}", error.BadHeadRows },
++        .{ "[]", error.BadHeadRows },
++    };
++    for (cases) |c| {
++        const tree = try std.json.parseFromSlice(std.json.Value, a, c[0], .{});
++        defer tree.deinit();
++        try std.testing.expectEqual(c[1], q.compactHead(tree.value, &ids));
++    }
++    try std.testing.expectEqual(false, q.compactHead(null, &ids));
++}
++
+ test "independent scalar reference covers E2M1 signs and E4M3 boundary scales" {
+     const values = [_]f64{ 0, 0.5, 1, 1.5, 2, 3, 4, 6 };
+     for (values, 0..) |v, i| {
+diff --git a/zig/src/families/drama3/metal/weights.zig b/zig/src/families/drama3/metal/weights.zig
+index 36f543a1b..f08976bd4 100644
+--- a/zig/src/families/drama3/metal/weights.zig
++++ b/zig/src/families/drama3/metal/weights.zig
+@@ -202,13 +202,14 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
+     w.final_norm = try l.one("model.language_model.norm.weight", &.{H});
+     {
+         const t = try w.sh.get("lm_head.weight");
+-        try Loader.expect(t, .bf16, &.{ cfg.vocab, H }, "lm_head.weight");
+         const ids = try shards.candidateIds(g.gpa, c);
+         defer g.gpa.free(ids);
++        const compact = try quant.compactHead(w.sh.metadata, ids);
++        try Loader.expect(t, .bf16, &.{ if (compact) ids.len else cfg.vocab, H }, "lm_head.weight");
+         w.n_cand = ids.len;
+         w.cand_head = try g.alloc(ids.len * H * 2);
+         const rows = g.host(w.cand_head, ids.len * H * 2);
+-        for (ids, 0..) |id, r| @memcpy(rows[r * H * 2 ..][0 .. H * 2], t.bytes[@as(usize, @intCast(id)) * H * 2 ..][0 .. H * 2]);
++        if (compact) @memcpy(rows, t.bytes) else for (ids, 0..) |id, r| @memcpy(rows[r * H * 2 ..][0 .. H * 2], t.bytes[@as(usize, @intCast(id)) * H * 2 ..][0 .. H * 2]);
+         w.cand_ids = try g.alloc(ids.len * 4);
+         @memcpy(g.host(w.cand_ids, ids.len * 4), std.mem.sliceAsBytes(ids));
+         w.bytes += ids.len * (H * 2 + 4);
+-- 
+2.54.0 (Apple Git-157)
+

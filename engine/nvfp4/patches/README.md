@@ -10,6 +10,7 @@ selected patch exactly once, verifies its digest, then applies the series.
 | `0002-speech-sampling-controls.patch` | Request sampling through whole/streamed, reference, CFG and long-form redraw paths | [TensorFold #6](https://github.com/plotarmordev/TensorFold/pull/6) |
 | `0003-dialogue-speakers.patch` | Canonical speaker IDs and continuation across long-form splits/history/redraws | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
 | `0004-remove-unused-redraw-salt.patch` | Remove the unused seed-salt helper superseded by request sampling | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
+| `0005-drama-compact-lm-head.patch` | Load a `[4097, 2048]` lm_head listed by `drama_head_rows` ([`recipe/trim_head.py`](../../../recipe/trim_head.py)) | none |
 
 Patch 0002 adds [request sampling](../../../recipe/README-sampling.md). Each
 long-form segment starts with the supplied seed; its retries add their own

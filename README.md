@@ -183,6 +183,8 @@ reference backend do not receive this setting. Per-request `temperature`, `top_p
 tags 0 to 15 in request text, need no launch flag; the CUDA NVFP4 series (0002, 0003) and the Metal NVFP4 series
 (0004-0006) carry the same two request-level features. Metal patch 0007 loads the CUDA engine's `drama3-voice`
 files in `--voices`; 0008 answers a take that ends speech before its first audio frame with a 500, not empty audio.
+CUDA patch 0005 and Metal patch 0009 load a checkpoint whose lm_head keeps only the 4,097 rows the engine scores
+(EOS and the semantic band), as [`recipe/trim_head.py`](recipe/trim_head.py) writes it: 0.95 GiB less on disk.
 Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 
 | In TensorFold 1.1.9 | Opt in with | Upstream |

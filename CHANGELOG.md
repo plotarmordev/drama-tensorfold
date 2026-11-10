@@ -6,6 +6,11 @@
 
 - [`results/quant-15gb/`](results/quant-15gb/README.md): the 5,900-expert NVFP4 quant, published as
   `plotarmordev/drama-3-NVFP4-Pruned-5900`, against the 20.8 GB quant and the full model on one GB10.
+- [`recipe/trim_head.py`](recipe/trim_head.py) writes an NVFP4 checkpoint whose `lm_head` keeps only the 4,097
+  rows the engine scores (EOS and the semantic band), listed in the index metadata as `drama_head_rows`: the
+  5,900-expert quant's weights and codec go from 18.34 to 17.39 GiB on disk. CUDA patch 0005 and Metal patch 0009
+  load it; a full head still loads as before. [`bench/head-trim-identity.sh`](bench/head-trim-identity.sh) checks
+  that every corpus take of the trimmed checkpoint equals the source's byte for byte.
 
 ### Changed
 

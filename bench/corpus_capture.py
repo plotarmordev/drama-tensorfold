@@ -2,8 +2,10 @@
 """Whole-PCM replies for every corpus item against a running server (stdlib only), for byte comparison and timing.
 
 Usage: corpus_capture.py BASE OUT_DIR [--passes N] [--voice NAME]. OUT_DIR must not exist. Writes one body per item and pass
-(pass-N/ITEM.pcm) and capture.json: per request status, bytes, sha256, seconds, audio seconds and RTF. A non-200
-reply keeps its status and error text; it is a recorded outcome, not an exception. Pass 0 also warms the engine.
+(pass-N/ITEM.pcm) and capture.json: per request status, bytes, sha256, seconds, audio seconds and RTF. A 503 is
+retried for up to a second: the server frees a reply's output slot only after it has sent it, so the next request can
+race it. Any other non-200 reply keeps its status and error text; it is a recorded outcome, not an exception. Pass 0
+also warms the engine.
 """
 import argparse
 import hashlib
@@ -15,6 +17,7 @@ import urllib.request
 
 CORPUS = Path(__file__).resolve().parent / 'corpus/drama-bench-en-v1.jsonl'
 SAMPLE_RATE = 44100
+BUSY_RETRIES = 10
 
 
 def request(base, text, voice=None):
@@ -47,6 +50,11 @@ def main():
         directory.mkdir()
         for item in items:
             status, body, seconds = request(args.base, item['text'], args.voice)
+            for _ in range(BUSY_RETRIES):
+                if status != 503:
+                    break
+                time.sleep(0.1)
+                status, body, seconds = request(args.base, item['text'], args.voice)
             row = {'pass': p, 'item': item['id'], 'status': status, 'seconds': seconds, 'bytes': len(body),
                    'sha256': hashlib.sha256(body).hexdigest()}
             if status == 200:

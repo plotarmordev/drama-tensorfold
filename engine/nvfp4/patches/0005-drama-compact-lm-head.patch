@@ -1,0 +1,91 @@
+From 480b1271da2f20281bf8282253ecec94e4940b76 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:00:00 +0800
+Subject: [PATCH] drama: load a compact lm_head holding only the semantic rows
+
+A checkpoint whose index metadata lists drama_head_rows stores lm_head as
+those rows alone, [4097, 2048]: EOS, then semantic_start..semantic_end.
+The loader accepts it when the list is exactly that and copies it whole
+into the zero-padded head; a full [vocab, 2048] head still loads as before.
+---
+ zig/src/families/drama/backbone_weights.zig | 15 +++++++++---
+ zig/src/families/drama/compact.zig          | 26 +++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/zig/src/families/drama/backbone_weights.zig b/zig/src/families/drama/backbone_weights.zig
+index d1907cb14..566bb2b26 100644
+--- a/zig/src/families/drama/backbone_weights.zig
++++ b/zig/src/families/drama/backbone_weights.zig
+@@ -464,13 +464,22 @@ fn loadOf(gpa: std.mem.Allocator, io: Io, d: *const cuda.Driver, stream: cuda.St
+ }
+ 
+ /// The semantic rows of lm_head (EOS, then semantic_start..semantic_end), zero padded, and RoPE's inverse frequencies.
++/// A compact checkpoint stores just those rows, listed in metadata.drama_head_rows.
+ fn loadHead(L: *Loader, c: cfg.Config) !void {
+-    const head = try L.src.get(head_name, .bf16, &.{ cfg.vocab, H });
+     const row = H * 2;
+     L.w.head = try L.w.alloc(L.d, head_rows * row);
+     try L.st.zero(L.w.head, head_rows * row);
+-    try L.st.put(L.w.head, head[@as(usize, c.eos) * row ..][0..row]);
+-    try L.st.put(L.w.head + row, head[@as(usize, c.semantic_start) * row ..][0 .. (head_cols - 1) * row]);
++    if (L.src.metadata.get(compact.head_key)) |rows| {
++        if (!compact.headRows(rows, c.eos, c.semantic_start, head_cols)) {
++            std.log.err("drama backbone: metadata.{s} is not [eos, semantic_start .. semantic_end]", .{compact.head_key});
++            return error.BadDramaHeadRows;
++        }
++        try L.st.put(L.w.head, try L.src.get(head_name, .bf16, &.{ head_cols, H }));
++    } else {
++        const head = try L.src.get(head_name, .bf16, &.{ cfg.vocab, H });
++        try L.st.put(L.w.head, head[@as(usize, c.eos) * row ..][0..row]);
++        try L.st.put(L.w.head + row, head[@as(usize, c.semantic_start) * row ..][0 .. (head_cols - 1) * row]);
++    }
+     try L.ropeFrequencies();
+ }
+ 
+diff --git a/zig/src/families/drama/compact.zig b/zig/src/families/drama/compact.zig
+index 08c47367c..e1dc0b50a 100644
+--- a/zig/src/families/drama/compact.zig
++++ b/zig/src/families/drama/compact.zig
+@@ -117,6 +117,16 @@ pub fn stray(held: *const Held, names: anytype) ?[]const u8 {
+     return null;
+ }
+ 
++/// Whether metadata.drama_head_rows lists exactly eos, then the `rows - 1` ids from semantic_start up.
++pub fn headRows(value: std.json.Value, eos: u32, semantic_start: u32, rows: usize) bool {
++    if (value != .array or value.array.items.len != rows) return false;
++    for (value.array.items, 0..) |id, r| {
++        const want: u32 = if (r == 0) eos else semantic_start + @as(u32, @intCast(r - 1));
++        if (id != .integer or id.integer != want) return false;
++    }
++    return true;
++}
++
+ fn fail(a: Allocator, problem: *[]const u8, comptime fmt: []const u8, args: anytype) Allocator.Error!?Held {
+     problem.* = try std.fmt.allocPrint(a, fmt, args);
+     return null;
+@@ -227,6 +237,22 @@ test "a stored expert the map does not hold is a stray; other tensors are not ex
+     try std.testing.expect(expertOf(pre ++ "12.mlp.shared_expert.gate_proj.weight") == null);
+ }
+ 
++test "a head row list is eos then the semantic ids in order, nothing else" {
++    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const cases = [_]struct { []const u8, bool }{
++        .{ "[7, 20, 21, 22]", true },
++        .{ "[20, 21, 22, 7]", false },
++        .{ "[7, 20, 21]", false },
++        .{ "[7, 20, 21, 22, 23]", false },
++        .{ "[7, 20, 22, 21]", false },
++        .{ "[7, 20, 21, 22.0]", false },
++        .{ "{\"0\": 7}", false },
++    };
++    for (cases) |c| try std.testing.expectEqual(c[1], headRows(try std.json.parseFromSliceLeaky(std.json.Value, a, c[0], .{}), 7, 20, 4));
++}
++
+ /// An iterator over names like a hash map's key iterator: `next` yields pointers.
+ const SliceIter = struct {
+     items: []const []const u8,
+-- 
+2.54.0 (Apple Git-157)
+

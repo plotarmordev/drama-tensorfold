@@ -4,6 +4,17 @@
 
 ### Added
 
+- [`recipe/exl3_experts.py`](recipe/exl3_experts.py) quantizes the 5,900 kept routed experts to EXL3 at 3.0 and
+  2.5 bits from the FP8 originals, with TensorFold's CPU `tf-exl3-encode` and per-expert Hessians from the Mac
+  calibration rows. The run resumes after a stop, and each bitrate's `exl3-provenance.json` records its inputs,
+  settings, sizes and per-layer Hessian error against the published NVFP4 experts. On an eight-expert sample, 3.0 bits
+  is 3–130× NVFP4's error at 68 % of its bytes.
+- [`recipe/calibrate_experts.py`](recipe/calibrate_experts.py) captures the per-expert calibration rows for the
+  EXL3 quant on a Mac, from the FP8 originals, with no CUDA, torch or Spark: full-model patch
+  [`0001`](engine/patches/0001-drama3-calibration-rows.patch) adds Metal `drama3-generate --calibration-rows`,
+  which dumps every layer's MoE input, picks and routing weights for prompt-text, prompt-audio and generated rows
+  in the GPTQ `--rows` layout. Its `report.json` lists experts without rows per layer, the size on disk, the
+  per-expert Hessian recipe and a check against the NVFP4 build's statistics.
 - [`results/quant-15gb/`](results/quant-15gb/README.md): the 5,900-expert NVFP4 quant, published as
   `plotarmordev/drama-3-NVFP4-Pruned-5900`, against the 20.8 GB quant and the full model on one GB10.
 - [`recipe/trim_head.py`](recipe/trim_head.py) writes an NVFP4 checkpoint whose `lm_head` keeps only the 4,097

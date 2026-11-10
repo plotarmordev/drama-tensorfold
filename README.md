@@ -78,7 +78,7 @@ On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTRE
 guidance γ 1.5 and batched guidance, as measured; a `--cfg-gamma` of your own after `--` replaces both.
 On Mac it builds [`engine/nvfp4/macos/UPSTREAM`](engine/nvfp4/macos/UPSTREAM) plus its patch series.
 Metal's `--cfg-batched` pairs independent states in one command buffer, not a vectorized GEMM.
-`--weights full` builds [`engine/UPSTREAM`](engine/UPSTREAM) with the empty [`engine/patches`](engine/patches) series.
+`--weights full` builds [`engine/UPSTREAM`](engine/UPSTREAM) with the one-patch [`engine/patches`](engine/patches) series.
 
 When it prints `DRAMA_PILOT_READY`, synthesize from another terminal. The second command streams and plays as
 it arrives:
@@ -175,7 +175,8 @@ See the [CUDA patch index](engine/nvfp4/patches/README.md) for scope and tests.
 
 ### Full-model engine
 
-The full-model engine (`--weights full`) is TensorFold v1.1.9 with no patches: every feature the old patch series
+The full-model engine (`--weights full`) is TensorFold v1.1.9 plus one Metal-only patch, `drama3-generate
+--calibration-rows` ([below](#calibration-rows-for-the-exl3-quant)): every feature the old patch series
 added is upstream. Each flagged feature stays off until you pass its flag, so a server started without them answers as plain
 TensorFold does. The Linux recipe sets `TF_DRAMA_PREFILL_ROWS=128` for native full-model and custom-checkpoint
 launches to keep batched prefill; TensorFold otherwise defaults to single-row prefill. NVFP4 and the sglang
@@ -224,6 +225,26 @@ A voice catalog is a directory of `drama3-http-voice/1` files, each with a `sour
 model invented, your own, or one whose owner has consented on record, as the model license requires
 ([License](#license), IV(b)). `clips/` and `voices/` are git-ignored here. `recipe/pilot.py` runs the server in
 `--runtime-dir`, so pass `--voices` an absolute path.
+
+### Calibration rows for the EXL3 quant
+
+```sh
+scripts/build-engine.sh --weights full   # once
+python3 recipe/calibrate_experts.py      # about 30 min on an M3 Ultra
+```
+
+captures, on a Mac and from the FP8 originals in `/Users/Shared/agent-work/drama-assets/checkpoint-bf16`, the
+input every routed expert sees, in the layout of the GPTQ `--rows` dumps: `layer-NN.x.bf16` (the MoE input),
+`layer-NN.picks.i32` (the eight original expert IDs), `layer-NN.w.f32` (their routing weights) and `class.u8`
+(prompt text, prompt audio or generated) for all 40 layers, in
+`/Users/Shared/agent-work/drama-assets/exl3-calibration-rows-v2`. Every bench corpus line is generated alone and
+after each of three 29 s clips of the Capri reference, at two seeds, then prefilled again with its generated frames.
+No CUDA, torch or Spark is used; the validation step needs numpy. `report.json` gives the class mix, the experts per
+layer without rows (all 10,240 and the 5,900 the pruned quant keeps), the size on disk, the check against the NVFP4
+build's statistics and how to build each expert's Hessian: H_e = X_eᵀX_e / n_e over the rows whose picks hold e,
+and for `down_proj` the same over SwiGLU(gate, up) of those rows. The check recomputes the NVFP4 build's published
+`err_h` for every kept gate and up expert of layers 0, 3, 20 and 39 with these rows' per-column sums of squares:
+identical statistics give a ratio of exactly 1.
 
 ## Legacy: the patched engine
 

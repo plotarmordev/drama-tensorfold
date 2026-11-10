@@ -1,4 +1,4 @@
-From 5968d5141e25d10623e3f805417e302848f86e6d Mon Sep 17 00:00:00 2001
+From a633bf3e48f9795aa713a66be779deb7532e3335 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 13:09:45 +0800
 Subject: [PATCH] drama: int3 routed experts (3.5 bits) in the CUDA NVFP4
@@ -1222,7 +1222,7 @@ index 3d0c55aea..ff8544574 100644
 +    try std.testing.expect(at(&src, e2 ++ "up_proj.weight").fits(.u8, &.{ I, 3 * Hh / 8 })); // an int3 up in an NVFP4 layer
 +}
 diff --git a/zig/src/families/drama/backbone_weights.zig b/zig/src/families/drama/backbone_weights.zig
-index d1907cb14..c9d8b5b45 100644
+index 566bb2b26..1e085ae12 100644
 --- a/zig/src/families/drama/backbone_weights.zig
 +++ b/zig/src/families/drama/backbone_weights.zig
 @@ -1,12 +1,12 @@

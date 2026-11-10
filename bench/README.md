@@ -13,6 +13,7 @@ started by `recipe/pilot.py` on Linux or `recipe/pilot_macos.py` on macOS.
 | `before-after.sh` | The whole before/after benchmark: reference, then native, then the tables |
 | `corpus_capture.py` | Whole-PCM replies for every corpus item, for byte comparison between builds |
 | `compare_gate.py` | The audio-identity gate for a speed change: every normal reply byte-identical to the baseline capture |
+| `head-trim-identity.sh` | Serves a checkpoint and its `recipe/trim_head.py` copy in turn: every corpus take must be byte-identical |
 | `stream_check.py` | Streamed PCM against the whole reply of the same server: byte identity, framing, abandonment, timing |
 | `reference_cache_test.py` | PCM identity across reference/default/other-voice/text transitions on one lane |
 | `corpus/drama-bench-en-v1.jsonl` | The 24-item corpus |

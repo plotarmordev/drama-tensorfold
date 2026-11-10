@@ -1,4 +1,4 @@
-From a504de26a892c4c525477653d7a3039c7da858c8 Mon Sep 17 00:00:00 2001
+From 35ce8c3efb1c0d92df6c371e0ce4ca4bfae34d0c Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 12:56:25 +0800
 Subject: [PATCH] drama3 metal: int3 routed experts (3.5 bits) in
@@ -246,10 +246,10 @@ index 36d4f2649..71b651a10 100644
      var score: Score = .{};
      for (0..rows * E) |pair| for (0..I) |col| {
 diff --git a/zig/src/families/drama3/metal/quant_format.zig b/zig/src/families/drama3/metal/quant_format.zig
-index a3e4959b3..a949a0cfb 100644
+index cfa43a891..951d74e1a 100644
 --- a/zig/src/families/drama3/metal/quant_format.zig
 +++ b/zig/src/families/drama3/metal/quant_format.zig
-@@ -59,9 +59,18 @@ pub fn checkNames(h: *const Held, names: anytype) !void {
+@@ -68,9 +68,18 @@ pub fn checkNames(h: *const Held, names: anytype) !void {
      }
  }
  
@@ -272,7 +272,7 @@ index a3e4959b3..a949a0cfb 100644
      const global: f32 = @bitCast(std.mem.readInt(u32, g.bytes[0..4], .little));
      if (!(global > 0 and std.math.isFinite(global))) return error.BadScale;
 diff --git a/zig/src/families/drama3/metal/quant_format_test.zig b/zig/src/families/drama3/metal/quant_format_test.zig
-index 747124a51..e221b8dbd 100644
+index 786a76769..f764d7e63 100644
 --- a/zig/src/families/drama3/metal/quant_format_test.zig
 +++ b/zig/src/families/drama3/metal/quant_format_test.zig
 @@ -10,32 +10,49 @@ fn tensor(dtype: st.DType, shape: []const usize, bytes: []const u8) st.Tensor {
@@ -371,7 +371,7 @@ index 51a7d7207..3625eadaa 100644
      return sum * global;
  }
 diff --git a/zig/src/families/drama3/metal/weights.zig b/zig/src/families/drama3/metal/weights.zig
-index 36f543a1b..2dd59e5c1 100644
+index f08976bd4..f06c08b65 100644
 --- a/zig/src/families/drama3/metal/weights.zig
 +++ b/zig/src/families/drama3/metal/weights.zig
 @@ -1,4 +1,4 @@
@@ -438,7 +438,7 @@ index 36f543a1b..2dd59e5c1 100644
                  const loc = try l.sh.locate(gname);
                  if (loc.offset % 4 != 0) return error.MisalignedScale;
                  ptrs[base + 2] = l.g.gpuAddress(maps[loc.file] + loc.offset);
-@@ -265,6 +270,6 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
+@@ -266,6 +271,6 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
          T.final_norm = try l.one(tn(&nb[0], p, idx, "final_layernorm.weight"), &.{H});
      }
      for (0..cfg.codebooks - 1) |hi| w.heads[hi] = try l.one(fmt(&nb[0], "audio_decoder_mtp.heads.{d}.weight", .{hi}), &.{ cfg.codebook_size, H });

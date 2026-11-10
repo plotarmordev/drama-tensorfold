@@ -1,0 +1,56 @@
+{
+  "schema": "drama-codec-bf16/1",
+  "date": "2026-11-10",
+  "host": "Apple M5 Ultra, native Metal",
+  "engine_commit": "9ed6b55fcc8ee52e40594959e6a36c079d0a1af0",
+  "source": {
+    "repository": "fishaudio/drama-3",
+    "revision": "e0a9218aa48888270f06ef1ed9ea67622c0e17d2",
+    "fp32_sha256": "74fc41c5a7151c6f350af8bd7e5d6e3accfcc7f3dfbfac23afd35af07052bb2f",
+    "bf16_sha256": "92711bd2f55bfc7cbdf6c7f8d2b231d8b5222697b69a4cebff4f9e281c80eeec"
+  },
+  "checkpoint": {
+    "fp32_bytes": 1871099728,
+    "bf16_bytes": 1088191935,
+    "saved_bytes": 782907793,
+    "saved_gib": 0.729056,
+    "fp32_tensors_converted": 535,
+    "existing_bf16_tensors_preserved": 3,
+    "bool_buffers_preserved": 3,
+    "runtime": "BF16 tensors widen to FP32 during load; Metal codec weight_bytes remained 1.62 GB"
+  },
+  "fixture": {
+    "kind": "macOS say synthetic speech, three known English sentences",
+    "duration_s": 7.30,
+    "frames": 158,
+    "source_wav_sha256": "e82193cacb275ad4113e1ee9a3de9c4513c230fd308e4aa296e66ca0df4ee716",
+    "fp32_codes_sha256": "617ae88b35b2ada2e4775a334205009f90bb86b9a1eccc978c0c2ba11fd0173b",
+    "bf16_codes_sha256": "cde4551584b6e83aa2538283b7d405156516d8c860a3bb465ce6187acea5666d"
+  },
+  "checks": {
+    "bf16_load_and_encode": "pass",
+    "fixed_fp32_codes_decode_snr_db": 42.22,
+    "decode_snr_gate_db": 35,
+    "fixed_fp32_codes_decode_gate": "pass",
+    "encoder_code_agreement": 0.9379746835,
+    "encoder_code_agreement_gate": 0.97,
+    "encoder_code_agreement_result": "fail",
+    "bf16_roundtrip_snr_db": 26.51,
+    "bf16_roundtrip_snr_gate": "fail",
+    "snr_reference": "FP32 decode's 16-bit PCM waveform, widened to F32 for the existing codec-check tool"
+  },
+  "word_error_rate": {
+    "asr": "OpenAI Whisper base.en, CPU FP32",
+    "reference_words": 25,
+    "normalization": "lowercase alphanumeric words; 7.15 normalized to seven fifteen",
+    "fp32_vs_input": 0.0,
+    "bf16_fixed_fp32_codes_vs_input": 0.0,
+    "bf16_fixed_fp32_codes_vs_fp32_transcript": 0.0,
+    "bf16_roundtrip_vs_input": 0.0,
+    "bf16_roundtrip_vs_fp32_transcript": 0.0
+  },
+  "quality_acceptance": {
+    "pass": false,
+    "reason": "No human listening check was performed. One clip has zero WER, but the encoder agreement and full-round-trip SNR gates fail; this single fixture does not establish general quality equivalence."
+  }
+}

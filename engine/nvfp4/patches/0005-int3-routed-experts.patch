@@ -1,0 +1,1491 @@
+From 88e6fb8f58986c0958247a9238d9b0b855cc2a0f Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:09:45 +0800
+Subject: [PATCH] drama: int3 routed experts (3.5 bits) in the CUDA NVFP4
+ expert kernel, and their GPTQ packer
+
+A layer whose gate codes are [n, 3k/8] bytes is int3: each 16-input block is
+three little-endian u16 planes (sign, hi, lo) for the E2M1 magnitudes 0, 2, 4
+and 6, under NVFP4's E4M3 block-16 scales and FP32 global. The loader packs
+them into 112-word blocks (three code planes, the unchanged 16 scale words);
+tf_int3_gate_up_f32 and tf_int3_down_f32 rebuild each lane's E2M1 nibbles
+from the planes and run NVFP4's decode body, whose 4-bit instantiations are
+unchanged. Prompt rows refuse int3 (OptionNotBuilt) as they refuse Drama's
+NVFP4 SwiGLU.
+
+drama_nvfp4_gptq.py --mode int3 --provenance nvfp4-provenance.json quantizes
+the FP8 originals with each layer's published GPTQ kappa, damping and routed
+counts, refusing rows whose counts differ, and records the provenance sha256.
+---
+ docs/quantization.md                        |  13 ++
+ tools/zig/drama_nvfp4_gptq.py               | 130 +++++++++++++------
+ tools/zig/drama_nvfp4_gptq_test.py          |  53 ++++++++
+ zig/kernels/cuda/modelopt_pack.cu           |  36 +++++-
+ zig/kernels/cuda/nvfp4_experts.cu           |  66 ++++++++--
+ zig/src/cuda/experts.zig                    |  98 +++++++++++++--
+ zig/src/cuda/modelopt.zig                   |  13 +-
+ zig/src/families/drama/backbone_fp4.zig     | 117 ++++++++++++++++-
+ zig/src/families/drama/backbone_weights.zig |  70 ++++++-----
+ zig/tests/cuda/drama_nvfp4_moe_tests.zig    | 100 ++++++++++++++-
+ zig/tests/cuda/drama_nvfp4_ref.zig          | 133 +++++++++++++++++---
+ 11 files changed, 702 insertions(+), 127 deletions(-)
+
+diff --git a/docs/quantization.md b/docs/quantization.md
+index 4719a9b39..60de54bbd 100644
+--- a/docs/quantization.md
++++ b/docs/quantization.md
+@@ -207,6 +207,19 @@ checkpoint: `tf-drama-quant --encoded DIR` assembles them into one. Like `tf-dra
+ venv/bin/python tools/zig/drama_nvfp4_gptq.py drama-3/ rows/ gptq/ [--layers 0,17,39]
+ ```
+ 
++The default remains NVFP4. For int3, start from the FP8 checkpoint and reuse the published run's probe rows:
++
++```sh
++venv/bin/python tools/zig/drama_nvfp4_gptq.py drama-3/ rows/ int3/ --mode int3 --provenance nvfp4-provenance.json
++```
++
++Int3 reads each layer's `metadata.gptq` kappa, damping and 256 routed counts from the provenance, refusing rows
++whose counts differ. These counts are not row IDs or a hash of the row contents: supply the original dumps.
++The converter's top-level kappa and `stats.safetensors` are not GPTQ inputs. The output's `gptq` metadata records
++`mode: int3` and `source_provenance_sha256`. Int3 uses magnitudes 0, 2, 4, 6 (even grid index on ties), the same
++global and block-scale search, and the same feedback loop. Its U8 weights have shape `[n, 3*k/8]`: each 16-value
++block is three little-endian u16 bit planes, sign/hi/lo; scales and globals retain their NVFP4 layout.
++
+ - **Needs.** torch with CUDA, Triton and safetensors (the pilot venv: torch 2.13 cu130, Triton 3.7.1, safetensors
+   0.9). Without a GPU the same kernels run in Triton's interpreter, which is fast enough only for the tests.
+ - **Rows.** `rows.json` (`drama-probe-rows/1`) must carry the source's config.json SHA-256 and declare R rows of
+diff --git a/tools/zig/drama_nvfp4_gptq.py b/tools/zig/drama_nvfp4_gptq.py
+index 1af201c73..166b7dbc5 100755
+--- a/tools/zig/drama_nvfp4_gptq.py
++++ b/tools/zig/drama_nvfp4_gptq.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Drama 3 routed experts to NVFP4 by GPTQ on the probe's --rows dumps: per layer, its C1 tensors in one file."""
++"""Drama 3 FP8 routed experts to NVFP4 or int3 by GPTQ on the probe's --rows dumps, one file per layer."""
+ import argparse
+ import hashlib
+ import json
+@@ -26,17 +26,18 @@ BATCH = 128  # columns between GPTQ's lazy updates of the rest of W
+ KAPPA, DAMPING = 256, 0.01
+ PREFIX = "model.language_model.layers."
+ PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+-# the 8 e2m1 magnitudes, then the 7 midpoints between neighbours
++# the 8 e2m1 magnitudes, then the 7 midpoints between neighbours; int3's 4 magnitudes (E2M1 2, 4, 6), then 3 midpoints
+ E2M1 = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, 0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5], dtype=torch.float64)
++INT3 = torch.tensor([0, 2, 4, 6, 1, 3, 5], dtype=torch.float64)
+ SCALES = torch.arange(127, dtype=torch.uint8).view(torch.float8_e4m3fn).double()
+ 
+ 
+ @triton.jit
+-def _nearest(a, s, g, e2m1_ptr):
++def _nearest(a, s, g, e2m1_ptr, LEVELS: tl.constexpr):
+     """Slice B's C2 rounding of magnitudes a: index past each midpoint (m s) g, on it when the upper index is even."""
+-    idx = (a > (tl.load(e2m1_ptr + 8) * s) * g).to(tl.int32)
+-    for j in tl.static_range(1, 7):
+-        t = (tl.load(e2m1_ptr + 8 + j) * s) * g
++    idx = (a > (tl.load(e2m1_ptr + LEVELS) * s) * g).to(tl.int32)
++    for j in tl.static_range(1, LEVELS - 1):
++        t = (tl.load(e2m1_ptr + LEVELS + j) * s) * g
+         if j % 2 == 1:
+             idx += (a >= t).to(tl.int32)
+         else:
+@@ -45,7 +46,7 @@ def _nearest(a, s, g, e2m1_ptr):
+ 
+ 
+ @triton.jit
+-def _search(a_ptr, h_ptr, g_ptr, scale_ptr, e2m1_ptr, code_ptr, rows, BLOCK: tl.constexpr):
++def _search(a_ptr, h_ptr, g_ptr, scale_ptr, e2m1_ptr, code_ptr, rows, BLOCK: tl.constexpr, LEVELS: tl.constexpr):
+     """C2 step 4 per row of 16: of e4m3 codes 1..126 the least Σ h (|W| - rec)² in column order, smaller on ties."""
+     r = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+     ok = r < rows
+@@ -55,35 +56,43 @@ def _search(a_ptr, h_ptr, g_ptr, scale_ptr, e2m1_ptr, code_ptr, rows, BLOCK: tl.
+     g = tl.load(g_ptr + r, mask=ok, other=1.0)[:, None]
+     loss = tl.zeros([BLOCK, 128], tl.float64)
+     for i in tl.static_range(16):
+-        _, d = _nearest(tl.load(a_ptr + r * 16 + i, mask=ok, other=0.0)[:, None], s, g, e2m1_ptr)
++        _, d = _nearest(tl.load(a_ptr + r * 16 + i, mask=ok, other=0.0)[:, None], s, g, e2m1_ptr, LEVELS)
+         loss = loss + (tl.load(h_ptr + r * 16 + i, mask=ok, other=0.0)[:, None] * d) * d
+     loss = tl.where(valid[None, :], loss, float("inf"))
+     tl.store(code_ptr + r, tl.argmin(loss, 1, tie_break_left=True), mask=ok)
+ 
+ 
+ @triton.jit
+-def _round(a_ptr, s_ptr, g_ptr, e2m1_ptr, idx_ptr, rows, BLOCK: tl.constexpr):
++def _round(a_ptr, s_ptr, g_ptr, e2m1_ptr, idx_ptr, rows, BLOCK: tl.constexpr, LEVELS: tl.constexpr):
+     """C2 rounding of one column's magnitudes at their row's chosen scale."""
+     r = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+     ok = r < rows
+     a = tl.load(a_ptr + r, mask=ok, other=0.0)
+-    idx, _ = _nearest(a, tl.load(s_ptr + r, mask=ok, other=1.0), tl.load(g_ptr + r, mask=ok, other=1.0), e2m1_ptr)
++    idx, _ = _nearest(a, tl.load(s_ptr + r, mask=ok, other=1.0), tl.load(g_ptr + r, mask=ok, other=1.0), e2m1_ptr, LEVELS)
+     tl.store(idx_ptr + r, idx.to(tl.uint8), mask=ok)
+ 
+ 
+-def _launch(kernel, rows, block, *args):
++def _launch(kernel, rows, block, grid, *args):
+     # the interpreter runs each program in numpy, so on the CPU one program takes every row
+     block = block if args[0].is_cuda else triton.next_power_of_2(rows)
+-    kernel[(triton.cdiv(rows, block),)](*args, rows, BLOCK=block, enable_fp_fusion=False)
++    kernel[(triton.cdiv(rows, block),)](*args, rows, BLOCK=block, LEVELS=(len(grid) + 1) // 2, enable_fp_fusion=False)
+ 
+ 
+-def nearest(a, s, g):
+-    """e2m1 magnitude indices (uint8) of magnitudes a at scale values s and globals g, all f64 of one shape."""
++def nearest(a, s, g, grid=E2M1):
++    """`grid` magnitude indices (uint8) of magnitudes a at scale values s and globals g, all f64 of one shape."""
+     idx = torch.empty(a.shape, dtype=torch.uint8, device=a.device)
+-    _launch(_round, a.numel(), 256, a.contiguous(), s.contiguous(), g.contiguous(), E2M1.to(a.device), idx)
++    _launch(_round, a.numel(), 256, grid, a.contiguous(), s.contiguous(), g.contiguous(), grid.to(a.device), idx)
+     return idx
+ 
+ 
++def pack_int3(codes):
++    """Sign (bit 3) and magnitude index (bits 1:0) codes [..][k] into int3's per-16 little-endian u16 planes sign, hi, lo."""
++    blocks = codes.reshape(*codes.shape[:-1], -1, GROUP).long()
++    bits = 1 << torch.arange(GROUP, device=codes.device)
++    planes = torch.stack([(((blocks >> shift) & 1) * bits).sum(-1) for shift in (3, 1, 0)], -1)
++    return torch.stack((planes & 255, planes >> 8), -1).to(torch.uint8).flatten(-3)
++
++
+ def global_scale(w, name):
+     """C2 step 3 per expert of W [E][n][k]: g = f32(amax|W| / (6 × 448)) as f64, 1 for an all-zero W."""
+     amax = w.abs().amax((1, 2))
+@@ -96,16 +105,16 @@ def global_scale(w, name):
+     return g
+ 
+ 
+-def shrink(hess, count, prior):
++def shrink(hess, count, prior, kappa=KAPPA):
+     """H_e' = (H_e + κ P_e) / (n_e + κ): κ rows of the prior keep a rarely routed expert's Hessian well posed."""
+-    return (hess + KAPPA * prior) / (count.to(hess) + KAPPA)[:, None, None]
++    return (hess + kappa * prior) / (count.to(hess) + kappa)[:, None, None]
+ 
+ 
+-def damp(hess):
++def damp(hess, damping=DAMPING):
+     """H with 1 % of its mean diagonal added to the diagonal; a Hessian without energy becomes I (C3's h ≡ 1)."""
+     out = hess.clone()
+     mean = hess.diagonal(dim1=1, dim2=2).mean(1)
+-    out.diagonal(dim1=1, dim2=2).add_((DAMPING * mean)[:, None])
++    out.diagonal(dim1=1, dim2=2).add_((damping * mean)[:, None])
+     out[mean == 0] = torch.eye(hess.shape[1], dtype=hess.dtype, device=hess.device)
+     return out
+ 
+@@ -115,15 +124,16 @@ def upper(damped):
+     return torch.linalg.cholesky(torch.cholesky_inverse(torch.linalg.cholesky(damped)), upper=True)
+ 
+ 
+-def quantise(w, h, g, feedback=None):
+-    """W [E][n][k] by columns into C1 nibbles, scale codes and Q; GPTQ when `feedback` is the upper factor of H⁻¹."""
++def quantise(w, h, g, feedback=None, mode="nvfp4"):
++    """W [E][n][k] by columns into C1 nibbles or int3 planes, scale codes and Q; GPTQ when `feedback` is the upper factor of H⁻¹."""
+     w, g = w.clone(), g.contiguous()
+     experts, n, k = w.shape
+     device = w.device
+     nib = torch.empty(experts, n, k, dtype=torch.uint8, device=device)
+     codes = torch.empty(experts, n, k // GROUP, dtype=torch.uint8, device=device)
+     q = torch.empty_like(w)
+-    e2m1, scales = E2M1.to(device), SCALES.to(device)
++    grid = INT3 if mode == "int3" else E2M1
++    e2m1, scales = grid.to(device), SCALES.to(device)
+     for b0 in range(0, k, BATCH):
+         b1 = min(b0 + BATCH, k)
+         err = torch.empty(experts, n, b1 - b0, dtype=w.dtype, device=device)
+@@ -133,12 +143,12 @@ def quantise(w, h, g, feedback=None):
+                 a = w[:, :, c:c + GROUP].abs()
+                 code = torch.empty(experts * n, dtype=torch.int32, device=device)
+                 hh = h[:, None, c:c + GROUP].expand(experts, n, GROUP).contiguous()
+-                _launch(_search, experts * n, 4, a.contiguous(), hh, g, scales, e2m1, code)
++                _launch(_search, experts * n, 4, grid, a.contiguous(), hh, g, scales, e2m1, code)
+                 code = code.view(experts, n).masked_fill(a.amax(-1) == 0, 0)
+                 codes[:, :, c // GROUP] = code.to(torch.uint8)
+                 s = scales[code]
+             x = w[:, :, c]
+-            idx = nearest(x.abs(), s, g).masked_fill(code == 0, 0)
++            idx = nearest(x.abs(), s, g, grid).masked_fill(code == 0, 0)
+             mag = (e2m1[idx.long()] * s) * g
+             qc = torch.where(x < 0, -mag, mag)
+             q[:, :, c] = qc
+@@ -149,7 +159,8 @@ def quantise(w, h, g, feedback=None):
+                 err[:, :, c - b0] = e
+         if feedback is not None:
+             w[:, :, b1:] -= (err.float() @ feedback[:, b0:b1, b1:]).double()
+-    return nib[..., 0::2] | nib[..., 1::2] << 4, codes, q
++    packed = pack_int3(nib) if mode == "int3" else nib[..., 0::2] | nib[..., 1::2] << 4
++    return packed, codes, q
+ 
+ 
+ def output_error(w, q, hess):
+@@ -197,15 +208,15 @@ def down_hessians(x, members, qg, qu):
+     return finite(torch.stack(out), "down Hessian")
+ 
+ 
+-def encode(w, hess, g):
++def encode(w, hess, g, mode="nvfp4", damping=DAMPING):
+     """GPTQ of W under the shrunk H `hess`, and the RTN Q; both search scales with h = the damped diagonal."""
+-    damped = damp(hess)
++    damped = damp(hess, damping)
+     h = damped.diagonal(dim1=1, dim2=2).double()
+     feedback = upper(damped)
+     del damped
+-    gptq = quantise(w, h, g, feedback)
++    gptq = quantise(w, h, g, feedback, mode)
+     del feedback
+-    return gptq, quantise(w, h, g)[2]
++    return gptq, quantise(w, h, g, mode=mode)[2]
+ 
+ 
+ def decode(name, codes, scale):
+@@ -280,20 +291,50 @@ def mean_of(errors):
+     return sum(defined) / len(defined) if defined else math.nan
+ 
+ 
+-def encode_layer(src, rows, layer, device):
++def provenance(path):
++    """Read GPTQ settings, not the converter's top-level kappa; rows are routed counts, not row IDs."""
++    raw = path.read_bytes()
++    doc = json.loads(raw)
++    layers = {}
++    for entry in doc["layer_sources"]:
++        layer = entry["layer"]
++        settings = json.loads(entry["metadata"]["gptq"])
++        rows, kappa, damping = (settings[key] for key in ("rows", "kappa", "damping"))
++        if (type(layer) is not int or not 0 <= layer < LAYERS or layer in layers
++                or not isinstance(rows, list) or len(rows) != EXPERTS
++                or any(type(n) is not int or n < 0 for n in rows)
++                or not isinstance(kappa, (int, float)) or not math.isfinite(kappa) or kappa <= 0
++                or not isinstance(damping, (int, float)) or not math.isfinite(damping) or damping <= 0):
++            raise ValueError(f"{path}: invalid GPTQ settings for layer {layer}")
++        layers[layer] = {"rows": rows, "kappa": kappa, "damping": damping}
++    return layers, hashlib.sha256(raw).hexdigest()
++
++
++def check_rows(picks, settings, layer):
++    """Refuse calibration dumps whose per-expert routed counts differ from the published run."""
++    if torch.bincount(picks.reshape(-1), minlength=EXPERTS).tolist() != settings["rows"]:
++        raise ValueError(f"layer {layer}: routed rows counts differ from provenance")
++
++
++def encode_layer(src, rows, layer, device, mode="nvfp4", settings=None, provenance_sha256=None):
+     """One layer's C1 tensors, the file metadata, and a summary line."""
++    if mode == "int3" and (settings is None or provenance_sha256 is None):
++        raise ValueError("int3 requires source provenance")
++    kappa, damping = (settings["kappa"], settings["damping"]) if settings else (KAPPA, DAMPING)
+     gate, up, down = source(src, layer, device)
+     _, inner, hidden = gate.shape
+     if up.shape != gate.shape or down.shape != (EXPERTS, hidden, inner) or hidden % GROUP or inner % GROUP:
+         raise ValueError(f"{src}: layer {layer}: gate/up [n][k] and down [k][n] with n and k multiples of {GROUP}")
+     scale2 = [global_scale(w, p) for w, p in zip((gate, up, down), PROJECTIONS)]
+     x, picks = routed(rows, layer, hidden, hashlib.sha256((src / "config.json").read_bytes()).hexdigest())
++    if settings is not None:
++        check_rows(picks, settings, layer)
+     x = x.to(device).float()
+     # gate/up: all routed pairs pooled, H_pool / N_pool = Σ_r x xᵀ / R since every row is routed to 8 experts
+     hess, count, members, pool = gate_up_hessians(x, picks)
+-    hess = shrink(hess, count, pool)
++    hess = shrink(hess, count, pool, kappa)
+     g = torch.cat([scale2[0][:, None].expand(-1, inner), scale2[1][:, None].expand(-1, inner)], 1)
+-    (gu_nib, gu_codes, q), rtn = encode(torch.cat([gate, up], 1), hess, g)
++    (gu_nib, gu_codes, q), rtn = encode(torch.cat([gate, up], 1), hess, g, mode, damping)
+     errors = [(output_error(gate, q[:, :inner], hess), output_error(gate, rtn[:, :inner], hess)),
+               (output_error(up, q[:, inner:], hess), output_error(up, rtn[:, inner:], hess))]
+     del rtn
+@@ -301,8 +342,8 @@ def encode_layer(src, rows, layer, device):
+     del q
+     # down: C3's uniform prior, the expert's mean diagonal (an expert's act channels are its own)
+     mean = torch.where(count > 0, hess.diagonal(dim1=1, dim2=2).sum(1) / (inner * count.clamp(min=1)), 1.0)
+-    hess = shrink(hess, count, mean[:, None, None] * torch.eye(inner, device=device))
+-    (dn_nib, dn_codes, q), rtn = encode(down, hess, scale2[2][:, None].expand(-1, hidden))
++    hess = shrink(hess, count, mean[:, None, None] * torch.eye(inner, device=device), kappa)
++    (dn_nib, dn_codes, q), rtn = encode(down, hess, scale2[2][:, None].expand(-1, hidden), mode, damping)
+     errors.append((output_error(down, q, hess), output_error(down, rtn, hess)))
+     parts = [(gu_nib[:, :inner], gu_codes[:, :inner]), (gu_nib[:, inner:], gu_codes[:, inner:]), (dn_nib, dn_codes)]
+     tensors, table = {}, {}
+@@ -316,8 +357,10 @@ def encode_layer(src, rows, layer, device):
+             table[name + "weight"] = {"gptq": err[e], "rtn": base[e]}
+     prior = {"gate_up": "pooled: sum of x x^T over all rows / R", "down": "uniform: the expert's mean diagonal times I"}
+     # one key: safetensors writes metadata keys in hash order, which differs from run to run
+-    metadata = {"gptq": json.dumps({"rows": count.tolist(), "kappa": KAPPA, "damping": DAMPING, "prior": prior,
+-                                    "output_error": table}, allow_nan=False)}
++    record = {"rows": count.tolist(), "kappa": kappa, "damping": damping, "prior": prior, "output_error": table}
++    if mode == "int3":
++        record.update(mode=mode, source_provenance_sha256=provenance_sha256)
++    metadata = {"gptq": json.dumps(record, allow_nan=False)}
+     means = ", ".join(f"{p} {mean_of(e):.4f}/{mean_of(r):.4f}" for p, (e, r) in zip(PROJECTIONS, errors))
+     return tensors, metadata, f"{len(x)} rows, mean output error GPTQ/RTN {means}"
+ 
+@@ -328,11 +371,23 @@ def main():
+     parser.add_argument("rows", type=Path, help="tf-drama-probe --rows DIR")
+     parser.add_argument("out", type=Path, help="gets layer-LL.safetensors for every layer")
+     parser.add_argument("--layers", default=",".join(map(str, range(LAYERS))), help="comma separated, default all")
++    parser.add_argument("--mode", choices=("nvfp4", "int3"), default="nvfp4")
++    parser.add_argument("--provenance", type=Path, help="NVFP4 provenance JSON, required for int3")
+     args = parser.parse_args()
+     layers = args.layers.split(",")
+     if not all(layer.isdigit() and int(layer) < LAYERS for layer in layers):
+         parser.error(f"--layers: layer indices from 0 to {LAYERS - 1}, comma separated")
+     layers = [int(layer) for layer in layers]
++    if (args.mode == "int3") != (args.provenance is not None):
++        parser.error("--provenance is required for int3 and only valid with --mode int3")
++    settings, digest = {}, None
++    if args.provenance is not None:
++        try:
++            settings, digest = provenance(args.provenance)
++            if any(layer not in settings for layer in layers):
++                raise ValueError("provenance lacks a requested layer")
++        except (OSError, ValueError, KeyError, TypeError) as e:
++            parser.error(str(e))
+     # cuBLAS repeats its sums bit for bit only with a fixed workspace
+     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+     torch.use_deterministic_algorithms(True)
+@@ -343,7 +398,8 @@ def main():
+         if device == "cuda":
+             torch.cuda.reset_peak_memory_stats()
+         try:
+-            tensors, metadata, summary = encode_layer(args.src, args.rows, layer, device)
++            tensors, metadata, summary = encode_layer(args.src, args.rows, layer, device, args.mode,
++                                                       settings.get(layer), digest)
+         except (OSError, ValueError, KeyError) as e:
+             sys.exit(f"drama_nvfp4_gptq.py: layer {layer}: {e}")
+         path = args.out / f"layer-{layer:02d}.safetensors"
+diff --git a/tools/zig/drama_nvfp4_gptq_test.py b/tools/zig/drama_nvfp4_gptq_test.py
+index 05216c21f..90f8f4191 100644
+--- a/tools/zig/drama_nvfp4_gptq_test.py
++++ b/tools/zig/drama_nvfp4_gptq_test.py
+@@ -354,6 +354,59 @@ class RowsTests(unittest.TestCase):
+                         q.routed(root, 0, 32, "c0ffee")
+ 
+ 
++class Int3Tests(unittest.TestCase):
++    def test_hand_checked_bit_planes_and_round_trip(self):
++        values = [0, 2, 4, 6, 0, -2, -4, -6, 6, 4, 2, 0, -6, -4, -2, 0]
++        codes = torch.tensor([abs(v) // 2 | (8 if v < 0 else 0) for v in values], dtype=torch.uint8)
++        packed = q.pack_int3(codes.reshape(1, 1, 16))
++        self.assertEqual(tuple(packed.shape), (1, 1, 6))
++        self.assertEqual(packed.flatten().tolist(), [0xE0, 0x70, 0xCC, 0x33, 0xAA, 0x55])
++        sign, hi, lo = struct.unpack("<HHH", bytes(packed.flatten().tolist()))
++        decoded = [(-1 if sign >> i & 1 else 1) * 2 * (2 * (hi >> i & 1) + (lo >> i & 1))
++                   for i in range(16)]
++        self.assertEqual(decoded, values)
++        self.assertEqual(q.pack_int3(codes.repeat(2).reshape(1, 32)).tolist(),
++                         [packed.flatten().tolist() * 2])
++
++    def test_rounding_uses_only_int3_grid_and_even_ties(self):
++        values = torch.linspace(-8, 8, 257, dtype=torch.float64)
++        one = torch.ones_like(values)
++        indices = q.nearest(values.abs(), one, one, q.INT3)
++        rounded = q.INT3[indices.long()] * values.sign()
++        self.assertEqual(set(rounded.tolist()), {0, -2, 2, -4, 4, -6, 6})
++        mids = torch.tensor([1, 3, 5], dtype=torch.float64)
++        self.assertEqual(q.nearest(mids, torch.ones_like(mids), torch.ones_like(mids), q.INT3).tolist(), [0, 2, 2])
++
++    def test_provenance_reads_gptq_settings_and_refuses_different_rows(self):
++        picks = torch.arange(16).reshape(2, 8)
++        settings = {"rows": [1] * 16 + [0] * 240, "kappa": 19, "damping": 0.025}
++        with tempfile.TemporaryDirectory() as folder:
++            path = Path(folder) / "provenance.json"
++            path.write_text(json.dumps({"kappa": 64, "layer_sources": [
++                {"layer": 3, "metadata": {"gptq": json.dumps(settings)}}]}))
++            layers, digest = q.provenance(path)
++            self.assertEqual(layers, {3: settings})
++            self.assertEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
++            q.check_rows(picks, layers[3], 3)
++            with self.assertRaisesRegex(ValueError, "rows counts differ"):
++                q.check_rows(picks + 1, layers[3], 3)
++            hess = torch.eye(2)[None]
++            self.assertTrue(torch.equal(q.damp(hess, settings["damping"]), hess * 1.025))
++            self.assertTrue(torch.equal(q.shrink(hess, torch.tensor([1]), 2 * hess, settings["kappa"]),
++                                        hess * 39 / 20))
++
++    def test_int3_quantise_reconstruction(self):
++        w = torch.linspace(-6, 6, 32, dtype=torch.float64).reshape(1, 2, 16)
++        g = q.global_scale(w, "int3")[:, None].expand(-1, 2)
++        packed, scales, rec = q.quantise(w, torch.ones(1, 16, dtype=torch.float64), g, mode="int3")
++        self.assertEqual(tuple(packed.shape), (1, 2, 6))
++        for row in range(2):
++            sign, hi, lo = struct.unpack("<HHH", bytes(packed[0, row].tolist()))
++            vals = torch.tensor([(-1 if sign >> i & 1 else 1) * 2 * (2 * (hi >> i & 1) + (lo >> i & 1))
++                                 for i in range(16)], dtype=torch.float64)
++            self.assertTrue(torch.equal(rec[0, row], (vals * q.SCALES[scales[0, row, 0].long()]) * g[0, row]))
++
++
+ class ToolTests(unittest.TestCase):
+     LAYER, INNER, HIDDEN, ROWS = 3, 16, 32, 512
+ 
+diff --git a/zig/kernels/cuda/modelopt_pack.cu b/zig/kernels/cuda/modelopt_pack.cu
+index 000c83435..9bca79f2b 100644
+--- a/zig/kernels/cuda/modelopt_pack.cu
++++ b/zig/kernels/cuda/modelopt_pack.cu
+@@ -72,15 +72,32 @@ extern "C" __global__ void __launch_bounds__(256) tf_pack_fp4_scales(const uint8
+ }
+ 
+ // Experts' codes [E][n][ks/2] and scales [E][n][ks/16], inputs k0..k0+k, as part m of [E][n/32][k/32][parts][144].
+-extern "C" __global__ void __launch_bounds__(144) tf_pack_fp4_experts(const uint8_t* __restrict__ codes,
++template <int BITS>
++__device__ __forceinline__ void pack_experts(const uint8_t* __restrict__ codes,
+                                                                       const uint8_t* __restrict__ scales,
+                                                                       uint32_t* __restrict__ out, int n, int ks, int k0,
+                                                                       int k, int parts, int m) {
+   const int g = blockIdx.x, cb = blockIdx.y, e = blockIdx.z, w = threadIdx.x, kg = k / 32;
+-  uint32_t* dst = out + (((static_cast<long long>(e) * (n / 32) + cb) * kg + g) * parts + m) * 144;
+-  const uint8_t* ce = codes + static_cast<long long>(e) * n * (ks / 2);
++  constexpr int CW = BITS == 3 ? 96 : 128, BW = CW + 16;
++  uint32_t* dst = out + (((static_cast<long long>(e) * (n / 32) + cb) * kg + g) * parts + m) * BW;
++  const uint8_t* ce = codes + static_cast<long long>(e) * n * (ks * BITS / 8);
+   const uint8_t* se = scales + static_cast<long long>(e) * n * (ks / 16);
+-  if (w < 128) {
++  if (BITS == 3 && w < CW) {
++    const int plane = w / 32, lane = w % 32, gq = lane / 4, t = lane % 4;
++    uint32_t word = 0;
++#pragma unroll
++    for (int j = 0; j < 4; ++j)
++#pragma unroll
++      for (int h = 0; h < 2; ++h)
++#pragma unroll
++        for (int q = 0; q < 4; ++q) {
++          const int input = k0 + g * 32 + h * 16 + t * 4 + q;
++          const long long row = cb * 32 + j * 8 + gq;
++          const uint8_t byte = ce[row * (ks * 3 / 8) + (input / 16) * 6 + plane * 2 + (input % 16) / 8];
++          word |= static_cast<uint32_t>((byte >> (input % 8)) & 1) << (8 * j + 2 * h + q / 2 + 4 * (q % 2));
++        }
++    dst[w] = word;
++  } else if (w < CW) {
+     const int gq = w / 16, t = (w / 4) % 4, j = w % 4;
+     const long long row = cb * 32 + j * 8 + gq;
+     uint32_t word = 0;
+@@ -98,7 +115,7 @@ extern "C" __global__ void __launch_bounds__(144) tf_pack_fp4_experts(const uint
+     uint32_t word = 0;
+ #pragma unroll
+     for (int x = 0; x < 4; ++x) {
+-      const int s = 4 * (w - 128) + x;  // ((t * 2 + h) * 4 + j) * 2 + c
++      const int s = 4 * (w - CW) + x;  // ((t * 2 + h) * 4 + j) * 2 + c
+       const int c = s % 2, j = (s / 2) % 4, h = (s / 8) % 2, t = s / 16;
+       const long long row = cb * 32 + j * 8 + t * 2 + c;
+       word |= static_cast<uint32_t>(se[row * (ks / 16) + (k0 + g * 32) / 16 + h]) << (8 * x);
+@@ -106,3 +123,12 @@ extern "C" __global__ void __launch_bounds__(144) tf_pack_fp4_experts(const uint
+     dst[w] = word;
+   }
+ }
++
++#define TF_PACK_EXPERTS(NAME, BITS, WORDS) \
++extern "C" __global__ void __launch_bounds__(WORDS) NAME( \
++    const uint8_t* codes, const uint8_t* scales, uint32_t* out, int n, int ks, int k0, int k, int parts, int m) { \
++  pack_experts<BITS>(codes, scales, out, n, ks, k0, k, parts, m); \
++}
++TF_PACK_EXPERTS(tf_pack_fp4_experts, 4, 144)
++TF_PACK_EXPERTS(tf_pack_int3_experts, 3, 112)
++#undef TF_PACK_EXPERTS
+diff --git a/zig/kernels/cuda/nvfp4_experts.cu b/zig/kernels/cuda/nvfp4_experts.cu
+index 8dff420a7..7d9007987 100644
+--- a/zig/kernels/cuda/nvfp4_experts.cu
++++ b/zig/kernels/cuda/nvfp4_experts.cu
+@@ -26,6 +26,21 @@ __device__ __forceinline__ uint32_t fp4pair(uint32_t w, int s) {
+   return r;
+ }
+ 
++// Spread eight plane bits into the low bit of eight nibbles.
++__device__ __forceinline__ uint32_t spread(uint32_t v) {
++  v &= 0xffu;
++  v = (v | (v << 12)) & 0x000f000fu;
++  v = (v | (v << 6)) & 0x03030303u;
++  return (v | (v << 3)) & 0x11111111u;
++}
++
++__device__ __forceinline__ uint32_t rebuild(uint32_t sign, uint32_t hi, uint32_t lo, int j) {
++  sign = spread(sign >> (8 * j));
++  hi = spread(hi >> (8 * j));
++  lo = spread(lo >> (8 * j));
++  return (sign << 3) | ((hi | lo) << 2) | (hi << 1) | (hi & lo);
++}
++
+ __device__ __forceinline__ float e4m3f(uint32_t b) {
+   return __half2float(__half(__nv_cvt_fp8_to_halfraw(static_cast<__nv_fp8_storage_t>(b), __NV_E4M3)));
+ }
+@@ -37,14 +52,22 @@ struct Stage {
+   uint2 xa[2], xb[2];
+ };
+ 
+-template <int M>
++template <int M, int BITS>
+ __device__ __forceinline__ void load_stage(Stage<M>& st, const uint4* blk, int g, int lane, int t,
+                                            const __nv_bfloat16* x0, const __nv_bfloat16* x1, bool v0, bool v1) {
+-  const uint4* b = blk + (size_t)g * (M * BLOCK4);
++  constexpr int BW = BITS == 3 ? 28 : BLOCK4;
++  const uint4* b = blk + (size_t)g * (M * BW);
+ #pragma unroll
+   for (int m = 0; m < M; ++m) {
+-    st.w[m] = ld_nc(b + m * BLOCK4 + lane);
+-    st.s[m] = ld_nc(b + m * BLOCK4 + 32 + t);
++    if constexpr (BITS == 3) {
++      const uint32_t* p = reinterpret_cast<const uint32_t*>(b + m * BW);
++      const uint32_t sign = __ldg(p + lane), hi = __ldg(p + 32 + lane), lo = __ldg(p + 64 + lane);
++      st.w[m] = make_uint4(rebuild(sign, hi, lo, 0), rebuild(sign, hi, lo, 1),
++                           rebuild(sign, hi, lo, 2), rebuild(sign, hi, lo, 3));
++    } else {
++      st.w[m] = ld_nc(b + m * BW + lane);
++    }
++    st.s[m] = ld_nc(b + m * BW + (BITS == 3 ? 24 : 32) + t);
+   }
+   const uint2 zero = make_uint2(0u, 0u);
+   const int k0 = g * 32 + 4 * t;
+@@ -81,21 +104,21 @@ __device__ __forceinline__ void compute_stage(float (&acc)[M][1][NTW][4], const
+     }
+ }
+ 
+-template <int M>
++template <int M, int BITS>
+ __device__ __forceinline__ void k_loop(float (&acc)[M][1][NTW][4], const uint4* blk, int KG, int lane, int t,
+                                        const __nv_bfloat16* x0, const __nv_bfloat16* x1, bool v0, bool v1) {
+   constexpr int D = 2;
+   Stage<M> st[D];
+ #pragma unroll
+   for (int d = 0; d < D; ++d)
+-    if (d < KG) load_stage<M>(st[d], blk, d, lane, t, x0, x1, v0, v1);
++    if (d < KG) load_stage<M, BITS>(st[d], blk, d, lane, t, x0, x1, v0, v1);
+   for (int g0 = 0; g0 < KG; g0 += D) {
+ #pragma unroll
+     for (int d = 0; d < D; ++d) {
+       const int g = g0 + d;
+       if (g < KG) {
+         compute_stage<M>(acc, st[d], v1);
+-        if (g + D < KG) load_stage<M>(st[d], blk, g + D, lane, t, x0, x1, v0, v1);
++        if (g + D < KG) load_stage<M, BITS>(st[d], blk, g + D, lane, t, x0, x1, v0, v1);
+       }
+     }
+   }
+@@ -127,9 +150,9 @@ __device__ __forceinline__ void store(const float (&acc)[M][1][NTW][4], void* ou
+   }
+ }
+ 
+-template <int M, int EPI, int WARPS>
+-__global__ void __launch_bounds__(WARPS * 32)
+-    nvfp4_expert_kernel(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++template <int M, int EPI, int WARPS, int BITS>
++__device__ __forceinline__ void
++    expert_body(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                         const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
+                         float limit, int skip) {
+@@ -139,7 +162,7 @@ __global__ void __launch_bounds__(WARPS * 32)
+     const int it = unit / NB, cb = unit - it * NB;
+     const int e = __ldg(items + 3 * it), first = __ldg(items + 3 * it + 1), cnt = __ldg(items + 3 * it + 2);
+     if (e == skip) continue;
+-    const uint4* blk = W + ((size_t)e * NB + cb) * (size_t)KG * (M * BLOCK4);
++    const uint4* blk = W + ((size_t)e * NB + cb) * (size_t)KG * (M * (BITS == 3 ? 28 : BLOCK4));
+     for (int r0 = 0; r0 < cnt; r0 += 16) {
+       const bool v0 = r0 + gq < cnt, v1 = r0 + gq + 8 < cnt;
+       const int pr0 = v0 ? __ldg(members + first + r0 + gq) : 0;
+@@ -152,7 +175,7 @@ __global__ void __launch_bounds__(WARPS * 32)
+       for (int m = 0; m < M; ++m)
+ #pragma unroll
+         for (int j = 0; j < NTW; ++j) acc[m][0][j][0] = acc[m][0][j][1] = acc[m][0][j][2] = acc[m][0][j][3] = 0.f;
+-      k_loop<M>(acc, blk, KG, lane, t, x0, x1, v0, v1);
++      k_loop<M, BITS>(acc, blk, KG, lane, t, x0, x1, v0, v1);
+ #pragma unroll
+       for (int m = 0; m < M; ++m) {
+         const float g = __ldg(scale + e * M + m);
+@@ -166,6 +189,25 @@ __global__ void __launch_bounds__(WARPS * 32)
+   }
+ }
+ 
++template <int M, int EPI, int WARPS>
++__global__ void __launch_bounds__(WARPS * 32)
++    nvfp4_expert_kernel(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) {
++  expert_body<M, EPI, WARPS, 4>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip);
++}
++
++#define TF_INT3_DECODE(NAME, M, EPI) \
++extern "C" __global__ void __launch_bounds__(128) NAME( \
++    const __nv_bfloat16* X, int x_stride, int slots, const uint4* W, const float* scale, int KG, int NB, \
++    const int* items, const int* counts, const int* members, void* out, int N, float limit, int skip) { \
++  expert_body<M, EPI, 4, 3>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); \
++}
++TF_INT3_DECODE(tf_int3_gate_up_f32, 2, 4)
++TF_INT3_DECODE(tf_int3_down_f32, 1, 0)
++#undef TF_INT3_DECODE
++
+ // The prompt form's tile: 16 RT rows a warp, WM x WN warps (BM pairs of one item by WN 32-column blocks a CTA).
+ template <int M, int RT, int WM, int WN>
+ struct Prompt4 {
+diff --git a/zig/src/cuda/experts.zig b/zig/src/cuda/experts.zig
+index cfd14eb74..6c319e856 100644
+--- a/zig/src/cuda/experts.zig
++++ b/zig/src/cuda/experts.zig
+@@ -28,6 +28,7 @@ pub const Layer = struct {
+     limit: f32 = 0.0, // fp8g, nvfp4: the SwiGLU clamp, 0 for none
+     relu2: bool = false, // nvfp4: up is one projection under relu^2 (Nemotron), not SwiGLU's gate and up
+     silu_f32: bool = false, // nvfp4 decode: Drama's SwiGLU, bf16(silu(bf16 gate) * bf16 up) with silu kept fp32
++    int3: bool = false, // nvfp4 decode: 112-word blocks of three code planes and unchanged scales
+ };
+ 
+ /// A call's epilogue: up with its format's activation (affine4 relu^2, else SwiGLU), down to fp32 or to bf16 sums.
+@@ -271,12 +272,17 @@ pub const Fp8Experts = struct {
+ /// NVFP4 experts (nvfp4_experts.cu): decode rows 16 pairs at a time; prompt rows staged, 64 pairs a CTA.
+ pub const Nvfp4Experts = struct {
+     mod: Module,
+-    fns: [5]Function, // by Epi, then relu^2 up, then Drama's SwiGLU up
+-    resident: [5]usize, // blocks the grid may hold: per SM times SMs
++    fns: [7]Function, // by Epi, relu^2 up, Drama up, int3 Drama up and down
++    resident: [7]usize, // blocks the grid may hold: per SM times SMs
+     prompt_fns: [3]Function, // relu^2 up, SwiGLU gate-up, bf16 sums down
+ 
+     pub const cols = 32; // output columns a block
+     pub const words = 144; // int32 a (32 columns, 32 inputs) block: 128 code words, then 16 of e4m3 scales
++    pub const int3_words = 112; // sign[32], hi[32], lo[32], scales[16]
++
++    pub fn blockWords(int3: bool) usize {
++        return if (int3) int3_words else words;
++    }
+ 
+     pub const symbols = struct {
+         pub const gate_up = "_ZN16tf_nvfp4_experts19nvfp4_expert_kernelILi2ELi2ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi";
+@@ -284,6 +290,8 @@ pub const Nvfp4Experts = struct {
+         pub const down_bf16 = "_ZN16tf_nvfp4_experts19nvfp4_expert_kernelILi1ELi3ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi";
+         pub const up_relu2 = "_ZN16tf_nvfp4_experts19nvfp4_expert_kernelILi1ELi1ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi";
+         pub const gate_up_f32 = "_ZN16tf_nvfp4_experts19nvfp4_expert_kernelILi2ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi";
++        pub const int3_gate_up = "tf_int3_gate_up_f32";
++        pub const int3_down = "tf_int3_down_f32";
+         pub const prompt = [3][:0]const u8{ "tf_nvfp4_prompt_relu2", "tf_nvfp4_prompt_swiglu", "tf_nvfp4_prompt_down" };
+     };
+ 
+@@ -302,7 +310,7 @@ pub const Nvfp4Experts = struct {
+         var mod = try Module.load(d, kernels.nvfp4_experts);
+         errdefer mod.unload();
+         var e: Nvfp4Experts = .{ .mod = mod, .fns = undefined, .resident = undefined, .prompt_fns = undefined };
+-        for ([_][:0]const u8{ symbols.gate_up, symbols.down_f32, symbols.down_bf16, symbols.up_relu2, symbols.gate_up_f32 }, 0..) |name, i| {
++        for ([_][:0]const u8{ symbols.gate_up, symbols.down_f32, symbols.down_bf16, symbols.up_relu2, symbols.gate_up_f32, symbols.int3_gate_up, symbols.int3_down }, 0..) |name, i| {
+             e.fns[i] = try mod.function(name);
+             e.resident[i] = @max(1, try e.fns[i].occupancy(128, 0)) * sms;
+         }
+@@ -319,10 +327,11 @@ pub const Nvfp4Experts = struct {
+ 
+     /// One call of nvfp4/experts.py's _run on a plan of at most `items` items.
+     pub fn run(e: *const Nvfp4Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
++        if (l.int3 and (l.relu2 or !l.silu_f32 or epi == .down_bf16)) return error.OptionNotBuilt;
+         const gate = epi == .up;
+         const kg = (if (gate) l.dims else l.width) / 32;
+         const nb = (if (gate) l.width else l.dims) / cols;
+-        const ei: usize = if (gate and l.relu2) 3 else if (gate and l.silu_f32) 4 else @backingInt(epi);
++        const ei: usize = if (l.int3) (if (gate) @as(usize, 5) else 6) else if (gate and l.relu2) 3 else if (gate and l.silu_f32) 4 else @backingInt(epi);
+         const grid = @min((items * nb + 3) / 4, e.resident[ei]);
+         if (grid < 1) return;
+         var a: launch_.Args = .{};
+@@ -343,7 +352,7 @@ pub const Nvfp4Experts = struct {
+     /// Prompt rows on a plan of at most `items` items of 64 pairs: up (relu^2 or SwiGLU by the layer), bf16 sums down.
+     pub fn runPrompt(e: *const Nvfp4Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
+         if (epi == .down_f32) return error.EpilogueNotBuilt;
+-        if (skip >= 0 or l.silu_f32) return error.OptionNotBuilt;
++        if (skip >= 0 or l.silu_f32 or l.int3) return error.OptionNotBuilt;
+         const gate = epi == .up;
+         const parts: usize = if (gate and !l.relu2) 2 else 1;
+         const nb = (if (gate) l.width else l.dims) / cols;
+@@ -366,7 +375,11 @@ pub const Nvfp4Experts = struct {
+ 
+     /// Bytes of `count` experts' blocks for n outputs from k inputs: [E][n/32][k/32][parts][144] int32.
+     pub fn bytes(count: usize, n: usize, k: usize, parts: usize) usize {
+-        return count * (n / cols) * (k / 32) * parts * words * 4;
++        return bytesBits(count, n, k, parts, false);
++    }
++
++    pub fn bytesBits(count: usize, n: usize, k: usize, parts: usize, int3: bool) usize {
++        return count * (n / cols) * (k / 32) * parts * blockWords(int3) * 4;
+     }
+ 
+     /// Where input 16h + 4t + q of a lane's word sits: nibble 2h + q/2 + 4(q%2) (fp4pair's field order).
+@@ -392,11 +405,34 @@ pub const Nvfp4Experts = struct {
+                 };
+                 block[(gq * 4 + t) * 4 + j] = w;
+             };
+-            const sc = std.mem.sliceAsBytes(block[128..]);
+-            for (0..4) |t| for (0..2) |h| for (0..4) |j| for (0..2) |c| {
+-                const row = cb * cols + j * 8 + t * 2 + c;
+-                sc[((t * 2 + h) * 4 + j) * 2 + c] = scales[row * (k / 16) + g * 2 + h];
++            packScales(block[128..], scales, cb, g, k);
++        };
++    }
++
++    fn packScales(out: []u32, scales: []const u8, cb: usize, g: usize, k: usize) void {
++        const sc = std.mem.sliceAsBytes(out);
++        for (0..4) |t| for (0..2) |h| for (0..4) |j| for (0..2) |c| {
++            const row = cb * cols + j * 8 + t * 2 + c;
++            sc[((t * 2 + h) * 4 + j) * 2 + c] = scales[row * (k / 16) + g * 2 + h];
++        };
++    }
++
++    /// On-disk little-endian u16 planes into coalesced lane planes; bit 8*j+slot/4 rebuilds tile j's nibble.
++    pub fn packOneInt3(out: []u32, codes: []const u8, scales: []const u8, n: usize, k: usize) void {
++        const kg = k / 32;
++        std.debug.assert(n % cols == 0 and k % 32 == 0 and out.len == n / cols * kg * int3_words);
++        std.debug.assert(codes.len == n * k * 3 / 8 and scales.len == n * k / 16);
++        for (0..n / cols) |cb| for (0..kg) |g| {
++            const block = out[(cb * kg + g) * int3_words ..][0..int3_words];
++            @memset(block[0..96], 0);
++            for (0..3) |plane| for (0..32) |lane| for (0..4) |j| for (0..2) |h| for (0..4) |q| {
++                const row = cb * cols + j * 8 + lane / 4;
++                const input = g * 32 + h * 16 + (lane % 4) * 4 + q;
++                const byte = codes[row * (k * 3 / 8) + input / 16 * 6 + plane * 2 + (input % 16) / 8];
++                const bit: u32 = (byte >> @as(u3, @intCast(input % 8))) & 1;
++                block[plane * 32 + lane] |= bit << @as(u5, @intCast(j * 8 + slot(h, q) / 4));
+             };
++            packScales(block[96..], scales, cb, g, k);
+         };
+     }
+ 
+@@ -417,6 +453,48 @@ pub const Nvfp4Experts = struct {
+     }
+ };
+ 
++test "int3 planes rebuild every NVFP4 nibble word and retain its scales" {
++    const n = 64;
++    const k = 96;
++    var codes: [n * k * 3 / 8]u8 = undefined;
++    var nibbles: [n * k / 2]u8 = @splat(0);
++    var scales: [n * k / 16]u8 = undefined;
++    for (&codes, 0..) |*v, i| v.* = @truncate((i * 73 + i / 7 * 19) ^ (i >> 3));
++    for (&scales, 0..) |*v, i| v.* = @truncate(i * 13);
++    for (0..n) |row| for (0..k) |input| {
++        const at = row * (k * 3 / 8) + input / 16 * 6 + (input % 16) / 8;
++        const shift: u3 = @intCast(input % 8);
++        const sign = (codes[at] >> shift) & 1;
++        const hi = (codes[at + 2] >> shift) & 1;
++        const lo = (codes[at + 4] >> shift) & 1;
++        const nib = (sign << 3) | ((hi | lo) << 2) | (hi << 1) | (hi & lo);
++        nibbles[row * (k / 2) + input / 2] |= nib << @as(u3, @intCast(4 * (input % 2)));
++    };
++    const blocks = n / 32 * (k / 32);
++    var compact: [blocks * Nvfp4Experts.int3_words]u32 = undefined;
++    var full: [blocks * Nvfp4Experts.words]u32 = undefined;
++    Nvfp4Experts.packOneInt3(&compact, &codes, &scales, n, k);
++    Nvfp4Experts.packOne(&full, &nibbles, &scales, n, k);
++    for (0..blocks) |b| {
++        const c = compact[b * Nvfp4Experts.int3_words ..][0..Nvfp4Experts.int3_words];
++        const f = full[b * Nvfp4Experts.words ..][0..Nvfp4Experts.words];
++        for (0..32) |lane| for (0..4) |j| {
++            var planes: [3]u32 = undefined;
++            for (&planes, 0..) |*v, p| {
++                v.* = (c[p * 32 + lane] >> @as(u5, @intCast(8 * j))) & 0xff;
++                v.* = (v.* | (v.* << 12)) & 0x000f000f;
++                v.* = (v.* | (v.* << 6)) & 0x03030303;
++                v.* = (v.* | (v.* << 3)) & 0x11111111;
++            }
++            const sign, const hi, const lo = planes;
++            const word = (sign << 3) | ((hi | lo) << 2) | (hi << 1) | (hi & lo);
++            try std.testing.expectEqual(f[lane * 4 + j], word);
++        };
++        try std.testing.expectEqualSlices(u32, f[128..], c[96..]);
++    }
++    try std.testing.expectEqual(@as(usize, blocks * 112 * 4), Nvfp4Experts.bytesBits(1, n, k, 1, true));
++}
++
+ test "a packed nvfp4 block puts each nibble and scale where nvfp4/experts.py's _pack does" {
+     const gpa = std.testing.allocator;
+     const n = 64;
+diff --git a/zig/src/cuda/modelopt.zig b/zig/src/cuda/modelopt.zig
+index 4338ef4db..e0873ed97 100644
+--- a/zig/src/cuda/modelopt.zig
++++ b/zig/src/cuda/modelopt.zig
+@@ -24,6 +24,7 @@ pub const Packer = struct {
+     fp4_words: Function,
+     fp4_scales: Function,
+     fp4_experts: Function,
++    int3_experts: Function,
+ 
+     pub fn load(d: *const Driver) !Packer {
+         if (!kernels.available) return error.BuiltWithoutKernels;
+@@ -36,6 +37,7 @@ pub const Packer = struct {
+             .fp4_words = try mod.function("tf_pack_fp4_words"),
+             .fp4_scales = try mod.function("tf_pack_fp4_scales"),
+             .fp4_experts = try mod.function("tf_pack_fp4_experts"),
++            .int3_experts = try mod.function("tf_pack_int3_experts"),
+         };
+     }
+ 
+@@ -71,13 +73,22 @@ pub const Packer = struct {
+ 
+     /// `count` experts' codes [E][n][ks/2] and scales [E][n][ks/16], inputs k0.., as part m of `parts` (Nvfp4Experts).
+     pub fn fp4Experts(p: *const Packer, s: Stream, codes: u64, scales: u64, out: u64, count: usize, n: usize, ks: usize, k0: usize, k: usize, parts: usize, m: usize) !void {
++        return packExperts(p.fp4_experts, 144, s, codes, scales, out, count, n, ks, k0, k, parts, m);
++    }
++
++    /// Int3 planes [E][n][3*ks/8] into the compact 112-word expert blocks.
++    pub fn int3Experts(p: *const Packer, s: Stream, codes: u64, scales: u64, out: u64, count: usize, n: usize, ks: usize, k0: usize, k: usize, parts: usize, m: usize) !void {
++        return packExperts(p.int3_experts, 112, s, codes, scales, out, count, n, ks, k0, k, parts, m);
++    }
++
++    fn packExperts(f: Function, words: u32, s: Stream, codes: u64, scales: u64, out: u64, count: usize, n: usize, ks: usize, k0: usize, k: usize, parts: usize, m: usize) !void {
+         if (n % 32 != 0 or k % 32 != 0 or k0 % 16 != 0 or k0 + k > ks) return error.UnexpectedTensor;
+         var a: launch_.Args = .{};
+         a.add(codes);
+         a.add(scales);
+         a.add(out);
+         for ([_]usize{ n, ks, k0, k, parts, m }) |v| a.add(@as(i32, @intCast(v)));
+-        try launch_.launch(p.fp4_experts, .{ .grid = .{ .x = @intCast(k / 32), .y = @intCast(n / 32), .z = @intCast(count) }, .block = .{ .x = 144 } }, s, &a);
++        try launch_.launch(f, .{ .grid = .{ .x = @intCast(k / 32), .y = @intCast(n / 32), .z = @intCast(count) }, .block = .{ .x = words } }, s, &a);
+     }
+ };
+ 
+diff --git a/zig/src/families/drama/backbone_fp4.zig b/zig/src/families/drama/backbone_fp4.zig
+index 3d0c55aea..8813dd0c5 100644
+--- a/zig/src/families/drama/backbone_fp4.zig
++++ b/zig/src/families/drama/backbone_fp4.zig
+@@ -1,4 +1,5 @@
+-//! One NVFP4 routed expert of a Drama checkpoint as C1 stores it (ModelOpt names), read and content-checked.
++//! One NVFP4 or int3 routed expert of a Drama checkpoint as it is stored (ModelOpt names), read and content-checked.
++//! The weight's shape chooses the format: codes [n][k / 2] is NVFP4, [n][3 * k / 8] int3's three bit planes.
+ const std = @import("std");
+ const cfg = @import("backbone_config.zig");
+ const source = @import("backbone_source.zig");
+@@ -10,16 +11,37 @@ pub const projections = [3][]const u8{ "gate_proj", "up_proj", "down_proj" };
+ pub const shapes = [3][2]usize{ .{ cfg.expert_inner, cfg.hidden }, .{ cfg.expert_inner, cfg.hidden }, .{ cfg.hidden, cfg.expert_inner } };
+ pub const parts = shapes.len;
+ 
+-/// One NVFP4 expert's stored gate, up and down: codes [n][k / 2], e4m3 scales [n][k / 16], fp32 globals.
++/// One expert's stored gate, up and down: codes [n][codeCols(k)], e4m3 scales [n][k / 16], fp32 globals.
+ pub const Expert = struct { codes: [parts][]const u8, scales: [parts][]const u8, global: [parts]f32 };
+ 
+-/// Expert e of NVFP4 layer i, refused unless all nine tensors have C1's dtypes and shapes and content checks pass.
+-pub fn read(src: *Source, i: usize, e: usize) !Expert {
++/// A layer's expert format on disk: NVFP4 or int3 (the FP8 path takes f8_e4m3 weights).
++pub const Format = enum { nvfp4, int3 };
++
++/// Code bytes a row of `k` inputs takes at `format`: NVFP4 nibbles or int3's sign, hi, lo planes.
++pub fn codeCols(k: usize, format: Format) usize {
++    return if (format == .int3) 3 * k / 8 else k / 2;
++}
++
++/// Expert e of layer i's format from its gate weight: u8 at [I, H / 2] is NVFP4, [I, 3H / 8] int3; a u8
++/// of any other shape is refused (one layer holds one format), other dtypes leave the layer to FP8.
++pub fn layerFormat(src: *const Source, i: usize, e: usize) !?Format {
++    var buf: [192]u8 = undefined;
++    const name = try std.fmt.bufPrint(&buf, prefix ++ "layers.{d}.mlp.experts.{d}.{s}.weight", .{ i, e, projections[0] });
++    const gate = src.names.get(name) orelse return null;
++    if (gate.dtype != .u8) return null;
++    if (gate.fits(.u8, &.{ shapes[0][0], codeCols(shapes[0][1], .nvfp4) })) return .nvfp4;
++    if (gate.fits(.u8, &.{ shapes[0][0], codeCols(shapes[0][1], .int3) })) return .int3;
++    return error.UnexpectedDramaTensor; // one layer holds one format; load names the refusal
++}
++
++/// Expert e of layer i at `format`, refused unless all nine tensors have the stored dtypes, the format's
++/// code shape and the shared scale shapes, and the content checks pass; a part at the other format fails.
++pub fn read(src: *Source, i: usize, e: usize, format: Format) !Expert {
+     var buf: [192]u8 = undefined;
+     var x: Expert = undefined;
+     for (projections, shapes, 0..) |p, shape, j| {
+         const n, const k = shape;
+-        x.codes[j] = try src.get(try std.fmt.bufPrint(&buf, prefix ++ "layers.{d}.mlp.experts.{d}.{s}.weight", .{ i, e, p }), .u8, &.{ n, k / 2 });
++        x.codes[j] = try src.get(try std.fmt.bufPrint(&buf, prefix ++ "layers.{d}.mlp.experts.{d}.{s}.weight", .{ i, e, p }), .u8, &.{ n, codeCols(k, format) });
+         const scales = try std.fmt.bufPrint(&buf, prefix ++ "layers.{d}.mlp.experts.{d}.{s}.weight_scale", .{ i, e, p });
+         x.scales[j] = try src.get(scales, .f8_e4m3, &.{ n, k / 16 });
+         checkScales(x.scales[j]) catch |err| {
+@@ -74,7 +96,8 @@ test "an NVFP4 expert reads as C1 stores it; get refuses other dtypes, shapes an
+     try source.writeCheckpoint(gpa, io, dir, &t);
+     var src = try Source.open(gpa, io, dir);
+     defer src.close();
+-    const x = try read(&src, 0, 0);
++    const x = try read(&src, 0, 0, .nvfp4);
++    try std.testing.expect(try layerFormat(&src, 0, 0) == .nvfp4);
+     try std.testing.expectEqual([parts]f32{ 1.5, 1.5, 1.5 }, x.global);
+     try std.testing.expectEqual(@as(usize, 512 * 1024), x.codes[2].len);
+     try std.testing.expectEqual(src.backbone - 4, src.used); // the unread four: load refuses with UnusedDramaTensors
+@@ -97,3 +120,85 @@ test "NVFP4 content checks: 0x7F and 0xFF and negative scale codes, non-positive
+     for ([_]f32{ 0x1p-140, 1e-3, 3.0e38 }) |g| _ = try globalOf(std.mem.asBytes(&g));
+     for ([_]f32{ 0, -0.0, -1, std.math.inf(f32), -std.math.inf(f32), std.math.nan(f32) }) |g| try std.testing.expectError(error.BadDramaNvfp4Global, globalOf(std.mem.asBytes(&g)));
+ }
++
++test "a layer's format is its gate's u8 shape: int3, NVFP4 or refused; another dtype leaves it to FP8" {
++    const gpa = std.testing.allocator;
++    const io = std.testing.io;
++    var tmp = std.testing.tmpDir(.{});
++    defer tmp.cleanup();
++    const dir = try tmp.dir.realPathFileAlloc(io, ".", gpa);
++    defer gpa.free(dir);
++    const I = cfg.expert_inner;
++    const Hh = cfg.hidden;
++    const big = try gpa.alloc(u8, I * Hh);
++    defer gpa.free(big);
++    const p = prefix ++ "layers.0.mlp.experts.";
++    const t = [_]@import("core").shard_edit.New{
++        .{ .name = p ++ "0.gate_proj.weight", .dtype = .u8, .shape = &.{ I, 3 * Hh / 8 }, .bytes = big[0 .. I * 3 * Hh / 8] },
++        .{ .name = p ++ "1.gate_proj.weight", .dtype = .u8, .shape = &.{ I, Hh / 4 }, .bytes = big[0 .. I * Hh / 4] },
++        .{ .name = p ++ "2.gate_proj.weight", .dtype = .f8_e4m3, .shape = &.{ I, Hh }, .bytes = big },
++    };
++    try source.writeCheckpoint(gpa, io, dir, &t);
++    var src = try Source.open(gpa, io, dir);
++    defer src.close();
++    try std.testing.expect(try layerFormat(&src, 0, 0) == .int3);
++    try std.testing.expectError(error.UnexpectedDramaTensor, layerFormat(&src, 0, 1));
++    try std.testing.expect(try layerFormat(&src, 0, 2) == null);
++    try std.testing.expectEqual(@as(usize, 24), codeCols(64, .int3));
++    try std.testing.expectEqual(@as(usize, 32), codeCols(64, .nvfp4));
++}
++
++test "an int3 expert reads fully; a layer whose projections mix int3 and NVFP4 shapes is refused" {
++    const gpa = std.testing.allocator;
++    const io = std.testing.io;
++    var tmp = std.testing.tmpDir(.{});
++    defer tmp.cleanup();
++    const dir = try tmp.dir.realPathFileAlloc(io, ".", gpa);
++    defer gpa.free(dir);
++    const I = cfg.expert_inner;
++    const Hh = cfg.hidden;
++    const big = try gpa.alloc(u8, I * Hh);
++    defer gpa.free(big);
++    @memset(big, 0x38); // e4m3 1.0 as every scale; the codes' values do not matter here
++    const g: f32 = 1.5;
++    const e0 = prefix ++ "layers.0.mlp.experts.0.";
++    const e1 = prefix ++ "layers.0.mlp.experts.1.";
++    const e2 = prefix ++ "layers.0.mlp.experts.2.";
++    var t: [17]@import("core").shard_edit.New = undefined;
++    inline for (projections, shapes, 0..) |p, shape, j| { // expert 0: int3, complete
++        const n, const k = shape;
++        t[3 * j] = .{ .name = e0 ++ p ++ ".weight", .dtype = .u8, .shape = &.{ n, 3 * k / 8 }, .bytes = big[0 .. n * 3 * k / 8] };
++        t[3 * j + 1] = .{ .name = e0 ++ p ++ ".weight_scale", .dtype = .f8_e4m3, .shape = &.{ n, k / 16 }, .bytes = big[0 .. n * k / 16] };
++        t[3 * j + 2] = .{ .name = e0 ++ p ++ ".weight_scale_2", .dtype = .f32, .shape = &.{}, .bytes = std.mem.asBytes(&g) };
++    }
++    // expert 1: an int3 gate (the layer's format) beside an NVFP4 up; expert 2 the mirror image
++    t[9] = .{ .name = e1 ++ "gate_proj.weight", .dtype = .u8, .shape = &.{ I, 3 * Hh / 8 }, .bytes = big[0 .. I * 3 * Hh / 8] };
++    t[10] = .{ .name = e1 ++ "gate_proj.weight_scale", .dtype = .f8_e4m3, .shape = &.{ I, Hh / 16 }, .bytes = big[0 .. I * Hh / 16] };
++    t[11] = .{ .name = e1 ++ "gate_proj.weight_scale_2", .dtype = .f32, .shape = &.{}, .bytes = std.mem.asBytes(&g) };
++    t[12] = .{ .name = e1 ++ "up_proj.weight", .dtype = .u8, .shape = &.{ I, Hh / 2 }, .bytes = big[0 .. I * Hh / 2] };
++    t[13] = .{ .name = e2 ++ "gate_proj.weight", .dtype = .u8, .shape = &.{ I, Hh / 2 }, .bytes = big[0 .. I * Hh / 2] };
++    t[14] = .{ .name = e2 ++ "gate_proj.weight_scale", .dtype = .f8_e4m3, .shape = &.{ I, Hh / 16 }, .bytes = big[0 .. I * Hh / 16] };
++    t[15] = .{ .name = e2 ++ "gate_proj.weight_scale_2", .dtype = .f32, .shape = &.{}, .bytes = std.mem.asBytes(&g) };
++    t[16] = .{ .name = e2 ++ "up_proj.weight", .dtype = .u8, .shape = &.{ I, 3 * Hh / 8 }, .bytes = big[0 .. I * 3 * Hh / 8] };
++    try source.writeCheckpoint(gpa, io, dir, &t);
++    var src = try Source.open(gpa, io, dir);
++    defer src.close();
++    try std.testing.expect(try layerFormat(&src, 0, 0) == .int3);
++    const x = try read(&src, 0, 0, .int3);
++    try std.testing.expectEqual([parts]f32{ 1.5, 1.5, 1.5 }, x.global);
++    try std.testing.expectEqual(@as(usize, I * 3 * Hh / 8), x.codes[0].len);
++    try std.testing.expectEqual(@as(usize, Hh * 3 * I / 8), x.codes[2].len);
++    try std.testing.expectEqual(@as(usize, I * Hh / 16), x.scales[0].len);
++    const at = struct {
++        fn entry(s: *const Source, name: []const u8) source.Entry {
++            return s.names.get(name).?;
++        }
++    }.entry;
++    try std.testing.expect(!at(&src, e0 ++ "gate_proj.weight").fits(.u8, &.{ I, Hh / 2 })); // read(.nvfp4) refuses it
++    try std.testing.expect(try layerFormat(&src, 0, 1) == .int3);
++    try std.testing.expect(!at(&src, e1 ++ "up_proj.weight").fits(.u8, &.{ I, 3 * Hh / 8 })); // read(.int3) refuses it
++    try std.testing.expect(at(&src, e1 ++ "up_proj.weight").fits(.u8, &.{ I, Hh / 2 })); // an NVFP4 up in an int3 layer
++    try std.testing.expect(try layerFormat(&src, 0, 2) == .nvfp4);
++    try std.testing.expect(!at(&src, e2 ++ "up_proj.weight").fits(.u8, &.{ I, Hh / 2 })); // read(.nvfp4) refuses it
++    try std.testing.expect(at(&src, e2 ++ "up_proj.weight").fits(.u8, &.{ I, 3 * Hh / 8 })); // an int3 up in an NVFP4 layer
++}
+diff --git a/zig/src/families/drama/backbone_weights.zig b/zig/src/families/drama/backbone_weights.zig
+index d1907cb14..c9d8b5b45 100644
+--- a/zig/src/families/drama/backbone_weights.zig
++++ b/zig/src/families/drama/backbone_weights.zig
+@@ -1,12 +1,12 @@
+ //! The Drama backbone's checkpoint tensors on the GPU, as stored: bf16 or FP8 (backbone_dense) dense weights, e4m3
+-//! experts with fp32 128 x 128 block scales or NVFP4 ones in the grouped kernels' blocks. None is requantized.
++//! experts with fp32 128 x 128 block scales or NVFP4 and int3 ones in the grouped kernels' blocks. None is requantized.
+ const std = @import("std");
+ const cuda = @import("cuda");
+ const core = @import("core");
+ const cfg = @import("backbone_config.zig");
+-const Stager = @import("stager.zig").Stager;
+-const source = @import("backbone_source.zig");
+-const stored_fp4 = @import("backbone_fp4.zig");
++pub const Stager = @import("stager.zig").Stager;
++pub const source = @import("backbone_source.zig");
++pub const stored_fp4 = @import("backbone_fp4.zig");
+ const compact = @import("compact.zig");
+ pub const dense = @import("backbone_dense.zig");
+ 
+@@ -36,7 +36,9 @@ pub const gu_scales = (gu_rows / cfg.block) * (cfg.hidden / cfg.block);
+ pub const dn_scales = (cfg.hidden / cfg.block) * (cfg.expert_inner / cfg.block);
+ /// One projection's NVFP4 experts as stored, for the packer: codes [experts][n][k / 2], scales [experts][n][k / 16].
+ pub const fp4_part = cfg.experts * cfg.expert_inner * cfg.hidden * 9 / 16;
+-/// An NVFP4 layer's experts view, its four device pointers still to set: Drama's SwiGLU rounding, no clamp.
++/// One projection's int3 experts as stored: codes [experts][n][3 * k / 8], scales [experts][n][k / 16].
++pub const int3_part = cfg.experts * cfg.expert_inner * cfg.hidden * 7 / 16;
++/// A stored layer's experts view, its four device pointers still to set (int3 layers set .int3 too): Drama's SwiGLU, no clamp.
+ pub const fp4_layer: cuda.experts.Layer = .{ .format = .nvfp4, .up = 0, .down = 0, .width = cfg.expert_inner, .dims = cfg.hidden, .experts = cfg.experts, .silu_f32 = true };
+ 
+ pub const Layer = struct {
+@@ -63,7 +65,7 @@ pub const Layer = struct {
+     dn: u64 = 0, // e4m3 [held][hidden][expert_inner]
+     dn_s: u64 = 0, // f32 [held][hidden / 128][expert_inner / 128]
+     experts: usize = cfg.experts, // routed experts held: slot s holds the map's s-th original id
+-    nvfp4: ?cuda.experts.Layer = null, // the routed experts when stored NVFP4; gu .. dn_s are then 0
++    nvfp4: ?cuda.experts.Layer = null, // the routed experts when stored NVFP4 or int3; gu .. dn_s are then 0
+     fp8: dense.Groups = .{}, // dense groups stored FP8; each one's bf16 field above is then 0
+     gdn_ba: u64 = 0, // bf16 [64][hidden] in_proj_b | in_proj_a when fp8.gdn_in holds qkv | z
+     router: u64 = 0, // bf16 [experts][hidden] mlp.gate when fp8.shared_in holds the shared gate | up
+@@ -245,16 +247,21 @@ fn groupFp8(src: *const Source, i: usize, comptime stems: []const []const u8) !b
+     return fp8.?;
+ }
+ 
+-/// Device room for one layer's stored NVFP4 experts (gate, up, down parts) and the packer that reads it.
++/// Device room for one layer's stored NVFP4 or int3 experts (gate, up, down parts) and the packer that reads it.
+ const Fp4Stage = struct { bytes: cuda.DeviceBuffer, packer: cuda.modelopt.Packer };
+ 
+-/// `l.experts` stored NVFP4 gate, up, down (fp4_part bytes each at `staged`) into `l`'s blocks, gate, up SwiGLU 0, 1.
++/// `l.experts` stored NVFP4 or int3 (l.int3) gate, up, down (a part each at `staged`) into `l`'s blocks, gate, up SwiGLU 0, 1.
+ pub fn packFp4(p: *const cuda.modelopt.Packer, s: cuda.Stream, staged: u64, l: cuda.experts.Layer) !void {
++    const format: stored_fp4.Format = if (l.int3) .int3 else .nvfp4;
++    const part: usize = if (l.int3) int3_part else fp4_part;
+     for (stored_fp4.shapes, 0..) |shape, j| {
+         const n, const k = shape;
+-        const codes = staged + j * fp4_part;
+-        const scales = codes + cfg.experts * n * k / 2;
+-        if (j < 2) try p.fp4Experts(s, codes, scales, l.up, l.experts, n, k, 0, k, 2, j) else try p.fp4Experts(s, codes, scales, l.down, l.experts, n, k, 0, k, 1, 0);
++        const codes = staged + j * part;
++        const scales = codes + cfg.experts * n * stored_fp4.codeCols(k, format);
++        const out = if (j < 2) l.up else l.down;
++        const parts: usize = if (j < 2) 2 else 1;
++        const m: usize = if (j < 2) j else 0;
++        if (l.int3) try p.int3Experts(s, codes, scales, out, l.experts, n, k, 0, k, parts, m) else try p.fp4Experts(s, codes, scales, out, l.experts, n, k, 0, k, parts, m);
+     }
+ }
+ 
+@@ -317,7 +324,7 @@ fn loadMoe(L: *Loader, i: usize, l: *Layer) !void {
+     l.shared_gate = try L.layerRaw(i, "mlp.shared_expert_gate.weight", .bf16, &.{ 1, H });
+     const ids = (if (L.w.held) |*h| h else &full).layer(i);
+     l.experts = ids.len;
+-    if (fp4Layer(L.src, i, ids)) return loadFp4(L, i, ids, l);
++    if (try stored_fp4.layerFormat(L.src, i, ids[0])) |format| return loadFp4(L, i, ids, l, format);
+     const E = ids.len;
+     l.gu = try L.w.alloc(L.d, E * gu_rows * H);
+     l.gu_s = try L.w.alloc(L.d, E * gu_scales * 4);
+@@ -329,13 +336,6 @@ fn loadMoe(L: *Loader, i: usize, l: *Layer) !void {
+ /// Every expert of every layer, in place: a checkpoint without a map.
+ const full: compact.Held = .{};
+ 
+-/// Whether layer i's experts are NVFP4: its first held expert's gate decides; get() holds the rest to that format.
+-fn fp4Layer(src: *const Source, i: usize, ids: []const u8) bool {
+-    var buf: [192]u8 = undefined;
+-    const gate = src.names.get(std.fmt.bufPrint(&buf, prefix ++ "layers.{d}.mlp.experts.{d}.gate_proj.weight", .{ i, ids[0] }) catch unreachable);
+-    return gate != null and gate.?.dtype == DType.u8;
+-}
+-
+ /// Layer i's held FP8 experts into `l`'s arrays: expert ids[s] at slot s.
+ fn putFp8(L: *Loader, i: usize, ids: []const u8, l: *const Layer) !void {
+     const I = cfg.expert_inner;
+@@ -353,17 +353,19 @@ fn putFp8(L: *Loader, i: usize, ids: []const u8, l: *const Layer) !void {
+     }
+ }
+ 
+-fn loadFp4(L: *Loader, i: usize, ids: []const u8, l: *Layer) !void {
++/// Layer i's held NVFP4 or int3 experts packed from `staged` into `l`'s view at `format`, globals beside.
++fn loadFp4(L: *Loader, i: usize, ids: []const u8, l: *Layer, format: stored_fp4.Format) !void {
+     const E = ids.len;
+     const I = cfg.expert_inner;
+     const fp4 = cuda.experts.Nvfp4Experts;
+     const staged = (try L.fp4Stage()).bytes.ptr;
+     var globals: [stored_fp4.parts][cfg.experts]f32 = undefined;
+-    try putFp4(L, i, ids, staged, &globals);
++    try putFp4(L, i, ids, staged, &globals, format);
+     var ex = fp4_layer;
++    ex.int3 = format == .int3;
+     ex.experts = E;
+-    ex.up = try L.w.alloc(L.d, fp4.bytes(E, I, H, 2));
+-    ex.down = try L.w.alloc(L.d, fp4.bytes(E, H, I, 1));
++    ex.up = try L.w.alloc(L.d, fp4.bytesBits(E, I, H, 2, ex.int3));
++    ex.down = try L.w.alloc(L.d, fp4.bytesBits(E, H, I, 1, ex.int3));
+     try L.st.finish(); // the stored experts land before the packs read them; the next layer's copies queue after the packs
+     try packFp4(&L.fp4.?.packer, L.st.stream, staged, ex);
+     var up_scale: [cfg.experts][2]f32 = undefined;
+@@ -375,15 +377,17 @@ fn loadFp4(L: *Loader, i: usize, ids: []const u8, l: *Layer) !void {
+     l.nvfp4 = ex;
+ }
+ 
+-/// Layer i's held NVFP4 experts into the packer's staging at `staged` and their globals: expert ids[s] at slot s.
+-fn putFp4(L: *Loader, i: usize, ids: []const u8, staged: u64, globals: *[stored_fp4.parts][cfg.experts]f32) !void {
++/// Layer i's held NVFP4 or int3 experts into the packer's staging at `staged` and their globals: expert ids[s] at slot s.
++fn putFp4(L: *Loader, i: usize, ids: []const u8, staged: u64, globals: *[stored_fp4.parts][cfg.experts]f32, format: stored_fp4.Format) !void {
++    const part: usize = if (format == .int3) int3_part else fp4_part;
+     for (ids, 0..) |e, s| {
+-        const x = try stored_fp4.read(L.src, i, e);
++        const x = try stored_fp4.read(L.src, i, e, format);
+         for (stored_fp4.shapes, 0..) |shape, j| {
+             const n, const k = shape;
+-            const at = staged + j * fp4_part;
+-            try L.st.put(at + s * n * k / 2, x.codes[j]);
+-            try L.st.put(at + cfg.experts * n * k / 2 + s * n * k / 16, x.scales[j]);
++            const at = staged + j * part;
++            const c = stored_fp4.codeCols(k, format);
++            try L.st.put(at + s * n * c, x.codes[j]);
++            try L.st.put(at + cfg.experts * n * c + s * n * k / 16, x.scales[j]);
+             globals[j][s] = x.global[j];
+         }
+     }
+@@ -406,15 +410,15 @@ pub fn expertMap(src: *Source) !?compact.Held {
+     return held;
+ }
+ 
+-/// Internal test seam: loadMoe's puts of layer i's held `ids` (FP8 at `l`, NVFP4 at `staged`) on a driverless `st`.
++/// Internal test seam: loadMoe's puts of layer i's held `ids` (FP8 at `l`, NVFP4 or int3 at `staged`) on a driverless `st`.
+ pub fn putExperts(src: *Source, st: *Stager, i: usize, ids: []const u8, l: *const Layer, staged: u64) !?[stored_fp4.parts][cfg.experts]f32 {
+     var L: Loader = .{ .src = src, .st = st, .w = undefined, .d = undefined };
+-    if (!fp4Layer(src, i, ids)) {
++    const format = (try stored_fp4.layerFormat(src, i, ids[0])) orelse {
+         try putFp8(&L, i, ids, l);
+         return null;
+-    }
++    };
+     var globals: [stored_fp4.parts][cfg.experts]f32 = undefined;
+-    try putFp4(&L, i, ids, staged, &globals);
++    try putFp4(&L, i, ids, staged, &globals, format);
+     return globals;
+ }
+ 
+diff --git a/zig/tests/cuda/drama_nvfp4_moe_tests.zig b/zig/tests/cuda/drama_nvfp4_moe_tests.zig
+index 73dff0d79..6944d6c38 100644
+--- a/zig/tests/cuda/drama_nvfp4_moe_tests.zig
++++ b/zig/tests/cuda/drama_nvfp4_moe_tests.zig
+@@ -1,6 +1,7 @@
+-//! Drama's MoE on synthetic NVFP4 experts: float64 envelope, held-out sets, exact epilogue and combine, FP8 beside.
++//! Drama's MoE on synthetic NVFP4 and int3 experts: float64 envelope, held-out sets, exact epilogue and combine, FP8 beside.
+ const std = @import("std");
+ const cuda = @import("cuda");
++const core = @import("core");
+ const drama = @import("drama");
+ const check = @import("check.zig");
+ const ref = @import("drama_nvfp4_ref.zig");
+@@ -20,6 +21,7 @@ const rows = ref.rows;
+ const fp8_layer = 0;
+ const nvfp4_layer = 1;
+ const sparse_layer = 2;
++const int3_layer = 6; // int3 beside, away from the fp8/nvfp4/sparse/held layers
+ const held_layer = 3; // the held-out sets' layers: 3, 4, 5
+ 
+ /// Block-FP8 experts for the layer beside, in the device layout: e4m3 [E][gu_rows][H] and [E][H][I], fp32 scales.
+@@ -105,6 +107,89 @@ fn fp4Layer(gpu: check.Gpu, b: *Bufs, s: cuda.Stream, packer: *const cuda.modelo
+     return l;
+ }
+ 
++/// `sy`'s int3 experts as a one-tensor-each checkpoint at `dir`: the names and shapes the loader reads.
++fn writeInt3Checkpoint(a: std.mem.Allocator, io: std.Io, dir: []const u8, sy: ref.Synth) !void {
++    const f = sy.experts.int3;
++    var t: [3 * 3 * E]core.shard_edit.New = undefined;
++    var made: usize = 0;
++    for (weights.stored_fp4.projections, weights.stored_fp4.shapes, 0..) |proj, nk, j| {
++        const n, const k = nk;
++        const codes = n * k * 3 / 8;
++        const scales = n * k / 16;
++        for (0..E) |e| {
++            const base = try std.fmt.allocPrint(a, "{s}layers.{d}.mlp.experts.{d}.{s}.weight", .{ weights.prefix, int3_layer, e, proj });
++            const shape: []usize = try a.dupe(usize, &.{ n, 3 * k / 8 });
++            t[made] = .{ .name = base, .dtype = .u8, .shape = shape, .bytes = f[j].codes[e * codes ..][0..codes] };
++            made += 1;
++            t[made] = .{ .name = try std.fmt.allocPrint(a, "{s}_scale", .{base}), .dtype = .f8_e4m3, .shape = try a.dupe(usize, &.{ n, k / 16 }), .bytes = f[j].scales[e * scales ..][0..scales] };
++            made += 1;
++            t[made] = .{ .name = try std.fmt.allocPrint(a, "{s}_scale_2", .{base}), .dtype = .f32, .shape = &.{}, .bytes = std.mem.asBytes(&f[j].global[e]) };
++            made += 1;
++        }
++    }
++    try weights.source.writeCheckpoint(a, io, dir, &t);
++}
++
++/// The int3 layer of `sy` on the device through the loader's own seam: `dir`'s planes mapped, layerFormat
++/// reads the gate shape, putExperts stages the read bytes on the real Stager, packFp4's int3 arm packs them.
++fn int3Layer(gpu: check.Gpu, a: std.mem.Allocator, b: *Bufs, s: cuda.Stream, packer: *const cuda.modelopt.Packer, dir: []const u8, sy: ref.Synth) !weights.Layer {
++    var src = try weights.source.Source.open(gpu.gpa, gpu.io, dir);
++    defer src.close();
++    const fmt = (try weights.stored_fp4.layerFormat(&src, int3_layer, 0)).?;
++    try check.expect(fmt == .int3, "the synthetic planes' [n, 3k / 8] gate is int3 to the loader's seam, not {t}", .{fmt});
++    var st = weights.Stager.init(gpu.gpa, gpu.d, s);
++    defer st.deinit();
++    for (src.shards.items) |sh| try st.addFile(sh.path, sh.map.memory);
++    var staged = try cuda.DeviceBuffer.alloc(gpu.d, 3 * weights.int3_part);
++    defer staged.free();
++    const ids = try a.alloc(u8, E);
++    for (ids, 0..) |*x, e| x.* = @intCast(e);
++    var l: weights.Layer = .{};
++    const globals = (try weights.putExperts(&src, &st, int3_layer, ids, &l, staged.ptr)).?;
++    try st.finish(); // the file-backed copies land before the pack reads them, as the loader's own order
++    const W = cuda.experts.Nvfp4Experts;
++    var up_scale: [E][2]f32 = undefined;
++    for (&up_scale, globals[0], globals[1]) |*u, g, v| u.* = .{ g, v };
++    var ex = weights.fp4_layer;
++    ex.int3 = true;
++    ex.up = try b.room(W.bytesBits(E, I, H, 2, true));
++    ex.down = try b.room(W.bytesBits(E, H, I, 1, true));
++    ex.up_scale = try b.dev(std.mem.asBytes(&up_scale));
++    ex.down_scale = try b.dev(std.mem.sliceAsBytes(&globals[2]));
++    try weights.packFp4(packer, s, staged.ptr, ex);
++    try s.synchronize();
++    var layer = try dense(b, sy);
++    layer.nvfp4 = ex;
++    return layer;
++}
++
++/// The packed int3 blocks on the device, byte for byte the host packOneInt3 of the same stored bytes:
++/// `ex.up` interleaves a gate and an up block per (column block, k32 group), `ex.down` holds down's.
++fn packedInt3(gpu: check.Gpu, a: std.mem.Allocator, ex: cuda.experts.Layer, sy: ref.Synth) !void {
++    const W = cuda.experts.Nvfp4Experts;
++    const f = sy.experts.int3;
++    const one_up = W.bytesBits(1, I, H, 1, true);
++    const one_dn = W.bytesBits(1, H, I, 1, true);
++    const cb = I / W.cols * (H / 32); // an expert's gate or up blocks
++    const want = try a.alloc(u32, (2 * E * one_up + E * one_dn) / 4);
++    const out = try a.alloc(u32, one_up / 4); // one expert's gate or up, reused
++    for (0..E) |e| {
++        for (f[0..2], 0..) |p, m| {
++            W.packOneInt3(out, p.codes[e * p.n * p.k * 3 / 8 ..][0 .. p.n * p.k * 3 / 8], p.scales[e * p.n * p.k / 16 ..][0 .. p.n * p.k / 16], I, H);
++            for (0..cb) |blk| @memcpy(want[((e * cb + blk) * 2 + m) * W.int3_words ..][0..W.int3_words], out[blk * W.int3_words ..][0..W.int3_words]);
++        }
++        W.packOneInt3(want[2 * E * one_up / 4 + e * one_dn / 4 ..][0 .. one_dn / 4], f[2].codes[e * f[2].n * f[2].k * 3 / 8 ..][0 .. f[2].n * f[2].k * 3 / 8], f[2].scales[e * f[2].n * f[2].k / 16 ..][0 .. f[2].n * f[2].k / 16], H, I);
++    }
++    const wb = std.mem.sliceAsBytes(want);
++    const up = try a.alloc(u8, 2 * E * one_up);
++    const down = try a.alloc(u8, E * one_dn);
++    try (cuda.DeviceBuffer{ .d = gpu.d, .ptr = ex.up, .len = up.len, .borrowed = true }).download(0, up);
++    try (cuda.DeviceBuffer{ .d = gpu.d, .ptr = ex.down, .len = down.len, .borrowed = true }).download(0, down);
++    try check.sameBytes("int3 packed gate|up blocks against packOneInt3", up, wb[0 .. 2 * E * one_up]);
++    try check.sameBytes("int3 packed down blocks against packOneInt3", down, wb[2 * E * one_up ..]);
++    check.pass("int3 packed experts: {d} blocks of 112 words equal the host packer byte for byte", .{E * (2 * cb + H / W.cols * (I / 32))});
++}
++
+ /// A model on `w` (placeholder layers past the ones set), with the NVFP4 kernels when a layer needs them.
+ fn model(gpu: check.Gpu, w: weights.Weights) !Model {
+     var k = try Kernels.load(gpu.gpa, gpu.io, gpu.d, "");
+@@ -119,7 +204,7 @@ const held_seeds = [3]u64{ 0x4E1D_0A11, 0x4E1D_0B0B, 0x4E1D_0C0D };
+ 
+ /// Held-out weights: `cancelling` odd experts' down negates the even one's; `exact_sums` 2^k globals (few-bit sums).
+ fn heldWeights(a: std.mem.Allocator, rng: std.Random, which: Held) !ref.Synth {
+-    const sy = try ref.Synth.random(a, rng, which == .exact_sums);
++    const sy = try ref.Synth.random(a, rng, which == .exact_sums, .fp4);
+     if (which == .cancelling) {
+         const f = sy.experts.fp4;
+         for (0..E / 2) |pair| {
+@@ -162,7 +247,8 @@ pub fn run(gpu: check.Gpu) !void {
+     const a = arena.allocator();
+     var prng = std.Random.DefaultPrng.init(0xD4A3);
+     const rng = prng.random();
+-    const sy = try ref.Synth.random(a, rng, false);
++    const sy = try ref.Synth.random(a, rng, false, .fp4);
++    const sy3 = try ref.Synth.random(a, rng, false, .int3);
+     const f8 = try Fp8Layer.random(a, rng);
+     var s = try cuda.Stream.init(gpu.d, false);
+     defer s.deinit();
+@@ -180,6 +266,12 @@ pub fn run(gpu: check.Gpu) !void {
+     w.layers[nvfp4_layer] = try fp4Layer(gpu, &b, s, &packer, sy);
+     const sparse = try exact.sparse(a, sy);
+     w.layers[sparse_layer] = try fp4Layer(gpu, &b, s, &packer, sparse);
++    const dir = try std.fmt.allocPrint(a, "/tmp/tf-drama-int3-{x}", .{rng.int(u64)});
++    defer std.Io.Dir.cwd().deleteTree(gpu.io, dir) catch {};
++    try std.Io.Dir.cwd().createDirPath(gpu.io, dir);
++    try writeInt3Checkpoint(a, gpu.io, dir, sy3);
++    w.layers[int3_layer] = try int3Layer(gpu, a, &b, s, &packer, dir, sy3);
++    try packedInt3(gpu, a, w.layers[int3_layer].nvfp4.?, sy3);
+     var held: [3]ref.Synth = undefined;
+     var held_x: [3][]u16 = undefined;
+     for (&held, &held_x, held_seeds, 0..) |*hs, *hx, seed, i| {
+@@ -201,6 +293,8 @@ pub fn run(gpu: check.Gpu) !void {
+         crowd[r * H + e] = h.bf16Of(if (e < top) 0.5 + rng.float(f32) * 0.5 else -rng.float(f32));
+     };
+     try ref.scenario(gpu, a, &mixed, s, nvfp4_layer, sy, null, crowd, "NVFP4 all pairs to 8 experts", &io, true);
++    try ref.scenario(gpu, a, &mixed, s, int3_layer, sy3, sy, x, "int3 spread routing", &io, true);
++    try ref.scenario(gpu, a, &mixed, s, int3_layer, sy3, null, crowd, "int3 all pairs to 8 experts", &io, true);
+     try exact.epilogue(gpu, a, &mixed, s, sparse_layer, &io, rng);
+     try exact.combine(gpu, a, &mixed, s, rng);
+ 
+diff --git a/zig/tests/cuda/drama_nvfp4_ref.zig b/zig/tests/cuda/drama_nvfp4_ref.zig
+index b82ac92f7..0fb4b34ed 100644
+--- a/zig/tests/cuda/drama_nvfp4_ref.zig
++++ b/zig/tests/cuda/drama_nvfp4_ref.zig
+@@ -34,13 +34,7 @@ pub const Fp4 = struct {
+     pub fn random(a: std.mem.Allocator, rng: std.Random, n: usize, k: usize, exact: bool) !Fp4 {
+         const f = try alloc(a, n, k);
+         rng.bytes(f.codes);
+-        const blocks = n * k / 16;
+-        for (0..E) |e| {
+-            const sub = e % 8 == 7;
+-            for (f.scales[e * blocks ..][0..blocks]) |*v| v.* = if (sub) 1 + rng.uintLessThan(u8, 7) else if (rng.uintLessThan(u8, 32) == 0) 0 else 0x20 + rng.uintLessThan(u8, 0x28);
+-            const g: f32 = if (exact) 0x1p-8 else 0.002 + rng.float(f32) * 0.004;
+-            f.global[e] = g * @as(f32, if (sub) 128 else 1);
+-        }
++        randomScales(rng, f.scales, f.global, n, k, exact);
+         return f;
+     }
+ 
+@@ -54,6 +48,54 @@ pub const Fp4 = struct {
+     }
+ };
+ 
++/// Every expert's e4m3 scales and fp32 globals, the rule the NVFP4 and int3 random projections share.
++fn randomScales(rng: std.Random, scales: []u8, global: []f32, n: usize, k: usize, exact: bool) void {
++    const blocks = n * k / 16;
++    for (0..E) |e| {
++        const sub = e % 8 == 7;
++        for (scales[e * blocks ..][0..blocks]) |*v| v.* = if (sub) 1 + rng.uintLessThan(u8, 7) else if (rng.uintLessThan(u8, 32) == 0) 0 else 0x20 + rng.uintLessThan(u8, 0x28);
++        const g: f32 = if (exact) 0x1p-8 else 0.002 + rng.float(f32) * 0.004;
++        global[e] = g * @as(f32, if (sub) 128 else 1);
++    }
++}
++
++/// One int3 projection as a checkpoint stores it: planes [E][n][3k / 8] (a row's 16-input block holds its
++/// little-endian sign, hi and lo u16 planes in that order), e4m3 scales [E][n][k / 16], globals [E].
++pub const Int3 = struct {
++    n: usize,
++    k: usize,
++    codes: []u8,
++    scales: []u8,
++    global: []f32,
++
++    pub fn alloc(a: std.mem.Allocator, n: usize, k: usize) !Int3 {
++        return .{ .n = n, .k = k, .codes = try a.alloc(u8, E * n * k * 3 / 8), .scales = try a.alloc(u8, E * n * k / 16), .global = try a.alloc(f32, E) };
++    }
++
++    /// Random plane bytes (negative zero is a stored case); the same scales and globals rule as NVFP4's.
++    pub fn random(a: std.mem.Allocator, rng: std.Random, n: usize, k: usize, exact: bool) !Int3 {
++        const f = try alloc(a, n, k);
++        rng.bytes(f.codes);
++        randomScales(rng, f.scales, f.global, n, k, exact);
++        return f;
++    }
++
++    /// Planes to the E2M1 nibble (bit3 sign, bit2 hi|lo, bit1 hi, bit0 hi&lo), then NVFP4's own formula.
++    fn dequant(f: Int3, e: usize, out: []f64) void {
++        const g: f64 = f.global[e];
++        const row_bytes = 3 * f.k / 8;
++        for (0..f.n) |r| for (0..f.k) |c| {
++            const at = (e * f.n + r) * row_bytes + (c / 16) * 6 + (c % 16) / 8;
++            const bit: u3 = @intCast(c % 8);
++            const sign = (f.codes[at] >> bit) & 1;
++            const hi = (f.codes[at + 2] >> bit) & 1;
++            const lo = (f.codes[at + 4] >> bit) & 1;
++            const nib: u8 = (sign << 3) | ((hi | lo) << 2) | (hi << 1) | (hi & lo);
++            out[r * f.k + c] = h.e2m1Of(nib) * h.e4m3Of(f.scales[(e * f.n + r) * (f.k / 16) + c / 16]) * g;
++        };
++    }
++};
++
+ /// One block-FP8 projection as a checkpoint stores it: e4m3 [E][n][k], fp32 scale_inv [E][n / 128][k / 128].
+ pub const Fp8 = struct {
+     n: usize,
+@@ -72,6 +114,7 @@ pub const Fp8 = struct {
+ /// A layer's routed experts in either stored format: gate, up, down.
+ pub const Experts = union(enum) {
+     fp4: [3]Fp4,
++    int3: [3]Int3,
+     fp8: [3]Fp8,
+ 
+     /// Expert e's projection j as float64 [n][k].
+@@ -82,6 +125,9 @@ pub const Experts = union(enum) {
+     }
+ };
+ 
++/// The stored expert formats `random` makes and the production seam reports (C1's u8 shapes).
++pub const ExpertFormat = enum { fp4, int3 };
++
+ const projections = [3][]const u8{ "gate_proj", "up_proj", "down_proj" };
+ const shapes = [3][2]usize{ .{ I, H }, .{ I, H }, .{ H, I } };
+ 
+@@ -92,8 +138,8 @@ pub const Synth = struct {
+     shared_gate: []u16, // [H]
+     experts: Experts,
+ 
+-    /// Synthetic: one-hot router rows (logit e = bf16(x[e] * 16 or 1), exact) and random NVFP4 experts.
+-    pub fn random(a: std.mem.Allocator, rng: std.Random, exact: bool) !Synth {
++    /// Synthetic: one-hot router rows (logit e = bf16(x[e] * 16 or 1), exact) and random experts at `format`.
++    pub fn random(a: std.mem.Allocator, rng: std.Random, exact: bool, format: ExpertFormat) !Synth {
+         var s: Synth = undefined;
+         s.moe_in = try bfs(a, rng, weights.moe_in_rows * H, 0.066); // shared gate and up sums near unit variance
+         const router = s.moe_in[weights.router_col * H ..];
+@@ -101,7 +147,10 @@ pub const Synth = struct {
+         for (0..E) |e| router[e * H + e] = if (e < heavy) 0x4180 else 0x3F80;
+         s.shared_down = try bfs(a, rng, H * I, 0.1);
+         s.shared_gate = try bfs(a, rng, H, 0.02);
+-        s.experts = .{ .fp4 = .{ try .random(a, rng, I, H, exact), try .random(a, rng, I, H, exact), try .random(a, rng, H, I, exact) } };
++        s.experts = switch (format) {
++            .fp4 => .{ .fp4 = .{ try .random(a, rng, I, H, exact), try .random(a, rng, I, H, exact), try .random(a, rng, H, I, exact) } },
++            .int3 => .{ .int3 = .{ try .random(a, rng, I, H, exact), try .random(a, rng, I, H, exact), try .random(a, rng, H, I, exact) } },
++        };
+         return s;
+     }
+ 
+@@ -121,17 +170,31 @@ pub const Synth = struct {
+         var name: [128]u8 = undefined;
+         const gate0 = try ck.get(try std.fmt.bufPrint(&name, weights.prefix ++ "layers.{d}.mlp.experts.0.gate_proj.weight", .{layer}));
+         if (gate0.dtype == .u8) {
+-            var f: [3]Fp4 = undefined;
+-            for (&f, projections, shapes) |*p, proj, nk| {
+-                const n, const k = nk;
+-                p.* = try .alloc(a, n, k);
+-                for (0..E) |e| {
+-                    try get(&ck, p.codes[e * n * k / 2 ..][0 .. n * k / 2], "{d}.mlp.experts.{d}.{s}.weight", .{ layer, e, proj }, .u8, &.{ n, k / 2 });
+-                    try get(&ck, p.scales[e * n * k / 16 ..][0 .. n * k / 16], "{d}.mlp.experts.{d}.{s}.weight_scale", .{ layer, e, proj }, .f8_e4m3, &.{ n, k / 16 });
+-                    try get(&ck, std.mem.asBytes(&p.global[e]), "{d}.mlp.experts.{d}.{s}.weight_scale_2", .{ layer, e, proj }, .f32, &.{});
++            if (gate0.is(.u8, &.{ I, 3 * H / 8 })) { // [n][3k / 8] planes, not [n][k / 2] nibbles (C1)
++                var f: [3]Int3 = undefined;
++                for (&f, projections, shapes) |*p, proj, nk| {
++                    const n, const k = nk;
++                    p.* = try .alloc(a, n, k);
++                    for (0..E) |e| {
++                        try get(&ck, p.codes[e * n * k * 3 / 8 ..][0 .. n * k * 3 / 8], "{d}.mlp.experts.{d}.{s}.weight", .{ layer, e, proj }, .u8, &.{ n, 3 * k / 8 });
++                        try get(&ck, p.scales[e * n * k / 16 ..][0 .. n * k / 16], "{d}.mlp.experts.{d}.{s}.weight_scale", .{ layer, e, proj }, .f8_e4m3, &.{ n, k / 16 });
++                        try get(&ck, std.mem.asBytes(&p.global[e]), "{d}.mlp.experts.{d}.{s}.weight_scale_2", .{ layer, e, proj }, .f32, &.{});
++                    }
++                }
++                s.experts = .{ .int3 = f };
++            } else {
++                var f: [3]Fp4 = undefined;
++                for (&f, projections, shapes) |*p, proj, nk| {
++                    const n, const k = nk;
++                    p.* = try .alloc(a, n, k);
++                    for (0..E) |e| {
++                        try get(&ck, p.codes[e * n * k / 2 ..][0 .. n * k / 2], "{d}.mlp.experts.{d}.{s}.weight", .{ layer, e, proj }, .u8, &.{ n, k / 2 });
++                        try get(&ck, p.scales[e * n * k / 16 ..][0 .. n * k / 16], "{d}.mlp.experts.{d}.{s}.weight_scale", .{ layer, e, proj }, .f8_e4m3, &.{ n, k / 16 });
++                        try get(&ck, std.mem.asBytes(&p.global[e]), "{d}.mlp.experts.{d}.{s}.weight_scale_2", .{ layer, e, proj }, .f32, &.{});
++                    }
+                 }
++                s.experts = .{ .fp4 = f };
+             }
+-            s.experts = .{ .fp4 = f };
+         } else {
+             var f: [3]Fp8 = undefined;
+             for (&f, projections, shapes) |*p, proj, nk| {
+@@ -417,7 +480,7 @@ pub fn scenario(gpu: check.Gpu, a: std.mem.Allocator, m: *Model, s: cuda.Stream,
+     std.debug.print("RESULT {s}: {d} of {d} rows route to other experts or slots than the float64 reference's\n", .{ what, differ, rows });
+     try check.expect(differ == 0 or !exact_routing, "{s}: exact router logits route every row as the reference", .{what});
+     try check.expect(differ < rows, "{s}: no row routes as the reference", .{what});
+-    if (sy.experts == .fp4) try compare(what, io.outs[0], want, tol, same) else try distance(what, io.outs[0], want, same);
++    if (sy.experts == .fp8) try distance(what, io.outs[0], want, same) else try compare(what, io.outs[0], want, tol, same);
+     if (other) |o| {
+         try reference(a, o, x, picks, want, tol);
+         var name: [128]u8 = undefined;
+@@ -440,3 +503,33 @@ test "a non-finite output or reference on a row the routing mask leaves out stil
+     try std.testing.expectError(error.TestFailed, compare("masked infinite reference", std.mem.sliceAsBytes(&got), &want, &tol, &same));
+     try std.testing.expectError(error.TestFailed, distance("masked infinite reference", std.mem.sliceAsBytes(&got), &want, &same));
+ }
++
++test "Int3 planes decode to the E2M1 values of their sign, hi and lo bits, negative zero included" {
++    const a = std.testing.allocator;
++    const n = 4;
++    const k = 32; // two blocks of 16 inputs a row, 12 bytes
++    var p: Int3 = try .alloc(a, n, k);
++    defer a.free(p.codes);
++    defer a.free(p.scales);
++    defer a.free(p.global);
++    @memset(p.scales, 0x38); // e4m3 1.0
++    @memset(p.global, 1);
++    @memset(p.codes, 0);
++    // expert 0 row 0 block 0: one input per (sign, hi, lo) combination; bytes are the three u16 planes
++    p.codes[0] = 0b1111_0000; // sign on inputs 4..7
++    p.codes[2] = 0b1100_1100; // hi on inputs 2, 3, 6, 7
++    p.codes[4] = 0b1010_1010; // lo on inputs 1, 3, 5, 7
++    var out: [n * k]f64 = undefined;
++    p.dequant(0, &out);
++    const want = [8]f64{ 0, 2, 4, 6, 0, -2, -4, -6 }; // input 4 is sign alone: negative zero
++    for (want, 0..) |w, c| try std.testing.expectEqual(w, out[c]);
++    try std.testing.expect(std.math.signbit(out[4])); // E2M1 0x8 keeps its sign, unlike a true zero
++    for (out[8..]) |v| try std.testing.expectEqual(@as(f64, 0), v);
++    // another expert, another row: input 31 sits at bit 15 of its block's u16 planes
++    const at = (1 * n + 2) * (3 * k / 8) + 6; // expert 1 row 2 block 1
++    p.codes[at + 1] = 0x80; // sign u16 high byte, bit 7 -> input 31 sign
++    p.codes[at + 5] = 0x80; // lo u16 high byte, bit 7 -> input 31 lo
++    p.dequant(1, &out);
++    try std.testing.expectEqual(@as(f64, -2), out[2 * k + 31]);
++    for (out[2 * k + 16 .. 2 * k + 31]) |v| try std.testing.expectEqual(@as(f64, 0), v);
++}
+-- 
+2.54.0 (Apple Git-157)
+

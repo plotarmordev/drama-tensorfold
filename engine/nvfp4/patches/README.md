@@ -10,6 +10,7 @@ selected patch exactly once, verifies its digest, then applies the series.
 | `0002-speech-sampling-controls.patch` | Request sampling through whole/streamed, reference, CFG and long-form redraw paths | [TensorFold #6](https://github.com/plotarmordev/TensorFold/pull/6) |
 | `0003-dialogue-speakers.patch` | Canonical speaker IDs and continuation across long-form splits/history/redraws | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
 | `0004-remove-unused-redraw-salt.patch` | Remove the unused seed-salt helper superseded by request sampling | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
+| `0005-int3-routed-experts.patch` | Int3 routed experts (3.5 bits) in the NVFP4 expert kernel; GPTQ packer `--mode int3` from the FP8 originals | this repo |
 
 Patch 0002 adds [request sampling](../../../recipe/README-sampling.md). Each
 long-form segment starts with the supplied seed; its retries add their own
@@ -22,6 +23,11 @@ exercise a hard cut inside long words with explicit sampling and an exact seed.
 
 Patch 0004 removes `Redraws.salt`, whose two callers moved to the request
 sampling implementation in patch 0002. It changes no live sampling path.
+
+Patch 0005 reads a layer whose gate codes are `[n, 3k/8]` bytes as int3: per 16 inputs, three little-endian
+u16 planes (sign, hi, lo) for E2M1 magnitudes 0, 2, 4, 6, under NVFP4's E4M3 block-16 scales and FP32 global.
+`tools/zig/drama_nvfp4_gptq.py --mode int3 --provenance nvfp4-provenance.json` quantizes the FP8 originals
+with each layer's recorded GPTQ rows, kappa and damping. NVFP4 layers decode through unchanged kernels.
 
 Protected constructs are complete model special tokens, balanced bracketed
 spans and correctly nested, exact-name ASCII tags without attributes. Unclosed

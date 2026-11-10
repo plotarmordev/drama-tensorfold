@@ -4,6 +4,11 @@
 
 ### Added
 
+- [`recipe/exl3_experts.py`](recipe/exl3_experts.py) quantizes the 5,900 kept routed experts to EXL3 at 3.0 and
+  2.5 bits from the FP8 originals, with TensorFold's CPU `tf-exl3-encode` and per-expert Hessians from the Mac
+  calibration rows. The run resumes after a stop, and each bitrate's `exl3-provenance.json` records its inputs,
+  settings, sizes and per-layer Hessian error against the published NVFP4 experts. On an eight-expert sample, 3.0 bits
+  is 3–130× NVFP4's error at 68 % of its bytes.
 - [`recipe/calibrate_experts.py`](recipe/calibrate_experts.py) captures the per-expert calibration rows for the
   EXL3 quant on a Mac, from the FP8 originals, with no CUDA, torch or Spark: full-model patch
   [`0001`](engine/patches/0001-drama3-calibration-rows.patch) adds Metal `drama3-generate --calibration-rows`,

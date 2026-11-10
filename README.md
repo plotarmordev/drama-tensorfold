@@ -252,6 +252,36 @@ ones (at least 14 rows each, 1 % under 1,005). The 12 without rows are in layer 
 the NVFP4 build's own calibration also gave them none, so the router does not pick them. The `err_h` ratio over
 1,208 tensors: median 1.006, 5th–95th percentile 0.991–1.027.
 
+### EXL3 routed experts
+
+```sh
+python3 recipe/exl3_experts.py --encoder TENSORFOLD/zig-out/bin/tf-exl3-encode   # about 85 h, resumable
+```
+
+quantizes the 5,900 experts the pruned quant keeps to EXL3 at 3.0 and 2.5 bits per weight, from the FP8 originals
+(not from NVFP4), with TensorFold's CPU encoder `tf-exl3-encode` (TensorFold card 23; no CUDA or torch). The
+encoder checks that its written trellis reloads and decodes bit for bit. Each expert's Hessians come from the
+calibration rows above: H = XᵀX / n over the rows routed to it, and for `down_proj` the same over SwiGLU(gate, up)
+of the original weights. The 12 layer-36 experts without rows use all of their layer's rows. Finished experts stay in
+`drama3-exl3-experts/work`, so a stopped run resumes where it left off. Each finished layer becomes one shard in
+`drama3-exl3-experts/exl3-3.0/` and `exl3-2.5/`, holding only the expert groups (`trellis`, `suh`, `svh`, `mul1`).
+Each folder also gets an index and `exl3-provenance.json`: input paths and hashes, encoder commit and hash, settings,
+bytes against the NVFP4 experts, and per layer and projection `trace((W − Q) H (W − Q)ᵀ)` for EXL3 and for the
+published NVFP4 expert on the same H.
+
+Eight experts on 11 Nov (the median-row and most-routed kept expert of layers 0, 13, 26 and 39), EXL3 error over the
+published NVFP4's:
+
+| bits | gate | up | down | per expert on disk | seconds per expert |
+|---|---|---|---|---|---|
+| 3.0 | 7–133 | 6–112 | 3.3–40 | 1.197 MB | 28–30 |
+| 2.5 | 12–223 | 11–218 | 5.8–69 | 1.000 MB | 24 |
+
+NVFP4's experts take 1.769 MB each. The encoder matches its own round-to-nearest NVFP4 at 3.0 bits (1.04× on layer 0
+expert 117 `gate_proj`). The published NVFP4 is GPTQ'd, though, and its error lies along directions the calibration
+H barely weights. `tf-exl3-encode` weights only H's diagonal, with no LDLQ feedback, so it cannot do the same; that
+gap, not the bitrate, sets these ratios.
+
 ## Legacy: the patched engine
 
 Before upstream shipped Drama 3, this recipe built its own port: 59 patches on TensorFold `c7137bb3`, last at

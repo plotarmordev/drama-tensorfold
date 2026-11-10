@@ -1,4 +1,4 @@
-From d508e140cd8ad3e72adf85ca247a3e0a7dc7e7a9 Mon Sep 17 00:00:00 2001
+From 5968d5141e25d10623e3f805417e302848f86e6d Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 13:09:45 +0800
 Subject: [PATCH] drama: int3 routed experts (3.5 bits) in the CUDA NVFP4
@@ -23,8 +23,8 @@ in quant-provenance.json, so the packer's files assemble into a checkpoint the
 loader stages as int3.
 ---
  docs/quantization.md                          |  28 +++-
- tools/zig/drama_nvfp4_gptq.py                 | 130 ++++++++++++-----
- tools/zig/drama_nvfp4_gptq_test.py            |  53 +++++++
+ tools/zig/drama_nvfp4_gptq.py                 | 133 +++++++++++++-----
+ tools/zig/drama_nvfp4_gptq_test.py            |  59 ++++++++
  zig/kernels/cuda/modelopt_pack.cu             |  36 ++++-
  zig/kernels/cuda/nvfp4_experts.cu             |  66 +++++++--
  zig/src/core/quant/nvfp4.zig                  |  47 ++++++-
@@ -39,7 +39,7 @@ loader stages as int3.
  zig/src/families/drama/quant_provenance.zig   |   7 +-
  zig/tests/cuda/drama_nvfp4_moe_tests.zig      | 100 ++++++++++++-
  zig/tests/cuda/drama_nvfp4_ref.zig            | 133 +++++++++++++++---
- 17 files changed, 881 insertions(+), 216 deletions(-)
+ 17 files changed, 890 insertions(+), 216 deletions(-)
 
 diff --git a/docs/quantization.md b/docs/quantization.md
 index 4719a9b39..5c9f37820 100644
@@ -89,7 +89,7 @@ index 4719a9b39..5c9f37820 100644
    0.9). Without a GPU the same kernels run in Triton's interpreter, which is fast enough only for the tests.
  - **Rows.** `rows.json` (`drama-probe-rows/1`) must carry the source's config.json SHA-256 and declare R rows of
 diff --git a/tools/zig/drama_nvfp4_gptq.py b/tools/zig/drama_nvfp4_gptq.py
-index 1af201c73..166b7dbc5 100755
+index 1af201c73..17d639c58 100755
 --- a/tools/zig/drama_nvfp4_gptq.py
 +++ b/tools/zig/drama_nvfp4_gptq.py
 @@ -1,5 +1,5 @@
@@ -270,17 +270,20 @@ index 1af201c73..166b7dbc5 100755
  
  
  def decode(name, codes, scale):
-@@ -280,20 +291,50 @@ def mean_of(errors):
+@@ -280,20 +291,53 @@ def mean_of(errors):
      return sum(defined) / len(defined) if defined else math.nan
  
  
 -def encode_layer(src, rows, layer, device):
 +def provenance(path):
-+    """Read GPTQ settings, not the converter's top-level kappa; rows are routed counts, not row IDs."""
++    """GPTQ settings by layer from tf-drama-quant's quant-provenance.json (experts.layer_sources) or a Phase 1
++    nvfp4-provenance.json (layer_sources at the top); not the converter's top-level kappa; rows are routed counts."""
 +    raw = path.read_bytes()
 +    doc = json.loads(raw)
 +    layers = {}
-+    for entry in doc["layer_sources"]:
++    for entry in doc["experts"]["layer_sources"] if "experts" in doc else doc["layer_sources"]:
++        if entry["source"] != "encoded":
++            continue  # an RTN layer has no GPTQ statistics: main refuses a request for it as missing
 +        layer = entry["layer"]
 +        settings = json.loads(entry["metadata"]["gptq"])
 +        rows, kappa, damping = (settings[key] for key in ("rows", "kappa", "damping"))
@@ -324,7 +327,7 @@ index 1af201c73..166b7dbc5 100755
      errors = [(output_error(gate, q[:, :inner], hess), output_error(gate, rtn[:, :inner], hess)),
                (output_error(up, q[:, inner:], hess), output_error(up, rtn[:, inner:], hess))]
      del rtn
-@@ -301,8 +342,8 @@ def encode_layer(src, rows, layer, device):
+@@ -301,8 +345,8 @@ def encode_layer(src, rows, layer, device):
      del q
      # down: C3's uniform prior, the expert's mean diagonal (an expert's act channels are its own)
      mean = torch.where(count > 0, hess.diagonal(dim1=1, dim2=2).sum(1) / (inner * count.clamp(min=1)), 1.0)
@@ -335,7 +338,7 @@ index 1af201c73..166b7dbc5 100755
      errors.append((output_error(down, q, hess), output_error(down, rtn, hess)))
      parts = [(gu_nib[:, :inner], gu_codes[:, :inner]), (gu_nib[:, inner:], gu_codes[:, inner:]), (dn_nib, dn_codes)]
      tensors, table = {}, {}
-@@ -316,8 +357,10 @@ def encode_layer(src, rows, layer, device):
+@@ -316,8 +360,10 @@ def encode_layer(src, rows, layer, device):
              table[name + "weight"] = {"gptq": err[e], "rtn": base[e]}
      prior = {"gate_up": "pooled: sum of x x^T over all rows / R", "down": "uniform: the expert's mean diagonal times I"}
      # one key: safetensors writes metadata keys in hash order, which differs from run to run
@@ -348,7 +351,7 @@ index 1af201c73..166b7dbc5 100755
      means = ", ".join(f"{p} {mean_of(e):.4f}/{mean_of(r):.4f}" for p, (e, r) in zip(PROJECTIONS, errors))
      return tensors, metadata, f"{len(x)} rows, mean output error GPTQ/RTN {means}"
  
-@@ -328,11 +371,23 @@ def main():
+@@ -328,11 +374,23 @@ def main():
      parser.add_argument("rows", type=Path, help="tf-drama-probe --rows DIR")
      parser.add_argument("out", type=Path, help="gets layer-LL.safetensors for every layer")
      parser.add_argument("--layers", default=",".join(map(str, range(LAYERS))), help="comma separated, default all")
@@ -372,7 +375,7 @@ index 1af201c73..166b7dbc5 100755
      # cuBLAS repeats its sums bit for bit only with a fixed workspace
      os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
      torch.use_deterministic_algorithms(True)
-@@ -343,7 +398,8 @@ def main():
+@@ -343,7 +401,8 @@ def main():
          if device == "cuda":
              torch.cuda.reset_peak_memory_stats()
          try:
@@ -383,10 +386,10 @@ index 1af201c73..166b7dbc5 100755
              sys.exit(f"drama_nvfp4_gptq.py: layer {layer}: {e}")
          path = args.out / f"layer-{layer:02d}.safetensors"
 diff --git a/tools/zig/drama_nvfp4_gptq_test.py b/tools/zig/drama_nvfp4_gptq_test.py
-index 05216c21f..90f8f4191 100644
+index 05216c21f..94d98329e 100644
 --- a/tools/zig/drama_nvfp4_gptq_test.py
 +++ b/tools/zig/drama_nvfp4_gptq_test.py
-@@ -354,6 +354,59 @@ class RowsTests(unittest.TestCase):
+@@ -354,6 +354,65 @@ class RowsTests(unittest.TestCase):
                          q.routed(root, 0, 32, "c0ffee")
  
  
@@ -416,13 +419,19 @@ index 05216c21f..90f8f4191 100644
 +    def test_provenance_reads_gptq_settings_and_refuses_different_rows(self):
 +        picks = torch.arange(16).reshape(2, 8)
 +        settings = {"rows": [1] * 16 + [0] * 240, "kappa": 19, "damping": 0.025}
++        encoded = {"layer": 3, "source": "encoded", "file": "gptq/layer-03.safetensors", "sha256": "0" * 64,
++                   "metadata": {"gptq": json.dumps(settings | {"prior": {}, "output_error": {}})}}
++        layer_sources = [{"layer": 2, "source": "rtn", "format": "nvfp4"}, encoded | {"format": "nvfp4"}]
++        # tf-drama-quant's quant-provenance.json, and the published Phase 1 nvfp4-provenance.json, as each nests them
++        schemas = {"quant": {"schema_version": 1, "experts": {"mode": "nvfp4", "kappa": 64, "layer_sources": layer_sources}},
++                   "phase 1": {"schema_version": 1, "kappa": 64, "layer_sources": [encoded]}}
 +        with tempfile.TemporaryDirectory() as folder:
-+            path = Path(folder) / "provenance.json"
-+            path.write_text(json.dumps({"kappa": 64, "layer_sources": [
-+                {"layer": 3, "metadata": {"gptq": json.dumps(settings)}}]}))
-+            layers, digest = q.provenance(path)
-+            self.assertEqual(layers, {3: settings})
-+            self.assertEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
++            for schema, doc in schemas.items():
++                path = Path(folder) / f"{schema}.json"
++                path.write_text(json.dumps(doc))
++                layers, digest = q.provenance(path)
++                self.assertEqual(layers, {3: settings}, schema)
++                self.assertEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
 +            q.check_rows(picks, layers[3], 3)
 +            with self.assertRaisesRegex(ValueError, "rows counts differ"):
 +                q.check_rows(picks + 1, layers[3], 3)

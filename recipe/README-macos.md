@@ -61,6 +61,27 @@ The launcher verifies the directory against the manifest of the selected quant:
 `plotarmordev/drama-3-NVFP4-Pruned-5900`) or `checksums/nvfp4.sha256` for `--weights nvfp4`
 (`drama3-nvfp4-trim7369-v1`). A changed file is refused rather than repaired.
 
+### BF16 codec
+
+`codec_bf16.py` converts the codec's 535 FP32 tensors to BF16 and preserves its three existing BF16 tensors and
+three boolean buffers. It needs PyTorch in an isolated environment, not in the launcher's Python environment:
+
+```sh
+python3 -m venv .venv-codec
+.venv-codec/bin/python -m pip install torch
+.venv-codec/bin/python recipe/codec_bf16.py /path/to/fp32/codec.pth /path/to/bf16/codec.pth
+```
+
+The pinned checkpoint measured 1,871,099,728 bytes FP32 and 1,088,191,935 bytes BF16, a saving of 782,907,793
+bytes (0.729 GiB). The Metal engine widens the tensors to FP32 while loading, so this is a disk saving, not a
+resident-memory saving. Fixed-code decoding passed the 35 dB SNR gate at 42.22 dB, and both fixed-code and full
+BF16 round trips had zero WER on the recorded seven-second speech fixture. Encoder code agreement was 93.80%
+(below the 97% gate) and full-round-trip SNR was 26.51 dB, so this is not a general quality-equivalence claim;
+see [`results/codec-bf16.json`](../results/codec-bf16.json).
+
+The published manifests still pin the FP32 codec. A converted directory therefore requires legacy explicit
+`--native-bin`/`--checkpoint` mode, without `--weights`; do not replace a pinned checkpoint's codec in place.
+
 [`results/macos-nvfp4-quants.json`](../results/macos-nvfp4-quants.json) records both quants on an
 M5 Ultra beside a resident 171 GB local model. Both load and speak (48/48 corpus requests, warm
 RTF 0.50). **Serve `drama3-nvfp4-t5900cover-v1`**: 25.0 GiB wired between requests against

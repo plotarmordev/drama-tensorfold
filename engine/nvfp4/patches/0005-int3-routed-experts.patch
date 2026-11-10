@@ -1,4 +1,4 @@
-From 88e6fb8f58986c0958247a9238d9b0b855cc2a0f Mon Sep 17 00:00:00 2001
+From d508e140cd8ad3e72adf85ca247a3e0a7dc7e7a9 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 13:09:45 +0800
 Subject: [PATCH] drama: int3 routed experts (3.5 bits) in the CUDA NVFP4
@@ -16,25 +16,59 @@ NVFP4 SwiGLU.
 drama_nvfp4_gptq.py --mode int3 --provenance nvfp4-provenance.json quantizes
 the FP8 originals with each layer's published GPTQ kappa, damping and routed
 counts, refusing rows whose counts differ, and records the provenance sha256.
+
+tf-drama-quant --encoded admits a layer whose codes are all int3, measures it
+from its planes, writes it at [n, 3k/8] byte for byte and records its format
+in quant-provenance.json, so the packer's files assemble into a checkpoint the
+loader stages as int3.
 ---
- docs/quantization.md                        |  13 ++
- tools/zig/drama_nvfp4_gptq.py               | 130 +++++++++++++------
- tools/zig/drama_nvfp4_gptq_test.py          |  53 ++++++++
- zig/kernels/cuda/modelopt_pack.cu           |  36 +++++-
- zig/kernels/cuda/nvfp4_experts.cu           |  66 ++++++++--
- zig/src/cuda/experts.zig                    |  98 +++++++++++++--
- zig/src/cuda/modelopt.zig                   |  13 +-
- zig/src/families/drama/backbone_fp4.zig     | 117 ++++++++++++++++-
- zig/src/families/drama/backbone_weights.zig |  70 ++++++-----
- zig/tests/cuda/drama_nvfp4_moe_tests.zig    | 100 ++++++++++++++-
- zig/tests/cuda/drama_nvfp4_ref.zig          | 133 +++++++++++++++++---
- 11 files changed, 702 insertions(+), 127 deletions(-)
+ docs/quantization.md                          |  28 +++-
+ tools/zig/drama_nvfp4_gptq.py                 | 130 ++++++++++++-----
+ tools/zig/drama_nvfp4_gptq_test.py            |  53 +++++++
+ zig/kernels/cuda/modelopt_pack.cu             |  36 ++++-
+ zig/kernels/cuda/nvfp4_experts.cu             |  66 +++++++--
+ zig/src/core/quant/nvfp4.zig                  |  47 ++++++-
+ zig/src/cuda/experts.zig                      |  98 +++++++++++--
+ zig/src/cuda/modelopt.zig                     |  13 +-
+ .../families/drama/backbone_compact_test.zig  |  60 ++++++--
+ zig/src/families/drama/backbone_fp4.zig       | 111 ++++++++++++++-
+ zig/src/families/drama/backbone_weights.zig   |  70 ++++-----
+ zig/src/families/drama/nvfp4_encoded.zig      |  16 ++-
+ zig/src/families/drama/nvfp4_encoded_test.zig | 122 ++++++++--------
+ zig/src/families/drama/quant_convert.zig      |   7 +-
+ zig/src/families/drama/quant_provenance.zig   |   7 +-
+ zig/tests/cuda/drama_nvfp4_moe_tests.zig      | 100 ++++++++++++-
+ zig/tests/cuda/drama_nvfp4_ref.zig            | 133 +++++++++++++++---
+ 17 files changed, 881 insertions(+), 216 deletions(-)
 
 diff --git a/docs/quantization.md b/docs/quantization.md
-index 4719a9b39..60de54bbd 100644
+index 4719a9b39..5c9f37820 100644
 --- a/docs/quantization.md
 +++ b/docs/quantization.md
-@@ -207,6 +207,19 @@ checkpoint: `tf-drama-quant --encoded DIR` assembles them into one. Like `tf-dra
+@@ -110,14 +110,15 @@ zig-out/bin/tf-drama-quant drama-3/ drama-3-nvfp4/ [--stats stats.safetensors] [
+ - **`--keep-fp8`.** The listed layers' experts stay FP8, byte for byte.
+ - **`--encoded`.** A directory of `layer-LL.safetensors` files, each holding exactly one layer's C1 tensors under their
+   checkpoint names (as an external encoder such as a GPTQ tool writes them), supplies those layers byte for byte instead
+-  of encoding them. Each file is checked first: every expert and projection present at the source's shapes, nothing
+-  else, scale bytes finite and non-negative, globals finite and positive. A layer both encoded and kept FP8 is refused.
+-  Their errors are still measured against the FP8 source, so both kinds of layer compare in one table.
++  of encoding them. Each file is checked first: every expert and projection present at the source's shapes, its codes
++  all NVFP4 `[n, k/2]` or all int3 `[n, 3k/8]`, nothing else, scale bytes finite and non-negative, globals finite and
++  positive. A layer both encoded and kept FP8 is refused. Their errors are still measured against the FP8 source, so
++  both kinds of layer compare in one table.
+ - **Provenance.** `quant-provenance.json` records under `experts` (`mode` `nvfp4`) the source, config.json's SHA-256,
+-  the tool's commit, the statistics file and its class mixture, the layers converted (each `rtn` or `encoded`, with the
+-  file's SHA-256 and metadata), the wall time and, per projection, amax, global, `rel` (‖W − Q‖ / ‖W‖) and `err_h`
+-  (the same weighed by h: an expert-input error proxy, not the layer's output error), with their mean and maximum per
+-  layer and projection.
++  the tool's commit, the statistics file and its class mixture, the layers converted (each `rtn` or `encoded`, with its
++  `format`, `nvfp4` or `int3`, and an encoded file's SHA-256 and metadata), the wall time and, per projection, amax,
++  global, `rel` (‖W − Q‖ / ‖W‖) and `err_h` (the same weighed by h: an expert-input error proxy, not the layer's output
++  error), with their mean and maximum per layer and projection.
+ - **Measured.** On a GB10 (20 CPU cores, sharing them with another job at nice 19) the 40-layer conversion without
+   statistics took 9 min 10 s at 7.2 GiB peak resident memory. The shards went from 36.88 to 23.76 GiB; `rel` averaged
+   0.0811 (0.0517 to 0.0824 per projection).
+@@ -207,6 +208,19 @@ checkpoint: `tf-drama-quant --encoded DIR` assembles them into one. Like `tf-dra
  venv/bin/python tools/zig/drama_nvfp4_gptq.py drama-3/ rows/ gptq/ [--layers 0,17,39]
  ```
  
@@ -610,6 +644,87 @@ index 8dff420a7..7d9007987 100644
  // The prompt form's tile: 16 RT rows a warp, WM x WN warps (BM pairs of one item by WN 32-column blocks a CTA).
  template <int M, int RT, int WM, int WN>
  struct Prompt4 {
+diff --git a/zig/src/core/quant/nvfp4.zig b/zig/src/core/quant/nvfp4.zig
+index 5114b826a..7c1007421 100644
+--- a/zig/src/core/quant/nvfp4.zig
++++ b/zig/src/core/quant/nvfp4.zig
+@@ -14,6 +14,26 @@ pub fn e2m1(n: u8) f64 {
+     return (if (n & 8 != 0) @as(f64, -1) else 1) * mag[n & 7];
+ }
+ 
++/// How a projection's e2m1 codes are stored: NVFP4's nibble pairs, or int3's sign, hi, lo bit planes per 16 inputs
++/// (magnitudes 0, 2, 4, 6) under the same e4m3 scales and global.
++pub const Format = enum { nvfp4, int3 };
++
++/// Code bytes a row of `k` inputs takes at `format`.
++pub fn codeCols(k: usize, format: Format) usize {
++    return if (format == .int3) 3 * k / 8 else k / 2;
++}
++
++/// Column `c`'s e2m1 nibble in a row of codes at `format`; an int3 one has bit 2 hi|lo, bit 1 hi, bit 0 hi&lo.
++pub fn nibble(row: []const u8, c: usize, format: Format) u8 {
++    if (format == .nvfp4) return if (c & 1 == 0) row[c / 2] & 0xF else row[c / 2] >> 4;
++    const at = (c / group) * 6 + (c % group) / 8;
++    const bit: u3 = @intCast(c % 8);
++    const sign = row[at] >> bit & 1;
++    const hi = row[at + 2] >> bit & 1;
++    const lo = row[at + 4] >> bit & 1;
++    return sign << 3 | (hi | lo) << 2 | hi << 1 | (hi & lo);
++}
++
+ /// As stored: `weight` u8 [..., N, K / 2] (even columns low nibbles), `scale` e4m3 [..., N, K / 16], `global` a matrix.
+ pub const Host = struct { weight: Tensor, scale: Tensor, global: []const f32 };
+ 
+@@ -138,12 +158,13 @@ pub fn encode(w: []const f64, h: []const f64, n: usize, k: usize, codes: []u8, s
+         scales[at / group] = q.scale;
+         for (0..group / 2) |j| codes[at / 2 + j] = q.nibbles[2 * j] | q.nibbles[2 * j + 1] << 4;
+     };
+-    return measure(w, h, n, k, codes, scales, g);
++    return measure(w, h, n, k, codes, scales, g, .nvfp4);
+ }
+ 
+-/// C2 step 5 for any NVFP4 matrix: W [n][k] against what `reference` decodes, row-major, increasing columns.
+-pub fn measure(w: []const f64, h: []const f64, n: usize, k: usize, codes: []const u8, scales: []const u8, g: f32) Summary {
+-    std.debug.assert(k % group == 0 and w.len == n * k and h.len == k and codes.len == n * k / 2 and scales.len == n * k / group);
++/// C2 step 5 for any NVFP4 or int3 matrix: W [n][k] against its decoded codes, row-major, increasing columns.
++pub fn measure(w: []const f64, h: []const f64, n: usize, k: usize, codes: []const u8, scales: []const u8, g: f32, format: Format) Summary {
++    const cols = codeCols(k, format);
++    std.debug.assert(k % group == 0 and w.len == n * k and h.len == k and codes.len == n * cols and scales.len == n * k / group);
+     var out: Summary = .{ .global = g };
+     for (w) |x| out.amax = @max(out.amax, @abs(x));
+     for (0..n) |r| for (0..k / group) |b| {
+@@ -151,8 +172,7 @@ pub fn measure(w: []const f64, h: []const f64, n: usize, k: usize, codes: []cons
+         const s = fp8.e4m3(scales[at / group]);
+         for (0..group) |i| {
+             const x = w[at + i];
+-            const byte = codes[(at + i) / 2];
+-            const d = x - e2m1(if (i & 1 == 0) byte & 0xF else byte >> 4) * s * g;
++            const d = x - e2m1(nibble(codes[r * cols ..][0..cols], b * group + i, format)) * s * g;
+             const hi = h[b * group + i];
+             out.err_h += hi * d * d;
+             out.ref_h += hi * x * x;
+@@ -185,6 +205,21 @@ test "an NVFP4 stack against hand-decoded values" {
+     try std.testing.expectEqual(@as(f64, 0), out[2]);
+ }
+ 
++test "int3 planes give the packer's hand-checked values; their errors measure as the decoded matrix's" {
++    // drama_nvfp4_gptq_test.py's block, its e2m1 values 0 2 4 6 0 -2 -4 -6 6 4 2 0 -6 -4 -2 0, twice
++    const block = [6]u8{ 0xE0, 0x70, 0xCC, 0x33, 0xAA, 0x55 };
++    const want = [16]f64{ 0, 2, 4, 6, 0, -2, -4, -6, 6, 4, 2, 0, -6, -4, -2, 0 };
++    const codes = block ++ block;
++    for (0..32) |c| try std.testing.expectEqual(want[c % 16], e2m1(nibble(&codes, c, .int3)));
++    const scales = [_]u8{ 0x38, 0x40 }; // 1, 2
++    var w: [32]f64 = undefined;
++    for (&w, 0..) |*x, c| x.* = want[c % 16] * fp8.e4m3(scales[c / 16]) * 0.5;
++    const h: [32]f64 = @splat(1);
++    try std.testing.expectEqual(@as(f64, 0), measure(&w, &h, 1, 32, &codes, &scales, 0.5, .int3).err);
++    w[3] += 1;
++    try std.testing.expectEqual(@as(f64, 1), measure(&w, &h, 1, 32, &codes, &scales, 0.5, .int3).err);
++}
++
+ test "a reference refuses mismatched expert stacks" {
+     const codes: [16]u8 = @splat(0x22);
+     const scales: [2]u8 = @splat(0x38);
 diff --git a/zig/src/cuda/experts.zig b/zig/src/cuda/experts.zig
 index cfd14eb74..6c319e856 100644
 --- a/zig/src/cuda/experts.zig
@@ -827,18 +942,149 @@ index 4338ef4db..e0873ed97 100644
      }
  };
  
+diff --git a/zig/src/families/drama/backbone_compact_test.zig b/zig/src/families/drama/backbone_compact_test.zig
+index a74ad6f00..377240c77 100644
+--- a/zig/src/families/drama/backbone_compact_test.zig
++++ b/zig/src/families/drama/backbone_compact_test.zig
+@@ -10,6 +10,7 @@ const Source = @import("backbone_source.zig").Source;
+ const Stager = @import("stager.zig").Stager;
+ 
+ const fp8 = core.quant.fp8;
++const nvfp4 = core.quant.nvfp4;
+ const Allocator = std.mem.Allocator;
+ const testing = std.testing;
+ 
+@@ -99,11 +100,11 @@ fn fp8Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
+     return .{ .data = data, .wins = wins.items };
+ }
+ 
+-/// Layer 3 with 256 NVFP4 experts: codes, valid e4m3 scales and positive globals in overlapping windows.
+-fn fp4Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
++/// Layer 3 with 256 NVFP4 or int3 experts: codes, valid e4m3 scales and positive globals in overlapping windows.
++fn fp4Layer(a: Allocator, format: nvfp4.Format) !struct { data: []u8, wins: []Win } {
+     var prng = std.Random.DefaultPrng.init(0xF4);
+     const rnd = prng.random();
+-    const codes_len = I * H / 2 + 3 * E * 4096;
++    const codes_len = I * nvfp4.codeCols(H, format) + 3 * E * 4096;
+     const scales_len = I * H / 16 + 3 * E * 64;
+     const data = try a.alloc(u8, codes_len + scales_len + 3 * E * 4);
+     rnd.bytes(data[0..codes_len]);
+@@ -113,8 +114,9 @@ fn fp4Layer(a: Allocator) !struct { data: []u8, wins: []Win } {
+     for (0..E) |e| for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }, 0..) |p, j| {
+         const n: usize, const k: usize = if (j < 2) .{ I, H } else .{ H, I };
+         const at = e * 3 + j;
++        const cols = nvfp4.codeCols(k, format);
+         const base = try std.fmt.allocPrint(a, pre ++ "experts.{d}.{s}.weight", .{ e, p });
+-        try wins.append(a, .{ .name = base, .dtype = "U8", .shape = try a.dupe(usize, &.{ n, k / 2 }), .at = at * 4096, .len = n * k / 2 });
++        try wins.append(a, .{ .name = base, .dtype = "U8", .shape = try a.dupe(usize, &.{ n, cols }), .at = at * 4096, .len = n * cols });
+         try wins.append(a, .{ .name = try std.fmt.allocPrint(a, "{s}_scale", .{base}), .dtype = "F8_E4M3", .shape = try a.dupe(usize, &.{ n, k / 16 }), .at = codes_len + at * 64, .len = n * k / 16 });
+         try wins.append(a, .{ .name = try std.fmt.allocPrint(a, "{s}_scale_2", .{base}), .dtype = "F32", .shape = &.{}, .at = codes_len + scales_len + at * 4, .len = 4 });
+     };
+@@ -277,15 +279,18 @@ const Fixture = struct {
+         return std.fs.path.join(f.arena_state.allocator(), &.{ f.root, sub });
+     }
+ 
+-    /// `src` compacted to the kept experts by tf-drama-quant, its map relisted for 40 layers as a full run writes it.
+-    fn compacted(f: *Fixture, src: []const u8, dst: []const u8) !void {
++    /// `src` compacted to the kept experts by tf-drama-quant with `o` (experts kept unless it says otherwise), its map
++    /// relisted for 40 layers as a full run writes it.
++    fn compacted(f: *Fixture, src: []const u8, dst: []const u8, o: quant.Options) !void {
+         const a = f.arena_state.allocator();
+         var mask: std.ArrayList(u8) = .empty;
+         try mask.print(a, "{{\"{d}\": [", .{layer});
+         for (kept, 0..) |e, i| try mask.print(a, "{s}{d}", .{ if (i == 0) "" else ", ", e });
+         try mask.appendSlice(a, "]}");
+         try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "mask.json", .data = mask.items });
+-        _ = try quant.convert(testing.allocator, testing.io, try f.path(src), try f.path(dst), .{ .experts = .keep, .compact_experts = try f.path("mask.json") });
++        var with_mask = o;
++        with_mask.compact_experts = try f.path("mask.json");
++        _ = try quant.convert(testing.allocator, testing.io, try f.path(src), try f.path(dst), with_mask);
+         const index_path = try std.fs.path.join(a, &.{ dst, "model.safetensors.index.json" });
+         const index = try std.json.parseFromSliceLeaky(std.json.Value, a, try f.tmp.dir.readFileAlloc(testing.io, index_path, a, .limited(1 << 24)), .{});
+         const map = index.object.get("metadata").?.object.get(compact.experts_key).?.object;
+@@ -311,7 +316,7 @@ test "FP8: every expert held puts the full load's bytes; held experts route, and
+     const layer3 = try fp8Layer(a);
+     try writeShard(a, f.tmp.dir, "full", layer3.data, layer3.wins, "");
+     try writeShard(a, f.tmp.dir, "all", layer3.data, layer3.wins, try mapMeta(a, null));
+-    try f.compacted("full", "small");
++    try f.compacted("full", "small", .{ .experts = .keep });
+     var full = try Loaded.open(a, f.root, "full");
+     defer full.close();
+     var all = try Loaded.open(a, f.root, "all");
+@@ -363,9 +368,9 @@ test "NVFP4: the compact layer stages each held expert's codes, scales and globa
+     var f = try Fixture.init();
+     defer f.deinit();
+     const a = f.arena_state.allocator();
+-    const layer3 = try fp4Layer(a);
++    const layer3 = try fp4Layer(a, .nvfp4);
+     try writeShard(a, f.tmp.dir, "full", layer3.data, layer3.wins, "");
+-    try f.compacted("full", "small");
++    try f.compacted("full", "small", .{ .experts = .keep });
+     var full = try Loaded.open(a, f.root, "full");
+     defer full.close();
+     var small = try Loaded.open(a, f.root, "small");
+@@ -382,6 +387,41 @@ test "NVFP4: the compact layer stages each held expert's codes, scales and globa
+     };
+ }
+ 
++test "int3: GPTQ's layer from the FP8 originals assembles under --encoded into a checkpoint the loader stages as int3" {
++    var f = try Fixture.init();
++    defer f.deinit();
++    const a = f.arena_state.allocator();
++    const fp8_layer = try fp8Layer(a);
++    try writeShard(a, f.tmp.dir, "fp8", fp8_layer.data, fp8_layer.wins, "");
++    // the packer's output: every expert's int3 planes, scales and globals, a file of its own named for the layer
++    const encoded = try fp4Layer(a, .int3);
++    try writeShard(a, f.tmp.dir, "enc", encoded.data, encoded.wins, "");
++    try f.tmp.dir.rename("enc/model.safetensors", f.tmp.dir, "enc/layer-03.safetensors", testing.io);
++    for ([_][]const u8{ "model.safetensors.index.json", "config.json" }) |x| try f.tmp.dir.deleteFile(testing.io, try std.fs.path.join(a, &.{ "enc", x }));
++    try f.compacted("fp8", "int3", .{ .encoded = try f.path("enc") });
++    var int3 = try Loaded.open(a, f.root, "int3");
++    defer int3.close();
++    var enc = try core.safetensors.File.open(testing.allocator, testing.io, try f.path("enc/layer-03.safetensors"));
++    defer enc.close(testing.io);
++    // the checkpoint holds the packer's bytes at int3's [n, 3k / 8], and the loader puts them in the held slots
++    const globals = (try weights.putExperts(&int3.src, &int3.st, layer, int3.ids(), &device, staged)).?;
++    try testing.expectEqual(kept.len * 6, int3.st.copies.items.len);
++    for (kept, 0..) |e, s| for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }, [_][2]usize{ .{ I, H }, .{ I, H }, .{ H, I } }, 0..) |p, shape, j| {
++        const n, const k = shape;
++        const cols = nvfp4.codeCols(k, .int3);
++        const name = try std.fmt.allocPrint(a, pre ++ "experts.{d}.{s}.weight", .{ e, p });
++        const want = enc.get(name).?;
++        try testing.expectEqualSlices(u8, want.bytes, try int3.src.get(name, .u8, &.{ n, cols }));
++        const at = staged + j * weights.int3_part;
++        try testing.expectEqualSlices(u8, want.bytes, int3.at(at + s * n * cols));
++        try testing.expectEqualSlices(u8, enc.get(try std.fmt.allocPrint(a, "{s}_scale", .{name})).?.bytes, int3.at(at + E * n * cols + s * n * k / 16));
++        try testing.expectEqualSlices(u8, enc.get(try std.fmt.allocPrint(a, "{s}_scale_2", .{name})).?.bytes, std.mem.asBytes(&globals[j][s]));
++    };
++    const prov = try std.json.parseFromSliceLeaky(std.json.Value, a, try f.tmp.dir.readFileAlloc(testing.io, "int3/quant-provenance.json", a, .limited(1 << 26)), .{});
++    const source = prov.object.get("experts").?.object.get("layer_sources").?.array.items[0].object;
++    try testing.expectEqualStrings("int3", source.get("format").?.string);
++}
++
+ test "the loader refuses a map that leaves out a stored expert, and a mask beyond the held experts" {
+     var f = try Fixture.init();
+     defer f.deinit();
 diff --git a/zig/src/families/drama/backbone_fp4.zig b/zig/src/families/drama/backbone_fp4.zig
-index 3d0c55aea..8813dd0c5 100644
+index 3d0c55aea..ff8544574 100644
 --- a/zig/src/families/drama/backbone_fp4.zig
 +++ b/zig/src/families/drama/backbone_fp4.zig
-@@ -1,4 +1,5 @@
+@@ -1,25 +1,43 @@
 -//! One NVFP4 routed expert of a Drama checkpoint as C1 stores it (ModelOpt names), read and content-checked.
 +//! One NVFP4 or int3 routed expert of a Drama checkpoint as it is stored (ModelOpt names), read and content-checked.
 +//! The weight's shape chooses the format: codes [n][k / 2] is NVFP4, [n][3 * k / 8] int3's three bit planes.
  const std = @import("std");
++const nvfp4 = @import("core").quant.nvfp4;
  const cfg = @import("backbone_config.zig");
  const source = @import("backbone_source.zig");
-@@ -10,16 +11,37 @@ pub const projections = [3][]const u8{ "gate_proj", "up_proj", "down_proj" };
+ const prefix = @import("backbone_weights.zig").prefix;
+ 
+ const Source = source.Source;
++/// A layer's expert format on disk (the FP8 path takes f8_e4m3 weights).
++pub const Format = nvfp4.Format;
++pub const codeCols = nvfp4.codeCols;
+ 
+ pub const projections = [3][]const u8{ "gate_proj", "up_proj", "down_proj" };
  pub const shapes = [3][2]usize{ .{ cfg.expert_inner, cfg.hidden }, .{ cfg.expert_inner, cfg.hidden }, .{ cfg.hidden, cfg.expert_inner } };
  pub const parts = shapes.len;
  
@@ -848,14 +1094,6 @@ index 3d0c55aea..8813dd0c5 100644
  
 -/// Expert e of NVFP4 layer i, refused unless all nine tensors have C1's dtypes and shapes and content checks pass.
 -pub fn read(src: *Source, i: usize, e: usize) !Expert {
-+/// A layer's expert format on disk: NVFP4 or int3 (the FP8 path takes f8_e4m3 weights).
-+pub const Format = enum { nvfp4, int3 };
-+
-+/// Code bytes a row of `k` inputs takes at `format`: NVFP4 nibbles or int3's sign, hi, lo planes.
-+pub fn codeCols(k: usize, format: Format) usize {
-+    return if (format == .int3) 3 * k / 8 else k / 2;
-+}
-+
 +/// Expert e of layer i's format from its gate weight: u8 at [I, H / 2] is NVFP4, [I, 3H / 8] int3; a u8
 +/// of any other shape is refused (one layer holds one format), other dtypes leave the layer to FP8.
 +pub fn layerFormat(src: *const Source, i: usize, e: usize) !?Format {
@@ -880,7 +1118,7 @@ index 3d0c55aea..8813dd0c5 100644
          const scales = try std.fmt.bufPrint(&buf, prefix ++ "layers.{d}.mlp.experts.{d}.{s}.weight_scale", .{ i, e, p });
          x.scales[j] = try src.get(scales, .f8_e4m3, &.{ n, k / 16 });
          checkScales(x.scales[j]) catch |err| {
-@@ -74,7 +96,8 @@ test "an NVFP4 expert reads as C1 stores it; get refuses other dtypes, shapes an
+@@ -74,7 +92,8 @@ test "an NVFP4 expert reads as C1 stores it; get refuses other dtypes, shapes an
      try source.writeCheckpoint(gpa, io, dir, &t);
      var src = try Source.open(gpa, io, dir);
      defer src.close();
@@ -890,7 +1128,7 @@ index 3d0c55aea..8813dd0c5 100644
      try std.testing.expectEqual([parts]f32{ 1.5, 1.5, 1.5 }, x.global);
      try std.testing.expectEqual(@as(usize, 512 * 1024), x.codes[2].len);
      try std.testing.expectEqual(src.backbone - 4, src.used); // the unread four: load refuses with UnusedDramaTensors
-@@ -97,3 +120,85 @@ test "NVFP4 content checks: 0x7F and 0xFF and negative scale codes, non-positive
+@@ -97,3 +116,83 @@ test "NVFP4 content checks: 0x7F and 0xFF and negative scale codes, non-positive
      for ([_]f32{ 0x1p-140, 1e-3, 3.0e38 }) |g| _ = try globalOf(std.mem.asBytes(&g));
      for ([_]f32{ 0, -0.0, -1, std.math.inf(f32), -std.math.inf(f32), std.math.nan(f32) }) |g| try std.testing.expectError(error.BadDramaNvfp4Global, globalOf(std.mem.asBytes(&g)));
  }
@@ -918,8 +1156,6 @@ index 3d0c55aea..8813dd0c5 100644
 +    try std.testing.expect(try layerFormat(&src, 0, 0) == .int3);
 +    try std.testing.expectError(error.UnexpectedDramaTensor, layerFormat(&src, 0, 1));
 +    try std.testing.expect(try layerFormat(&src, 0, 2) == null);
-+    try std.testing.expectEqual(@as(usize, 24), codeCols(64, .int3));
-+    try std.testing.expectEqual(@as(usize, 32), codeCols(64, .nvfp4));
 +}
 +
 +test "an int3 expert reads fully; a layer whose projections mix int3 and NVFP4 shapes is refused" {
@@ -1135,6 +1371,304 @@ index d1907cb14..c9d8b5b45 100644
      return globals;
  }
  
+diff --git a/zig/src/families/drama/nvfp4_encoded.zig b/zig/src/families/drama/nvfp4_encoded.zig
+index 7a2bffd04..29055d48c 100644
+--- a/zig/src/families/drama/nvfp4_encoded.zig
++++ b/zig/src/families/drama/nvfp4_encoded.zig
+@@ -3,13 +3,14 @@ const std = @import("std");
+ const core = @import("core");
+ 
+ const st = core.safetensors;
++const nvfp4 = core.quant.nvfp4;
+ const Allocator = std.mem.Allocator;
+ const Io = std.Io;
+ 
+ pub const projections = [_][]const u8{ "gate_proj", "up_proj", "down_proj" };
+ 
+-/// A checked `layer-LL.safetensors`: its path, SHA-256 and `__metadata__` as written (null if it has none).
+-pub const Layer = struct { path: []const u8, sha256: [64]u8, metadata: ?std.json.Value };
++/// A checked `layer-LL.safetensors`: its path, SHA-256, code format and `__metadata__` as written (null if it has none).
++pub const Layer = struct { path: []const u8, sha256: [64]u8, format: nvfp4.Format, metadata: ?std.json.Value };
+ 
+ /// Source expert weight shapes [n, k] by full tensor name.
+ pub const Shapes = std.StringHashMapUnmanaged([2]usize);
+@@ -34,25 +35,30 @@ pub fn fileName(arena: Allocator, layer: usize) ![]const u8 {
+     return std.fmt.allocPrint(arena, "layer-{d:0>2}.safetensors", .{layer});
+ }
+ 
+-/// `dir`'s file of layer `l`: exactly C1's tensors of `experts` experts at the source's shapes; scales, globals valid.
++/// `dir`'s file of layer `l`: exactly C1's tensors of `experts` experts at the source's shapes, the codes of every one
++/// NVFP4 [n, k / 2] or int3 [n, 3k / 8] as expert 0's gate is; scales, globals valid.
+ pub fn check(gpa: Allocator, arena: Allocator, io: Io, dir: []const u8, l: usize, experts: usize, source: *const Shapes) !Layer {
+     const path = try std.fs.path.join(arena, &.{ dir, try fileName(arena, l) });
+     var file = try st.File.open(gpa, io, path);
+     defer file.close(io);
+     if (file.names.count() != experts * projections.len * 3) return error.EncodedTensorCount;
++    var format: ?nvfp4.Format = null;
+     for (0..experts) |e| for (projections) |p| {
+         const base = try std.fmt.allocPrint(arena, "model.language_model.layers.{d}.mlp.experts.{d}.{s}.", .{ l, e, p });
+         const n, const k = source.get(try std.fmt.allocPrint(arena, "{s}weight", .{base})) orelse return error.EncodedTensorMismatch;
+         const codes = file.get(try std.fmt.allocPrint(arena, "{s}weight", .{base})) orelse return error.EncodedTensorMismatch;
+         const scales = file.get(try std.fmt.allocPrint(arena, "{s}weight_scale", .{base})) orelse return error.EncodedTensorMismatch;
+         const global = file.get(try std.fmt.allocPrint(arena, "{s}weight_scale_2", .{base})) orelse return error.EncodedTensorMismatch;
+-        if (!codes.is(.u8, &.{ n, k / 2 }) or !scales.is(.f8_e4m3, &.{ n, k / 16 }) or !global.is(.f32, &.{})) return error.EncodedTensorMismatch;
++        format = format orelse for ([_]nvfp4.Format{ .nvfp4, .int3 }) |f| {
++            if (codes.is(.u8, &.{ n, nvfp4.codeCols(k, f) })) break f;
++        } else return error.EncodedTensorMismatch;
++        if (!codes.is(.u8, &.{ n, nvfp4.codeCols(k, format.?) }) or !scales.is(.f8_e4m3, &.{ n, k / 16 }) or !global.is(.f32, &.{})) return error.EncodedTensorMismatch;
+         for (scales.bytes) |b| if (b >= 0x7F) return error.BadEncodedScale; // 0x7F is NaN, 0x80 and up negative
+         const g: f32 = @bitCast(std.mem.readInt(u32, global.bytes[0..4], .little));
+         if (!std.math.isFinite(g) or g <= 0) return error.BadEncodedGlobal;
+     };
+     const header = try std.json.parseFromSliceLeaky(std.json.Value, arena, file.map.memory[8..file.data], .{ .allocate = .alloc_always });
+-    return .{ .path = path, .sha256 = sha256(file.map.memory), .metadata = header.object.get("__metadata__") };
++    return .{ .path = path, .sha256 = sha256(file.map.memory), .format = format orelse .nvfp4, .metadata = header.object.get("__metadata__") };
+ }
+ 
+ fn sha256(bytes: []const u8) [64]u8 {
+diff --git a/zig/src/families/drama/nvfp4_encoded_test.zig b/zig/src/families/drama/nvfp4_encoded_test.zig
+index 026637fc5..3be4ac2d5 100644
+--- a/zig/src/families/drama/nvfp4_encoded_test.zig
++++ b/zig/src/families/drama/nvfp4_encoded_test.zig
+@@ -9,10 +9,11 @@ const shard_edit = core.shard_edit;
+ const nvfp4 = core.quant.nvfp4;
+ const testing = std.testing;
+ 
+-const Fault = enum { none, missing, extra, dtype, shape, nan_scale, negative_scale, zero_global, nan_global };
++const Fault = enum { none, missing, extra, dtype, shape, nan_scale, negative_scale, zero_global, nan_global, mixed };
+ 
+-/// `sub`/layer-01.safetensors: random C1 tensors of every expert of layer 1, expert 0's gate_proj spoiled by `fault`.
+-fn writeLayer(f: *t.Fixture, sub: []const u8, fault: Fault) !void {
++/// `sub`/layer-01.safetensors: random C1 tensors of every expert of layer 1 at `format`, expert 0's gate_proj (expert
++/// 1's down_proj for `mixed`, at the other format) spoiled by `fault`.
++fn writeLayer(f: *t.Fixture, sub: []const u8, format: nvfp4.Format, fault: Fault) !void {
+     const arena = f.arena_state.allocator();
+     try f.tmp.dir.createDir(testing.io, sub, .default_dir);
+     var prng = std.Random.DefaultPrng.init(13);
+@@ -22,7 +23,9 @@ fn writeLayer(f: *t.Fixture, sub: []const u8, fault: Fault) !void {
+         const n: usize, const k: usize = if (p[0] == 'd') .{ t.hidden, t.inner } else .{ t.inner, t.hidden };
+         const base = try std.fmt.allocPrint(arena, "model.language_model.layers.1.mlp.experts.{d}.{s}.", .{ e, p });
+         const spoil = e == 0 and p[0] == 'g';
+-        const codes = try arena.alloc(u8, n * k / 2);
++        const other = fault == .mixed and e == 1 and p[0] == 'd';
++        const cols = nvfp4.codeCols(k, if (other) (if (format == .int3) .nvfp4 else .int3) else format);
++        const codes = try arena.alloc(u8, n * cols);
+         rnd.bytes(codes);
+         const scales = try arena.alloc(u8, n * k / 16);
+         for (scales) |*x| x.* = rnd.uintLessThan(u8, 0x7F);
+@@ -35,7 +38,7 @@ fn writeLayer(f: *t.Fixture, sub: []const u8, fault: Fault) !void {
+             .nan_global => global.* = std.math.nan(f32),
+             else => {},
+         };
+-        try tensors.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}weight", .{base}), .dtype = .u8, .shape = if (spoil and fault == .shape) try arena.dupe(usize, &.{ n / 2, k }) else try arena.dupe(usize, &.{ n, k / 2 }), .bytes = codes });
++        try tensors.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}weight", .{base}), .dtype = .u8, .shape = if (spoil and fault == .shape) try arena.dupe(usize, &.{ n / 2, 2 * cols }) else try arena.dupe(usize, &.{ n, cols }), .bytes = codes });
+         try tensors.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}weight_scale", .{base}), .dtype = if (spoil and fault == .dtype) .u8 else .f8_e4m3, .shape = try arena.dupe(usize, &.{ n, k / 16 }), .bytes = scales });
+         if (!(spoil and fault == .missing)) try tensors.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}weight_scale_2", .{base}), .dtype = .f32, .shape = &.{}, .bytes = std.mem.asBytes(global) });
+     };
+@@ -44,53 +47,60 @@ fn writeLayer(f: *t.Fixture, sub: []const u8, fault: Fault) !void {
+     try shard_edit.create(arena, path, &.{ .{ "tool", "drama_nvfp4_gptq.py" }, .{ "kappa", "256" } }, tensors.items);
+ }
+ 
+-test "an encoded layer goes into the checkpoint byte for byte and the other layers encode as without it" {
+-    var f = try t.Fixture.init();
+-    defer f.deinit();
+-    const arena = f.arena_state.allocator();
+-    const io = testing.io;
+-    try writeLayer(&f, "enc", .none);
+-    _ = try convert.convert(testing.allocator, io, try f.path("src"), try f.path("plain"), .{ .threads = 2 });
+-    _ = try convert.convert(testing.allocator, io, try f.path("src"), try f.path("taken"), .{ .threads = 2, .encoded = try f.path("enc") });
+-    var enc = try st.File.open(testing.allocator, io, try f.path("enc/layer-01.safetensors"));
+-    defer enc.close(io);
+-    var from_file: usize = 0;
+-    for (0..2) |i| {
+-        var a = try f.open("plain", i);
+-        defer a.close(io);
+-        var b = try f.open("taken", i);
+-        defer b.close(io);
+-        const names = try t.ordered(arena, &b);
+-        try testing.expectEqualDeep(try t.ordered(arena, &a), names);
+-        for (names) |name| {
+-            const got = b.get(name).?;
+-            const want = if (std.mem.startsWith(u8, name, "model.language_model.layers.1.mlp.experts.")) enc.get(name).? else a.get(name).?;
+-            from_file += @intFromBool(std.mem.startsWith(u8, name, "model.language_model.layers.1.mlp.experts."));
+-            try testing.expect(got.is(want.dtype, want.shape[0..want.rank]) and std.mem.eql(u8, want.bytes, got.bytes));
++test "an encoded layer, NVFP4 or int3, goes into the checkpoint byte for byte and the other layers encode as without it" {
++    for ([_]nvfp4.Format{ .nvfp4, .int3 }) |format| {
++        var f = try t.Fixture.init();
++        defer f.deinit();
++        const arena = f.arena_state.allocator();
++        const io = testing.io;
++        try writeLayer(&f, "enc", format, .none);
++        _ = try convert.convert(testing.allocator, io, try f.path("src"), try f.path("plain"), .{ .threads = 2 });
++        _ = try convert.convert(testing.allocator, io, try f.path("src"), try f.path("taken"), .{ .threads = 2, .encoded = try f.path("enc") });
++        var enc = try st.File.open(testing.allocator, io, try f.path("enc/layer-01.safetensors"));
++        defer enc.close(io);
++        var from_file: usize = 0;
++        for (0..2) |i| {
++            var a = try f.open("plain", i);
++            defer a.close(io);
++            var b = try f.open("taken", i);
++            defer b.close(io);
++            const names = try t.ordered(arena, &b);
++            try testing.expectEqualDeep(try t.ordered(arena, &a), names);
++            for (names) |name| {
++                const got = b.get(name).?;
++                const want = if (std.mem.startsWith(u8, name, "model.language_model.layers.1.mlp.experts.")) enc.get(name).? else a.get(name).?;
++                from_file += @intFromBool(std.mem.startsWith(u8, name, "model.language_model.layers.1.mlp.experts."));
++                try testing.expect(got.is(want.dtype, want.shape[0..want.rank]) and std.mem.eql(u8, want.bytes, got.bytes));
++            }
+         }
++        try testing.expectEqual(enc.names.count(), from_file);
++        const prov = (try f.json("taken/quant-provenance.json")).object.get("experts").?.object;
++        const sources = prov.get("layer_sources").?.array.items;
++        try testing.expectEqualStrings("rtn", sources[0].object.get("source").?.string);
++        try testing.expectEqualStrings("nvfp4", sources[0].object.get("format").?.string);
++        const one = sources[1].object;
++        try testing.expectEqualStrings("encoded", one.get("source").?.string);
++        try testing.expectEqualStrings(@tagName(format), one.get("format").?.string);
++        try testing.expectEqualStrings("drama_nvfp4_gptq.py", one.get("metadata").?.object.get("tool").?.string);
++        var digest: [32]u8 = undefined;
++        std.crypto.hash.sha2.Sha256.hash(try f.read("enc/layer-01.safetensors"), &digest, .{});
++        try testing.expectEqualStrings(&std.fmt.bytesToHex(digest, .lower), one.get("sha256").?.string);
++        // a taken tensor's errors are measured against the FP8 source at its format, as an encoded one's are
++        var src = try f.open("src", 0);
++        defer src.close(io);
++        const name = "model.language_model.layers.1.mlp.experts.0.down_proj.weight";
++        const w = src.get(name).?;
++        const h = try arena.alloc(f64, t.inner);
++        @memset(h, 1);
++        const g: f32 = @bitCast(std.mem.readInt(u32, enc.get(name ++ "_scale_2").?.bytes[0..4], .little));
++        const sum = nvfp4.measure(try t.dequant(arena, w, src.get(name ++ "_scale_inv").?), h, t.hidden, t.inner, enc.get(name).?.bytes, enc.get(name ++ "_scale").?.bytes, g, format);
++        var measured = false;
++        for (prov.get("tensors").?.array.items) |x| if (std.mem.eql(u8, x.object.get("name").?.string, name)) {
++            try testing.expectEqual(sum.rel().?, x.object.get("rel").?.float);
++            measured = true;
++        };
++        try testing.expect(measured);
+     }
+-    try testing.expectEqual(enc.names.count(), from_file);
+-    const prov = (try f.json("taken/quant-provenance.json")).object.get("experts").?.object;
+-    const sources = prov.get("layer_sources").?.array.items;
+-    try testing.expectEqualStrings("rtn", sources[0].object.get("source").?.string);
+-    const one = sources[1].object;
+-    try testing.expectEqualStrings("encoded", one.get("source").?.string);
+-    try testing.expectEqualStrings("drama_nvfp4_gptq.py", one.get("metadata").?.object.get("tool").?.string);
+-    var digest: [32]u8 = undefined;
+-    std.crypto.hash.sha2.Sha256.hash(try f.read("enc/layer-01.safetensors"), &digest, .{});
+-    try testing.expectEqualStrings(&std.fmt.bytesToHex(digest, .lower), one.get("sha256").?.string);
+-    // a taken tensor's errors are measured against the FP8 source, as an encoded one's are
+-    var src = try f.open("src", 0);
+-    defer src.close(io);
+-    const name = "model.language_model.layers.1.mlp.experts.0.down_proj.weight";
+-    const w = src.get(name).?;
+-    const h = try arena.alloc(f64, t.inner);
+-    @memset(h, 1);
+-    const g: f32 = @bitCast(std.mem.readInt(u32, enc.get(name ++ "_scale_2").?.bytes[0..4], .little));
+-    const sum = nvfp4.measure(try t.dequant(arena, w, src.get(name ++ "_scale_inv").?), h, t.hidden, t.inner, enc.get(name).?.bytes, enc.get(name ++ "_scale").?.bytes, g);
+-    for (prov.get("tensors").?.array.items) |x| if (std.mem.eql(u8, x.object.get("name").?.string, name)) {
+-        try testing.expectEqual(sum.rel().?, x.object.get("rel").?.float);
+-    };
+ }
+ 
+ test "malformed, misnamed, kept or expertless encoded layers are refused before anything is written" {
+@@ -103,12 +113,14 @@ test "malformed, misnamed, kept or expertless encoded layers are refused before
+         .{ .dtype, error.EncodedTensorMismatch },         .{ .shape, error.EncodedTensorMismatch },
+         .{ .nan_scale, error.BadEncodedScale },           .{ .negative_scale, error.BadEncodedScale },
+         .{ .zero_global, error.BadEncodedGlobal },        .{ .nan_global, error.BadEncodedGlobal },
++        .{ .mixed, error.EncodedTensorMismatch },
+     };
+-    for (cases) |c| {
+-        try writeLayer(&f, @tagName(c[0]), c[0]);
+-        try testing.expectError(c[1], convert.convert(gpa, io, try f.path("src"), try f.path("out"), .{ .encoded = try f.path(@tagName(c[0])) }));
+-    }
+-    try writeLayer(&f, "none", .none);
++    for ([_]nvfp4.Format{ .nvfp4, .int3 }) |format| for (cases) |c| {
++        const sub = try std.fmt.allocPrint(f.arena_state.allocator(), "{t}-{t}", .{ format, c[0] });
++        try writeLayer(&f, sub, format, c[0]);
++        try testing.expectError(c[1], convert.convert(gpa, io, try f.path("src"), try f.path("out"), .{ .encoded = try f.path(sub) }));
++    };
++    try writeLayer(&f, "none", .nvfp4, .none);
+     try testing.expectError(error.EncodedLayerKept, convert.convert(gpa, io, try f.path("src"), try f.path("out"), .{ .encoded = try f.path("none"), .keep = &.{1} }));
+     try f.tmp.dir.createDir(io, "misnamed", .default_dir);
+     try f.tmp.dir.writeFile(io, .{ .sub_path = "misnamed/layer-1.safetensors", .data = "x" });
+diff --git a/zig/src/families/drama/quant_convert.zig b/zig/src/families/drama/quant_convert.zig
+index c7a5d5b80..0a5175e60 100644
+--- a/zig/src/families/drama/quant_convert.zig
++++ b/zig/src/families/drama/quant_convert.zig
+@@ -100,7 +100,7 @@ const Job = struct {
+     codes: []u8 = &.{},
+     scales: []u8 = &.{},
+     /// An --encoded layer's tensors as its file holds them: measured against the source, never re-encoded.
+-    taken: ?struct { codes: []const u8, scales: []const u8, global: f32 } = null,
++    taken: ?struct { codes: []const u8, scales: []const u8, global: f32, format: nvfp4.Format } = null,
+     summary: nvfp4.Summary = .{},
+     failure: ?Failure = null,
+ 
+@@ -149,7 +149,7 @@ const Work = struct {
+         if (work.importance) |imp| imp.fill(j.at.layer, j.at.expert, j.at.gateUp(), h) else @memset(h, 1);
+         for (h) |x| if (!std.math.isFinite(x) or x < 0) return error.BadImportance;
+         if (j.taken) |t| {
+-            j.summary = nvfp4.measure(w, h, n, k, t.codes, t.scales, t.global);
++            j.summary = nvfp4.measure(w, h, n, k, t.codes, t.scales, t.global, t.format);
+             return;
+         }
+         j.summary = nvfp4.encode(w, h, n, k, j.codes, j.scales);
+@@ -299,6 +299,7 @@ fn convertShard(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, out:
+             .codes = f.get(name).?.bytes,
+             .scales = f.get(try std.fmt.allocPrint(scratch, "{s}weight_scale", .{base})).?.bytes,
+             .global = @bitCast(std.mem.readInt(u32, g[0..4], .little)),
++            .format = layer.format,
+         };
+     }
+     const buffer = try gpa.alloc(u8, encoded + dense_codes);
+@@ -331,7 +332,7 @@ fn convertShard(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, out:
+             const n, const k = .{ j.rows(), j.cols() };
+             const base = j.name[0 .. j.name.len - "weight".len];
+             try tensors.appendSlice(scratch, &.{
+-                .{ .name = j.name, .dtype = .u8, .shape = try scratch.dupe(usize, &.{ n, k / 2 }), .bytes = if (j.taken) |t| t.codes else j.codes },
++                .{ .name = j.name, .dtype = .u8, .shape = try scratch.dupe(usize, &.{ n, nvfp4.codeCols(k, if (j.taken) |t| t.format else .nvfp4) }), .bytes = if (j.taken) |t| t.codes else j.codes },
+                 .{ .name = try std.fmt.allocPrint(scratch, "{s}weight_scale", .{base}), .dtype = .f8_e4m3, .shape = try scratch.dupe(usize, &.{ n, k / nvfp4.group }), .bytes = if (j.taken) |t| t.scales else j.scales },
+                 .{ .name = try std.fmt.allocPrint(scratch, "{s}weight_scale_2", .{base}), .dtype = .f32, .shape = &.{}, .bytes = std.mem.asBytes(&j.summary.global) },
+             });
+diff --git a/zig/src/families/drama/quant_provenance.zig b/zig/src/families/drama/quant_provenance.zig
+index 5c2969425..e162f59ca 100644
+--- a/zig/src/families/drama/quant_provenance.zig
++++ b/zig/src/families/drama/quant_provenance.zig
+@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
+ const Io = std.Io;
+ const Importance = importance_.Importance;
+ const projections = encoded_.projections;
++const nvfp4 = @import("core").quant.nvfp4;
+ 
+ pub const name = "quant-provenance.json";
+ /// The legacy Phase 1 converter's provenance file.
+@@ -79,7 +80,7 @@ fn experts(arena: Allocator, r: Run, config_sha: []const u8, stats_path: ?[]cons
+     var layer_sources: std.ArrayList(Experts.LayerSource) = .empty;
+     for (r.convert_layer, r.sources, 0..) |c, *from_file, l| if (c) {
+         try converted.append(arena, l);
+-        try layer_sources.append(arena, if (from_file.*) |*f| .{ .layer = l, .source = "encoded", .file = f.path, .sha256 = &f.sha256, .metadata = f.metadata } else .{ .layer = l, .source = "rtn" });
++        try layer_sources.append(arena, if (from_file.*) |*f| .{ .layer = l, .source = "encoded", .format = f.format, .file = f.path, .sha256 = &f.sha256, .metadata = f.metadata } else .{ .layer = l, .source = "rtn" });
+     };
+     const kept = try arena.dupe(usize, r.o.keep);
+     std.mem.sort(usize, kept, {}, std.sort.asc(usize));
+@@ -215,7 +216,7 @@ const Experts = struct {
+     kappa: u32 = importance_.kappa,
+     threads: usize,
+     converted_layers: []const usize,
+-    /// How each converted layer was encoded: here (rtn, C2) or taken from an --encoded file.
++    /// How each converted layer was encoded: here (rtn, C2, NVFP4) or taken from an --encoded file in its format.
+     layer_sources: []const LayerSource,
+     kept_fp8_layers: []const usize,
+     /// Seconds from start to this file, everything but its own write.
+@@ -225,7 +226,7 @@ const Experts = struct {
+     projections: []const Group,
+     tensors: []const Tensor,
+ 
+-    const LayerSource = struct { layer: usize, source: []const u8, file: ?[]const u8 = null, sha256: ?[]const u8 = null, metadata: ?std.json.Value = null };
++    const LayerSource = struct { layer: usize, source: []const u8, format: nvfp4.Format = .nvfp4, file: ?[]const u8 = null, sha256: ?[]const u8 = null, metadata: ?std.json.Value = null };
+     const Tensor = struct { name: []const u8, amax: f64, global: f32, rel: std.json.Value, err_h: std.json.Value };
+     /// One (layer, projection) over its experts; means and maxima over the `defined` ones.
+     const Group = struct {
 diff --git a/zig/tests/cuda/drama_nvfp4_moe_tests.zig b/zig/tests/cuda/drama_nvfp4_moe_tests.zig
 index 73dff0d79..6944d6c38 100644
 --- a/zig/tests/cuda/drama_nvfp4_moe_tests.zig

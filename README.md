@@ -230,7 +230,7 @@ model invented, your own, or one whose owner has consented on record, as the mod
 
 ```sh
 scripts/build-engine.sh --weights full   # once
-python3 recipe/calibrate_experts.py      # about 30 min on an M3 Ultra
+python3 recipe/calibrate_experts.py      # about 30 min
 ```
 
 captures, on a Mac and from the FP8 originals in `/Users/Shared/agent-work/drama-assets/checkpoint-bf16`, the
@@ -245,6 +245,12 @@ build's statistics and how to build each expert's Hessian: H_e = X_eᵀX_e / n_e
 and for `down_proj` the same over SwiGLU(gate, up) of those rows. The check recomputes the NVFP4 build's published
 `err_h` for every kept gate and up expert of layers 0, 3, 20 and 39 with these rows' per-column sums of squares:
 identical statistics give a ratio of exactly 1.
+
+The capture on 11 Nov: 175,396 rows (34,207 prompt text, 90,000 prompt audio, 51,189 generated; the NVFP4 build
+had 15 / 43 / 42 %), 29.2 GB on disk, 28 minutes. 9,918 of the 10,240 experts have rows, 5,888 of the 5,900 kept
+ones (at least 14 rows each, 1 % under 1,005). The 12 without rows are in layer 36, which the quant keeps whole;
+the NVFP4 build's own calibration also gave them none, so the router does not pick them. The `err_h` ratio over
+1,208 tensors: median 1.006, 5th–95th percentile 0.991–1.027.
 
 ## Legacy: the patched engine
 

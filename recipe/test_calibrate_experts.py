@@ -35,25 +35,27 @@ class CalibrateExpertsTests(unittest.TestCase):
         (self.checkpoint / 'config.json').write_bytes(b'{}')
 
     def test_reports_kept_experts_without_rows_by_layer(self):
-        # Rows cover experts 0-31 in every layer; layer 5 keeps 40, which has none.
+        # Rows cover experts 0-31 in every layer; layer 5 keeps 40 and 41, which have none. Only 40 had NVFP4 rows.
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [list(range(r * 8, r * 8 + 8)) for r in range(ROWS)])
-        kept = {(layer, 0) for layer in range(ce.LAYERS)} | {(5, 40)}
-        report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, stats=False)
+        kept = {(layer, 0) for layer in range(ce.LAYERS)} | {(5, 40), (5, 41)}
+        reference = {(layer, expert): 1 for layer in range(ce.LAYERS) for expert in range(ce.EXPERTS)} | {(5, 41): 0}
+        report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, reference, stats=False)
         self.assertEqual(report['class_rows'], {'prompt_text': 1, 'prompt_audio': 2, 'generated': 1})
-        self.assertEqual(report['missing_kept_by_layer'], {'5': [40]})
-        self.assertEqual(report['covered_kept_experts'], len(kept) - 1)
+        self.assertEqual(report['missing_kept_by_layer'], {'5': [40, 41]})
+        self.assertEqual(report['missing_kept_nvfp4_routed'], {'5': [40]})
+        self.assertEqual(report['covered_kept_experts'], len(kept) - 2)
         self.assertEqual(report['covered_experts'], ce.LAYERS * 32)
         self.assertEqual(report['kept_rows_min_median'], [0, 1])
 
     def test_rejects_a_row_that_picks_an_expert_twice(self):
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [[0] * 8] + [list(range(8))] * (ROWS - 1))
         with self.assertRaisesRegex(ValueError, 'distinct'):
-            ce.validate(self.tmp / 'rows', self.checkpoint, set(), stats=False)
+            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, stats=False)
 
     def test_rejects_rows_from_another_checkpoint(self):
         write_rows(self.tmp / 'rows', b'{"other": 1}', lambda layer: [list(range(8))] * ROWS)
         with self.assertRaisesRegex(ValueError, 'identity'):
-            ce.validate(self.tmp / 'rows', self.checkpoint, set(), stats=False)
+            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, stats=False)
 
     def test_column_squares_count_each_routed_row_once_per_expert(self):
         x = np.array([[1, 2], [3, 4]], np.float32)

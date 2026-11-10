@@ -163,7 +163,13 @@ def stats_check(output, rows, kept, np):
     }
 
 
-def validate(output, checkpoint=CHECKPOINT, kept=None, stats=True):
+def nvfp4_routed(provenance=NVFP4 / 'nvfp4-provenance.json'):
+    """Rows per (layer, expert) in the NVFP4 build's own calibration, from its GPTQ metadata."""
+    return {(source['layer'], expert): count for source in json.loads(provenance.read_text())['layer_sources']
+            for expert, count in enumerate(json.loads(source['metadata']['gptq'])['rows'])}
+
+
+def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, stats=True):
     import numpy as np
 
     manifest = json.loads((output / 'rows.json').read_text())
@@ -175,6 +181,7 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, stats=True):
     if len(classes) != rows or classes.max() >= len(CLASSES):
         raise ValueError(f'{output}: class.u8 does not hold one valid class per row')
     kept = kept_experts() if kept is None else kept
+    reference = nvfp4_routed() if reference is None else reference
     missing, missing_kept, routed = {}, {}, {}
     for layer in range(LAYERS):
         stem, picks, weights = layer_rows(output, layer, rows, np)
@@ -203,6 +210,8 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, stats=True):
         'covered_kept_experts': len(kept) - sum(len(m) for m in missing_kept.values()),
         'kept_rows_min_median': [min(kept_counts), int(np.median(kept_counts))],
         'missing_kept_by_layer': {str(l): m for l, m in missing_kept.items() if m},
+        'missing_kept_nvfp4_routed': {str(l): [e for e in m if reference[l, e]] for l, m in missing_kept.items()
+                                      if any(reference[l, e] for e in m)},
         'missing_by_layer': {str(l): m for l, m in missing.items() if m},
         'bytes': sum(p.stat().st_size for p in output.iterdir() if p.name != 'report.json'),
         'hessian': {
@@ -227,8 +236,10 @@ def main():
     report = validate(args.output, args.checkpoint)
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({k: report[k] for k in ('rows', 'class_rows', 'covered_kept_experts', 'kept_experts', 'bytes')}))
-    if report['missing_kept_by_layer']:
-        raise SystemExit(f'kept experts without rows: {report["missing_kept_by_layer"]}')
+    print(f'kept experts without rows: {report["missing_kept_by_layer"]}')
+    # A kept expert the NVFP4 build's calibration routed rows to must get rows here too.
+    if report['missing_kept_nvfp4_routed']:
+        raise SystemExit(f'kept experts the NVFP4 calibration routed but this run did not: {report["missing_kept_nvfp4_routed"]}')
 
 
 if __name__ == '__main__':

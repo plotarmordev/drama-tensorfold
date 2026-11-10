@@ -1,10 +1,13 @@
 # Engine patch series
 
-The full-model series is empty: TensorFold v1.1.9, pinned in [`../UPSTREAM`](../UPSTREAM), carries every
-feature the old patches 0001–0015 added, so `scripts/build-engine.sh --weights full` builds the release as is.
-The empty `SHA256SUMS` declares that empty series; deleting it, or listing a patch that is not here, fails the
-build before checkout. The features and their upstream pull requests are in the
+The full-model series is one patch on TensorFold v1.1.9, pinned in [`../UPSTREAM`](../UPSTREAM), which carries
+every feature the old patches 0001–0015 added. `SHA256SUMS` lists it; deleting the manifest, or listing a patch
+that is not here, fails the build before checkout. The upstream features and their pull requests are in the
 [README](../../README.md#full-model-engine).
+
+| Patch | Scope |
+|---|---|
+| [`0001-drama3-calibration-rows.patch`](0001-drama3-calibration-rows.patch) | Metal `drama3-generate --calibration-rows NEW_DIR --text REQUESTS.jsonl`: per-expert calibration rows (MoE input, picks, routing weights, row class) for every layer; [`recipe/calibrate_experts.py`](../../recipe/calibrate_experts.py) drives it. No change to serving or to CUDA. |
 
 New patches are made with `git format-patch` against the pinned commit, start again at 0001 and are applied in
 file-name order with `git am`. All patches are Apache-2.0 ([`../../LICENSE`](../../LICENSE)). The Drama 3 model

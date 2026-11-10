@@ -30,6 +30,7 @@ It does not change the full-model series above or the CUDA NVFP4 pin.
 | [`0004-speech-sampling-controls.patch`](../nvfp4/macos/patches/0004-speech-sampling-controls.patch) | Request sampling parameters and exact seeds, retaining CFG rows | [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) |
 | [`0005-sampling-json-boundaries.patch`](../nvfp4/macos/patches/0005-sampling-json-boundaries.patch) | Parsed-JSON floating boundary documentation and regressions | [TensorFold #1277](https://github.com/ashhart/TensorFold/pull/1277) |
 | [`0006-dialogue-speakers.patch`](../nvfp4/macos/patches/0006-dialogue-speakers.patch) | Canonical speaker IDs in request/catalog transcripts and the native writer | [TensorFold #1278](https://github.com/ashhart/TensorFold/pull/1278) |
+| [`0011-int3-routed-experts.patch`](../nvfp4/macos/patches/0011-int3-routed-experts.patch) | Int3 routed experts (3.5 bits) unpacked in `d3_nvfp4_up/down`, with `quant_check` device cases; NVFP4 layers unchanged | this repo |
 
 The [Mac qualification receipt](../../results/macos-nvfp4.json) separates observed GPU/model results,
 the initial failed fixture and focused correction, and the final CPU-only CLI integration build.

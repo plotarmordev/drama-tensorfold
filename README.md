@@ -243,15 +243,20 @@ after each of three 29 s clips of the Capri reference, at two seeds, then prefil
 No CUDA, torch or Spark is used; the validation step needs numpy. `report.json` gives the class mix, the experts per
 layer without rows (all 10,240 and the 5,900 the pruned quant keeps), the size on disk, the check against the NVFP4
 build's statistics and how to build each expert's Hessian: H_e = X_eᵀX_e / n_e over the rows whose picks hold e,
-and for `down_proj` the same over SwiGLU(gate, up) of those rows. The check recomputes the NVFP4 build's published
-`err_h` for every kept gate and up expert of layers 0, 3, 20 and 39 with these rows' per-column sums of squares:
-identical statistics give a ratio of exactly 1.
+and for `down_proj` the same over SwiGLU(gate, up) of those rows with the original weights; an expert with no rows
+takes all of its layer's rows. `recipe/exl3_experts.py` builds its Hessians this way and records the same recipe.
+The check recomputes the NVFP4 build's published `err_h` for every kept gate and up expert of layers 0, 3, 20 and
+39 with these rows' per-column sums of squares: identical statistics give a ratio of exactly 1. The NVFP4 build's
+`stats.safetensors` stays on the Spark and came from other text and audio, so the 5th and 95th percentile ratios
+must lie within 1 ± 0.05.
 
 The capture on 11 Nov: 175,396 rows (34,207 prompt text, 90,000 prompt audio, 51,189 generated; the NVFP4 build
 had 15 / 43 / 42 %), 29.2 GB on disk, 28 minutes. 9,918 of the 10,240 experts have rows, 5,888 of the 5,900 kept
-ones (at least 14 rows each, 1 % under 1,005). The 12 without rows are in layer 36, which the quant keeps whole;
-the NVFP4 build's own calibration also gave them none, so the router does not pick them. The `err_h` ratio over
-1,208 tensors: median 1.006, 5th–95th percentile 0.991–1.027.
+ones (at least 14 rows each, 1 % under 1,005). The 12 without rows are layer 36's experts 0, 14, 39, 117, 120, 147,
+173, 195, 202, 211, 227 and 246; the quant keeps that layer whole. Over all 175,396 rows none of them places above
+171st of the router's 256 logits (it takes the top 8), and the NVFP4 build's calibration gave them no rows either,
+so more text would not reach them. The `err_h` ratio over 1,208 tensors: median 1.006, 5th–95th percentile
+0.991–1.027.
 
 ### EXL3 routed experts
 

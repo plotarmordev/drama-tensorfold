@@ -16,6 +16,13 @@ git -C "$work" init -q
 git -C "$work" apply --include="$tool" "$PWD/engine/nvfp4/patches/0006-int3-routed-experts.patch"
 
 nvidia-smi -L
+# the venv's interpreter links into the host's uv store, outside the job; its packages need a Python 3.12
+python=$(command -v python3.12 || true)
+if [ -z "$python" ]; then
+  ls /usr/bin/python* /usr/local/bin/python* 2>&1
+  exit 1
+fi
 cd /work/out
-"$pilot/venv/bin/python" "$work/$tool" "$pilot/checkpoint" "$pilot/eq/runs/fp8-calib-rows" int3 \
-  --mode int3 --provenance "$pilot/models/eq-nvfp4-v3/nvfp4-provenance.json" 2>&1 | tee int3.log
+PYTHONPATH="$pilot/venv/lib/python3.12/site-packages" "$python" "$work/$tool" "$pilot/checkpoint" \
+  "$pilot/eq/runs/fp8-calib-rows" int3 --mode int3 --provenance "$pilot/models/eq-nvfp4-v3/nvfp4-provenance.json" \
+  2>&1 | tee int3.log

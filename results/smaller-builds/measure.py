@@ -78,6 +78,7 @@ def speak(runs, arm, ckpt, voice, *salts):
 
 
 def score(runs, whisper):
+    """Adds the takes not yet in RUNS/scores.json, so a new build costs only its own takes."""
     import soundfile
     import torch
     from transformers import pipeline
@@ -86,10 +87,15 @@ def score(runs, whisper):
     texts = {item['id']: item['text'] for item in CORPUS}
     asr = pipeline('automatic-speech-recognition', model=whisper, device='mps', torch_dtype=torch.float16)
     normalize = asr.tokenizer.normalize
-    rows = []
+    path = Path(runs) / 'scores.json'
+    rows = json.loads(path.read_text()) if path.exists() else []
+    done = {(r['arm'], r['voice'], r['salt'], r['item']) for r in rows}
     for takes in sorted(Path(runs).glob('*/s*/takes.json')):
         arm, voice = takes.parent.parent.name.rsplit('-', 1)
+        salt = int(takes.parent.name[1:])
         for take in json.loads(takes.read_text()):
+            if (arm, voice, salt, take['item']) in done:
+                continue
             y, rate = soundfile.read(takes.parent / f'{take["item"]}.wav', dtype='float32')
             hyp = asr({'raw': y, 'sampling_rate': rate}, return_timestamps=len(y) > 30 * rate,
                       generate_kwargs={'language': 'english', 'task': 'transcribe'})['text']
@@ -97,11 +103,11 @@ def score(runs, whisper):
             wer = fvq.edit_distance(ref, got) / len(ref)
             quiet = fvq.quiet_run(y, rate)
             capped = len(y) // fvq.FRAME_SAMPLES >= fvq.CAP_FRAMES
-            rows.append({'arm': arm, 'voice': voice, 'salt': int(takes.parent.name[1:]), 'item': take['item'],
+            rows.append({'arm': arm, 'voice': voice, 'salt': salt, 'item': take['item'],
                          'finish': take['finish'], 'wer': round(wer, 5), 'ref_words': len(ref),
                          'hypothesis': hyp.strip(), 'quiet_run_s': quiet, 'capped': capped,
                          'failed': capped or wer > fvq.WER_COLLAPSE or quiet >= fvq.QUIET_RUN_S})
-    (Path(runs) / 'scores.json').write_text(json.dumps(rows, indent=1) + '\n')
+    path.write_text(json.dumps(rows, indent=1) + '\n')
 
 
 def checkpoint_bytes(ckpt):

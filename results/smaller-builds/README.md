@@ -38,6 +38,7 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`builds.json`](builds.json) | Per build and voice: bytes, takes, mean and pooled WER, failed takes and which, and the winner |
 | [`measure.py`](measure.py) | speak (one build, one voice, the salts), score (Whisper large-v3 on MPS), report, listen |
 | [`gb10-int3.sh`](gb10-int3.sh) | The GB10 job (`job start gpu bottom`, run `bottom-d8d4f4428fba`) that wrote the int3 experts |
+| [`gb10-start.sh`](gb10-start.sh) | Starts a GB10 job once a GPU is free: retries while no window is open, never pauses DeepSeek |
 | [`int3.sha256`](int3.sha256) | SHA-256 of its 40 `layer-LL.safetensors` |
 | [`splice_int3.py`](splice_int3.py) | `trim-bf16` with its kept experts taken from those files |
 

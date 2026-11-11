@@ -42,7 +42,7 @@ SEGMENT_CHARS = 500
 MAX_INPUT_CHARS = 4096
 WAV_HEADER = 44
 # The engine can sample end of speech at a take's first frame. Without a request seed it draws from the prompt,
-# so the same text repeats it; such a take is drawn again with another seed. Metal patch 0008 refuses it with a
+# so the same text repeats it; such a take is drawn again with another seed. Metal patch 0002 refuses it with a
 # 500 naming NO_AUDIO; an engine without the patch answers a clean stop with no audio.
 EMPTY_REDRAWS = 2
 NO_AUDIO = b'the model ended speech before its first audio frame'

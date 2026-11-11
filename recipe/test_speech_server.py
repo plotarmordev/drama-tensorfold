@@ -28,7 +28,7 @@ def wav(data: bytes) -> bytes:
 class Engine(http.server.ThreadingHTTPServer):
     """Built-in voice plus the catalogs in ``voices``; finish reasons are taken from ``reasons`` in turn.
 
-    The first ``empty`` takes end at frame 0 with no audio: a 500 naming it, as Metal patch 0008 answers, or with
+    The first ``empty`` takes end at frame 0 with no audio: a 500 naming it, as Metal patch 0002 answers, or with
     ``empty_ok`` a clean stop, as an engine without the patch does.
 
     As the real engine does, it answers 503 once right after a reply, before its lane is free again.

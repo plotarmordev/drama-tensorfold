@@ -212,7 +212,7 @@ after one take stopped speaking and ran to the frame cap.
 
 The engine can also sample end of speech at a take's first frame, after about 2 s of prompt; without a
 request `seed` the draw comes from the prompt, so the same text gives the same empty take again. Metal
-patch 0008 makes the engine answer such a take, whole or streamed, with `500` "the model ended speech before
+patch 0002 makes the engine answer such a take, whole or streamed, with `500` "the model ended speech before
 its first audio frame" instead of `200` with no audio. The server never passes it on: on that error, or on
 empty audio from an engine without the patch, it draws that segment again with `seed` set to the request's
 seed (or 0) plus 1, then plus 2, and if all three draws are empty it answers `502` with a `server_error`,

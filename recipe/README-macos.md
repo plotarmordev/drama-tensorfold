@@ -1,7 +1,7 @@
 # macOS: running the pinned recipe on Apple silicon
 
 Both `--weights full` and the NVFP4 quants (`--weights nvfp4-5900`, `--weights nvfp4`) use the native Zig/Metal engine, not Python/MLX.
-The full model uses the Linux recipe's pin, TensorFold v1.1.9, with no patches. NVFP4 uses the separate
+The full model uses the Linux recipe's pin, TensorFold v1.1.9, plus a Metal-only calibration-rows patch. NVFP4 uses the separate
 [Mac engine pin](../engine/nvfp4/macos/UPSTREAM) and patch series; the CUDA NVFP4 pin is unchanged.
 Neither path requires CUDA, `nvcc`, systemd, or `/proc`. Use `recipe/pilot_macos.py`.
 

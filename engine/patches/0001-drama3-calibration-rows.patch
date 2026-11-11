@@ -1,0 +1,335 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 01:00:00 +0800
+Subject: [PATCH] drama3: --calibration-rows dumps the MoE input and routing of
+ generated requests
+
+drama3-generate --calibration-rows NEW_DIR --text REQUESTS.jsonl generates every request, then prefills its prompt and the generated frames again and writes, for all 40 backbone layers, the MoE input x (bf16), the eight original-ID picks and the renormalized routing weights of every row, with a class byte per row (prompt text, prompt audio, generated): the GPTQ --rows layout, captured on Metal.
+---
+ zig/src/families/drama3/common.zig            |   6 +
+ zig/src/families/drama3/drama3_metal.zig      |   1 +
+ zig/src/families/drama3/generate.zig          |  39 +++++-
+ .../drama3/metal/calibration_rows.zig         | 126 ++++++++++++++++++
+ zig/src/families/drama3/metal/engine.zig      |   3 +-
+ zig/src/families/drama3/metal/forward.zig     |   9 +-
+ zig/src/families/drama3/metal/guidance.zig    |   2 +-
+ 7 files changed, 179 insertions(+), 7 deletions(-)
+ create mode 100644 zig/src/families/drama3/metal/calibration_rows.zig
+
+diff --git a/zig/src/families/drama3/common.zig b/zig/src/families/drama3/common.zig
+index e2be646ad..821560142 100644
+--- a/zig/src/families/drama3/common.zig
++++ b/zig/src/families/drama3/common.zig
+@@ -36,6 +36,12 @@ pub const Sampling = struct {
+     }
+ };
+ 
++/// MoE input and original-ID router output for one backbone layer.
++pub const RouteProbe = struct {
++    ctx: *anyopaque,
++    f: *const fn (ctx: *anyopaque, layer: usize, x: u64, picks: u64, weights: u64, rows: usize) anyerror!void,
++};
++
+ /// Per-layer probe of a pass under the oracle's dump names, called with device rows [t, width] in bf16 or fp32.
+ pub const Probe = struct {
+     ctx: *anyopaque,
+diff --git a/zig/src/families/drama3/drama3_metal.zig b/zig/src/families/drama3/drama3_metal.zig
+index 444f17d7c..6907c7d7a 100644
+--- a/zig/src/families/drama3/drama3_metal.zig
++++ b/zig/src/families/drama3/drama3_metal.zig
+@@ -46,3 +46,4 @@ test {
+ }
+ 
+ pub const residency = @import("metal/residency.zig");
++pub const calibration = @import("metal/calibration_rows.zig");
+diff --git a/zig/src/families/drama3/generate.zig b/zig/src/families/drama3/generate.zig
+index 1e4c7a506..dc397d56c 100644
+--- a/zig/src/families/drama3/generate.zig
++++ b/zig/src/families/drama3/generate.zig
+@@ -14,6 +14,7 @@ pub const Args = struct {
+     ref_codes: ?[]const u8 = null,
+     rows: ?[]const u8 = null,
+     rows_out: ?[]const u8 = null,
++    calibration_rows: ?[]const u8 = null,
+     out: ?[]const u8 = null,
+     check: ?[]const u8 = null,
+     check_frames: usize = 40,
+@@ -45,6 +46,7 @@ const usage =
+     \\                       [--temperature 1.0] [--top-k 30] [--top-p 0.9] [--seed 1] [--greedy]
+     \\                       [--max-frames 1500] [--graphs 1] [--sync-every 8] [--out FILE] [--rows-out FILE]
+     \\                       [--max-ctx 4096] [--max-rows 1] [--threads 16] [--repeat N] [--pdl 1] [--split 1]
++    \\       drama3-generate --model DIR --calibration-rows NEW_DIR --text REQUESTS.jsonl [--max-frames 1500] [--max-ctx 4096]
+     \\       drama3-generate --model DIR --check DUMPDIR [--check-frames 40]
+     \\       drama3-generate --codec-check REF --codec CODEC --frames FRAMES [--ref-audio WAV]
+     \\
+@@ -78,7 +80,7 @@ pub fn main(init: std.process.Init) !u8 {
+         }
+         const v = argv[i + 1];
+         i += 1;
+-        if (std.mem.eql(u8, k, "--replay")) a.replay = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--speed-probe")) a.speed_probe = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--model")) a.model = v else if (std.mem.eql(u8, k, "--text")) a.text = v else if (std.mem.eql(u8, k, "--ref-text")) a.ref_text = v else if (std.mem.eql(u8, k, "--ref-codes")) a.ref_codes = v else if (std.mem.eql(u8, k, "--rows")) a.rows = v else if (std.mem.eql(u8, k, "--rows-out")) a.rows_out = v else if (std.mem.eql(u8, k, "--out")) a.out = v else if (std.mem.eql(u8, k, "--check")) a.check = v else if (std.mem.eql(u8, k, "--check-frames")) a.check_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--temperature")) a.smp.temperature = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--top-k")) a.smp.top_k = try std.fmt.parseInt(i32, v, 10) else if (std.mem.eql(u8, k, "--top-p")) a.smp.top_p = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--seed")) a.smp.seed = try std.fmt.parseInt(u64, v, 10) else if (std.mem.eql(u8, k, "--max-frames")) a.max_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--graphs")) a.graphs = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--sync-every")) a.sync_every = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-ctx")) a.opts.max_ctx = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-rows")) {
++        if (std.mem.eql(u8, k, "--replay")) a.replay = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--speed-probe")) a.speed_probe = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--model")) a.model = v else if (std.mem.eql(u8, k, "--text")) a.text = v else if (std.mem.eql(u8, k, "--ref-text")) a.ref_text = v else if (std.mem.eql(u8, k, "--ref-codes")) a.ref_codes = v else if (std.mem.eql(u8, k, "--rows")) a.rows = v else if (std.mem.eql(u8, k, "--rows-out")) a.rows_out = v else if (std.mem.eql(u8, k, "--calibration-rows")) a.calibration_rows = v else if (std.mem.eql(u8, k, "--out")) a.out = v else if (std.mem.eql(u8, k, "--check")) a.check = v else if (std.mem.eql(u8, k, "--check-frames")) a.check_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--temperature")) a.smp.temperature = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--top-k")) a.smp.top_k = try std.fmt.parseInt(i32, v, 10) else if (std.mem.eql(u8, k, "--top-p")) a.smp.top_p = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--seed")) a.smp.seed = try std.fmt.parseInt(u64, v, 10) else if (std.mem.eql(u8, k, "--max-frames")) a.max_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--graphs")) a.graphs = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--sync-every")) a.sync_every = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-ctx")) a.opts.max_ctx = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-rows")) {
+             a.opts.max_rows = try std.fmt.parseInt(usize, v, 10);
+             a.opts.attn_chunk = @min(a.opts.max_rows, 1024);
+         } else if (std.mem.eql(u8, k, "--threads")) a.opts.threads = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--repeat")) a.repeat = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--wav")) a.wav = v else if (std.mem.eql(u8, k, "--pcm-out")) a.pcm = v else if (std.mem.eql(u8, k, "--encode")) a.encode_out = v else if (std.mem.eql(u8, k, "--chunk")) a.chunk = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--chunks-log")) a.verbose_chunks = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--codec")) a.codec = v else if (std.mem.eql(u8, k, "--codec-check")) a.codec_check = v else if (std.mem.eql(u8, k, "--frames")) a.frames = v else if (std.mem.eql(u8, k, "--ref-audio")) a.ref_audio = v else if (std.mem.eql(u8, k, "--first-chunk")) a.first_chunk = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--pdl")) a.opts.pdl = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--split")) a.opts.split = !std.mem.eql(u8, v, "0") else {
+@@ -122,6 +124,9 @@ pub fn main(init: std.process.Init) !u8 {
+     defer if (tts) |t| t.destroy();
+     const load_s = @as(f64, @floatFromInt(d3.engine.nowNs(io) - t_load)) / 1e9;
+     std.log.info("drama3: loaded in {d:.1} s (codec {s})", .{ load_s, if (tts != null) "native" else "none" });
++    if (a.calibration_rows) |dir| {
++        if (@hasDecl(d3, "calibration")) return calibrate(gpa, io, a, e, &tok, dir) else return error.MetalOnlyCalibration;
++    }
+     const req: Request = .{ .text = a.text, .rows = a.rows, .ref_text = a.ref_text, .ref_codes = a.ref_codes, .ref_audio = a.ref_audio, .wav = a.wav, .pcm = a.pcm, .frames_out = a.out, .rows_out = a.rows_out, .smp = a.smp, .max_frames = a.max_frames };
+     var r: usize = 0;
+     while (r < a.repeat) : (r += 1) try runRequest(gpa, io, a, e, tts, &tok, req);
+@@ -227,6 +232,38 @@ const AudioOut = struct {
+     }
+ };
+ 
++/// One JSON object per line of the --text file; `seed` replaces the command line's sampling seed.
++const CalibrationRequest = struct { text: []const u8, ref_text: ?[]const u8 = null, ref_codes: ?[]const u8 = null, seed: u64 = 1 };
++
++/// Generates every request, then prefills its prompt and generated frames again with the MoE inputs and routing dumped.
++fn calibrate(gpa: std.mem.Allocator, io: std.Io, a: Args, e: *d3.Engine, tok: *const core.tokenizer.Tokenizer, dir: []const u8) !u8 {
++    const path = a.text orelse return error.RequestsRequired;
++    const calibration = d3.calibration;
++    var dump = try calibration.Rows.create(gpa, io, dir, e.o.max_rows);
++    defer dump.deinit(gpa);
++    const lines = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 26));
++    defer gpa.free(lines);
++    var it = std.mem.tokenizeScalar(u8, lines, '\n');
++    while (it.next()) |line| {
++        var arena_state = std.heap.ArenaAllocator.init(gpa);
++        defer arena_state.deinit();
++        const ar = arena_state.allocator();
++        const q = try std.json.parseFromSliceLeaky(CalibrationRequest, ar, line, .{});
++        var refs: [1]d3.prompt.Reference = undefined;
++        if (q.ref_codes) |p| refs[0] = .{ .transcript = q.ref_text orelse return error.RefTextRequired, .codes = try readCodes(ar, io, p) };
++        const prompt = (try d3.prompt.build(ar, tok, q.text, refs[0..@intFromBool(q.ref_codes != null)])).frames;
++        var smp = a.smp;
++        smp.seed = q.seed;
++        const res = try e.generate(io, prompt, smp, a.max_frames, a.graphs, a.sync_every);
++        defer gpa.free(res.frames);
++        const rows = try std.mem.concat(ar, [W]i32, &.{ prompt, res.frames });
++        try dump.prefill(e, rows, try calibration.classify(ar, e.c.ids, rows, prompt.len));
++    }
++    try dump.finish(gpa, a.model, &try calibration.configDigest(gpa, io, a.model));
++    std.debug.print("RESULT drama3 calibration rows={d} layers={d} dir={s}\n", .{ dump.rows, d3.config.layers, dir });
++    return 0;
++}
++
+ fn runRequest(gpa: std.mem.Allocator, io: std.Io, a: Args, e: *d3.Engine, tts: ?*d3.tts.Tts, tok: *const core.tokenizer.Tokenizer, q: Request) !void {
+     var arena_state = std.heap.ArenaAllocator.init(gpa);
+     defer arena_state.deinit();
+diff --git a/zig/src/families/drama3/metal/calibration_rows.zig b/zig/src/families/drama3/metal/calibration_rows.zig
+new file mode 100644
+index 000000000..dc3a255b0
+--- /dev/null
++++ b/zig/src/families/drama3/metal/calibration_rows.zig
+@@ -0,0 +1,126 @@
++//! GPTQ-compatible Drama 3 calibration rows captured from the Metal MoE input and router.
++const std = @import("std");
++const cfg = @import("../config.zig");
++const eng = @import("engine.zig");
++
++const W = cfg.frame_width;
++const kinds = [_][]const u8{ "x.bf16", "picks.i32", "w.f32" };
++const widths = [kinds.len]usize{ cfg.hidden * 2, cfg.top_k * 4, cfg.top_k * 4 };
++
++pub const Class = enum(u8) { prompt_text, prompt_audio, generated };
++
++/// The class of every row of a prompt followed by the frames generated after it.
++pub fn classify(gpa: std.mem.Allocator, ids: cfg.Ids, rows: []const [W]i32, prompt_rows: usize) ![]u8 {
++    const out = try gpa.alloc(u8, rows.len);
++    for (rows, out, 0..) |row, *c, i| {
++        const audio = row[0] >= ids.sem_begin and row[0] <= ids.sem_end;
++        c.* = @intFromEnum(if (i >= prompt_rows) Class.generated else if (audio) Class.prompt_audio else Class.prompt_text);
++    }
++    return out;
++}
++
++pub const Rows = struct {
++    io: std.Io,
++    dir: std.Io.Dir,
++    class: std.Io.File,
++    files: [cfg.layers][kinds.len]std.Io.File,
++    staging: []u8,
++    rows: usize = 0,
++    /// Classes of the sequence being prefilled and how many of its rows layer 0 has seen.
++    sequence: []const u8 = &.{},
++    seen: usize = 0,
++    sequences: std.ArrayList(Sequence) = .empty,
++
++    const Sequence = struct { offset: usize, rows: usize };
++
++    pub fn create(gpa: std.mem.Allocator, io: std.Io, path: []const u8, max_rows: usize) !Rows {
++        try std.Io.Dir.cwd().createDir(io, path, .default_dir);
++        const dir = try std.Io.Dir.cwd().openDir(io, path, .{});
++        errdefer dir.close(io);
++        const class = try dir.createFile(io, "class.u8", .{ .exclusive = true });
++        errdefer class.close(io);
++        const staging = try gpa.alloc(u8, max_rows * cfg.hidden * 2);
++        errdefer gpa.free(staging);
++        var r: Rows = .{ .io = io, .dir = dir, .class = class, .files = undefined, .staging = staging };
++        var created: usize = 0;
++        errdefer for (0..created) |i| r.files[i / kinds.len][i % kinds.len].close(io);
++        var name: [32]u8 = undefined;
++        for (&r.files, 0..) |*layer, l| for (layer, kinds) |*file, kind| {
++            file.* = try dir.createFile(io, try std.fmt.bufPrint(&name, "layer-{d:0>2}.{s}", .{ l, kind }), .{ .exclusive = true });
++            created += 1;
++        };
++        return r;
++    }
++
++    pub fn deinit(r: *Rows, gpa: std.mem.Allocator) void {
++        for (&r.files) |*layer| for (layer) |file| file.close(r.io);
++        r.class.close(r.io);
++        r.dir.close(r.io);
++        r.sequences.deinit(gpa);
++        gpa.free(r.staging);
++    }
++
++    /// Prefill `rows` through the engine with every layer's MoE input and routing appended to the dump.
++    pub fn prefill(r: *Rows, e: *eng.Engine, rows: []const [W]i32, classes: []const u8) !void {
++        try r.sequences.append(e.gpa, .{ .offset = r.rows, .rows = rows.len });
++        r.sequence = classes;
++        r.seen = 0;
++        var hook: Hook = .{ .rows = r, .engine = e };
++        e.route_probe = .{ .ctx = &hook, .f = Hook.callback };
++        defer e.route_probe = null;
++        try e.startPrompt(rows);
++        var at: usize = 0;
++        while (at < rows.len) : (at += e.o.max_rows) try e.promptChunk(rows.len, at, @min(e.o.max_rows, rows.len - at), null);
++        try e.flush();
++    }
++
++    fn capture(r: *Rows, e: *eng.Engine, layer: usize, x: u64, picks: u64, weights: u64, count: usize) !void {
++        const offset = r.rows;
++        if (layer == 0) {
++            try r.class.writePositionalAll(r.io, r.sequence[r.seen..][0..count], offset);
++            r.seen += count;
++        }
++        for (r.files[layer], [_]u64{ x, picks, weights }, widths) |file, source, width| {
++            const bytes = r.staging[0 .. count * width];
++            try e.download(source, bytes);
++            try file.writePositionalAll(r.io, bytes, offset * width);
++        }
++        if (layer == cfg.layers - 1) r.rows += count;
++    }
++
++    pub fn finish(r: *Rows, gpa: std.mem.Allocator, checkpoint: []const u8, config_sha256: []const u8) !void {
++        const manifest = try std.json.Stringify.valueAlloc(gpa, .{
++            .schema = "drama-probe-rows/1",
++            .identity = .{ .producer = "drama3-generate Metal", .checkpoint = checkpoint, .config_sha256 = config_sha256 },
++            .rows = r.rows,
++            .layers = cfg.layers,
++            .class = .{ .file = "class.u8", .dtype = "u8", .shape = .{r.rows}, .values = "0 prompt_text, 1 prompt_audio, 2 generated" },
++            .x = .{ .file = "layer-LL.x.bf16", .dtype = "bf16", .shape = .{ r.rows, cfg.hidden }, .source = "addRmsnorm output, the MoE input" },
++            .picks = .{ .file = "layer-LL.picks.i32", .dtype = "i32", .shape = .{ r.rows, cfg.top_k } },
++            .w = .{ .file = "layer-LL.w.f32", .dtype = "f32", .shape = .{ r.rows, cfg.top_k }, .source = "renormalized routing weights, slot order" },
++            .chunks = r.sequences.items,
++        }, .{ .whitespace = .indent_2 });
++        defer gpa.free(manifest);
++        try r.dir.writeFile(r.io, .{ .sub_path = "rows.json", .data = manifest, .flags = .{ .exclusive = true } });
++    }
++};
++
++const Hook = struct {
++    rows: *Rows,
++    engine: *eng.Engine,
++
++    fn callback(ctx: *anyopaque, layer: usize, x: u64, picks: u64, weights: u64, count: usize) anyerror!void {
++        const h: *Hook = @ptrCast(@alignCast(ctx));
++        try h.rows.capture(h.engine, layer, x, picks, weights, count);
++    }
++};
++
++pub fn configDigest(gpa: std.mem.Allocator, io: std.Io, checkpoint: []const u8) ![64]u8 {
++    const path = try std.fs.path.join(gpa, &.{ checkpoint, "config.json" });
++    defer gpa.free(path);
++    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 22));
++    defer gpa.free(bytes);
++    var digest: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
++    return std.fmt.bytesToHex(digest, .lower);
++}
+diff --git a/zig/src/families/drama3/metal/engine.zig b/zig/src/families/drama3/metal/engine.zig
+index 5ce06ebce..0020e5ab9 100644
+--- a/zig/src/families/drama3/metal/engine.zig
++++ b/zig/src/families/drama3/metal/engine.zig
+@@ -86,6 +86,7 @@ pub const Engine = struct {
+     code_logits: u64,
+     rows_done: usize = 0,
+     prompt_rows: usize = 0,
++    route_probe: ?common.RouteProbe = null,
+ 
+     pub fn create(gpa: std.mem.Allocator, io: std.Io, model_dir: []const u8, o: Options) !*Engine {
+         const e = try gpa.create(Engine);
+@@ -281,7 +282,7 @@ pub const Engine = struct {
+         k.embedBackbone(g, e.pframes + c0 * W * 4, e.w.embed, e.w.cb_emb, e.x, t, H, e.c.ids.sem_begin, e.c.ids.sem_end, cfg.codebook_size);
+         if (probe) |p| try p.f(p.ctx, "backbone_input_embeds", e.x, t, H, false);
+         for (0..cfg.layers) |li| {
+-            fwd.backboneLayer(e, fwd.laneBB(e, e.pos), li, t);
++            try fwd.backboneLayer(e, fwd.laneBB(e, e.pos), li, t);
+             if (probe) |p| try p.f(p.ctx, std.fmt.bufPrint(&nb, "backbone_hidden.layer{d:0>2}", .{li}) catch unreachable, e.x, t, H, false);
+         }
+         k.rmsnorm(g, e.x, H, e.w.final_norm, e.hfin, H, t, H, cfg.eps, true);
+diff --git a/zig/src/families/drama3/metal/forward.zig b/zig/src/families/drama3/metal/forward.zig
+index 72f1f4bbd..f9bc6c4a0 100644
+--- a/zig/src/families/drama3/metal/forward.zig
++++ b/zig/src/families/drama3/metal/forward.zig
+@@ -34,7 +34,7 @@ pub fn laneTW(e: *Engine) Lane {
+ }
+ 
+ /// One backbone layer over t rows, e.x (the residual stream) in and out.
+-pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize) void {
++pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize) !void {
+     const g = e.g;
+     const L = &e.w.layers[li];
+     k.rmsnorm(g, e.x, H, L.in_norm, e.xn, H, t, H, cfg.eps, true);
+@@ -51,11 +51,11 @@ pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize) void {
+         k.linear(g, L.gdn.out, e.y, 4096, 4096, H, e.tmp, H, t, false);
+     }
+     k.addRmsnorm(g, e.x, e.tmp, H, L.post_norm, e.xn, t, H, cfg.eps);
+-    moe(e, L, t);
++    try moe(e, L, li, t);
+ }
+ 
+ /// The MoE block: original-ID router, gated shared expert and packed FP8/NVFP4 experts, added to the residual.
+-fn moe(e: *Engine, L: *const wts.Layer, t: usize) void {
++fn moe(e: *Engine, L: *const wts.Layer, li: usize, t: usize) !void {
+     const g = e.g;
+     const mp = cfg.moe_proj;
+     k.linear(g, L.moe_in, e.xn, H, H, mp, e.sp, mp, t, false);
+@@ -63,6 +63,7 @@ fn moe(e: *Engine, L: *const wts.Layer, t: usize) void {
+         k.router(g, e.sp, mp, 2 * cfg.shared_width, e.picks, e.rw, t)
+     else
+         k.routerCompact(g, e.sp, mp, 2 * cfg.shared_width, e.picks, e.rw, L.expert_slots, t);
++    if (e.route_probe) |p| try p.f(p.ctx, li, e.xn, e.picks, e.rw, t);
+     k.swiglu(g, e.sp, mp, 0, cfg.shared_width, cfg.shared_width, e.sact, t);
+     k.linear(g, L.shared_down, e.sact, cfg.shared_width, cfg.shared_width, H, e.shout, H, t, false);
+     const pairs = t * cfg.top_k;
+@@ -156,7 +157,7 @@ pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engi
+     }
+     // the backbone row of the new frame at pos + 1
+     k.embedBackbone(g, e.bb_input, e.w.embed, e.w.cb_emb, e.x, 1, H, sem_begin, e.c.ids.sem_end, cfg.codebook_size);
+-    for (0..cfg.layers) |li| backboneLayer(e, laneBB(e, e.pos_bb), li, 1);
++    for (0..cfg.layers) |li| try backboneLayer(e, laneBB(e, e.pos_bb), li, 1);
+     k.rmsnorm(g, e.x, H, e.w.final_norm, e.hlast, H, 1, H, cfg.eps, true);
+     k.finishFrame(g, e.frame, e.frames_out, e.cur_input, e.window, e.pos, e.step, e.count);
+ }
+diff --git a/zig/src/families/drama3/metal/guidance.zig b/zig/src/families/drama3/metal/guidance.zig
+index 516ec30f0..5e31bdab3 100644
+--- a/zig/src/families/drama3/metal/guidance.zig
++++ b/zig/src/families/drama3/metal/guidance.zig
+@@ -82,7 +82,7 @@ pub const Guide = struct {
+         // Feed the actual sampled conditional frame to the unconditional backbone, never its codec tower.
+         k.nextInput(u.g, conditional.frame, u.bb_input, u.pos, u.pos_bb);
+         k.embedBackbone(u.g, u.bb_input, u.w.embed, u.w.cb_emb, u.x, 1, H, u.c.ids.sem_begin, u.c.ids.sem_end, cfg.codebook_size);
+-        for (0..cfg.layers) |li| fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1);
++        for (0..cfg.layers) |li| try fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1);
+         k.rmsnorm(u.g, u.x, H, u.w.final_norm, u.hlast, H, 1, H, cfg.eps, true);
+         k.copyI32(u.g, u.pos_bb, u.pos, 1);
+         try u.g.commit();
+-- 
+2.54.0 (Apple Git-157)
+

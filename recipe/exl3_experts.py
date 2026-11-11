@@ -3,14 +3,17 @@
 
 Each kept expert's gate, up and down projections go through TensorFold's tf-exl3-encode at every bitrate, against
 Hessians from the Mac calibration rows (recipe/calibrate_experts.py). The encoder reloads what it wrote and requires
-dequantize() to reproduce its reconstruction bit for bit. A finished expert leaves its tensors and a record in WORK, so
-an interrupted run resumes where it stopped. Every finished layer becomes one shard per bitrate, and each bitrate's
-directory gets an index and exl3-provenance.json: the inputs, the settings, the sizes and, per layer, the Hessian error
-of EXL3 against the published NVFP4 experts on the same Hessians.
+dequantize() to reproduce its reconstruction bit for bit. Worker processes convert several layers at once, each into
+its own work folder; a finished expert leaves its tensors and a record there, so an interrupted run resumes where it
+stopped. Once every worker is done, each converted layer becomes one shard per bitrate, and each bitrate's directory
+gets an index and exl3-provenance.json: the inputs, the settings, the sizes and, per layer, the Hessian error of EXL3
+against the published NVFP4 experts on the same Hessians.
 """
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import json
+from itertools import repeat
 from pathlib import Path
 import re
 import struct
@@ -113,12 +116,13 @@ def convert_expert(encoder, source, quant, layer, expert, x, rows, work):
     (work / f'{expert:03d}.json').write_text(json.dumps(record))
 
 
-def convert_layer(args, source, quant, layer, experts, rows):
-    """Converts the layer's unfinished experts, then writes its shard at every bitrate, the last bitrate's last."""
+def convert_layer(args, layer, experts, rows):
+    """Converts the layer's unfinished experts into its own work folder; a worker process runs one layer at a time."""
     work = args.output / 'work' / f'layer-{layer:02d}'
     work.mkdir(parents=True, exist_ok=True)
     todo = [e for e in experts if not (work / f'{e:03d}.json').exists()]
     if todo:
+        source, quant = ce.Tensors(args.checkpoint, np), ce.Tensors(args.nvfp4, np)
         stem, picks, _ = ce.layer_rows(args.rows, layer, rows, np)
         x = ce.bf16(f'{stem}.x.bf16', rows, np)
         for expert in todo:
@@ -126,11 +130,16 @@ def convert_layer(args, source, quant, layer, experts, rows):
             count = int(routed.sum())
             convert_expert(args.encoder, source, quant, layer, expert, x[routed] if count else x, count, work)
             print(f'layer {layer} expert {expert}: {count} rows', flush=True)
+
+
+def write_shards(output, layer, experts):
+    """The layer's shard at every bitrate from its finished experts, the last bitrate's last."""
+    work = output / 'work' / f'layer-{layer:02d}'
     for bits in BITS:
         tensors = {}
         for expert in experts:
             tensors.update(read_safetensors(work / f'{expert:03d}-{bits}.safetensors')[0])
-        write_safetensors(args.output / f'exl3-{bits}' / f'model-{layer:02d}.safetensors', tensors, {'format': 'exl3'})
+        write_safetensors(output / f'exl3-{bits}' / f'model-{layer:02d}.safetensors', tensors, {'format': 'exl3'})
 
 
 def layer_report(records, bits, shard, nvfp4_bytes):
@@ -197,6 +206,8 @@ def main():
     parser.add_argument('--rows', type=Path, default=ce.OUTPUT, help='calibration rows from calibrate_experts.py')
     parser.add_argument('--output', type=Path, default=OUTPUT)
     parser.add_argument('--layers', type=int, nargs='+', default=range(ce.LAYERS))
+    parser.add_argument('--workers', type=int, default=8,
+                        help='layers converted at once, one process each holding its layer\'s rows (~1.5 GB)')
     args = parser.parse_args()
     manifest = json.loads((args.rows / 'rows.json').read_text())
     config = sha256(args.checkpoint / 'config.json')
@@ -212,11 +223,14 @@ def main():
     }
     kept = ce.kept_experts(args.nvfp4 / 'model.safetensors.index.json')
     experts = {layer: sorted(e for l, e in kept if l == layer) for layer in range(ce.LAYERS)}
-    source, quant = ce.Tensors(args.checkpoint, np), ce.Tensors(args.nvfp4, np)
     for bits in BITS:
         (args.output / f'exl3-{bits}').mkdir(parents=True, exist_ok=True)
-    for layer in args.layers:
-        convert_layer(args, source, quant, layer, experts[layer], manifest['rows'])
+    layers = sorted(set(args.layers))
+    # Each worker writes only its layer's work folder; a failed layer stops the run here, before any shard is written.
+    with ProcessPoolExecutor(args.workers) as pool:
+        list(pool.map(convert_layer, repeat(args), layers, [experts[l] for l in layers], repeat(manifest['rows'])))
+    for layer in layers:
+        write_shards(args.output, layer, experts[layer])
     # A run over some layers still reports every layer an earlier run finished.
     finished = [l for l in range(ce.LAYERS) if (args.output / f'exl3-{BITS[-1]}' / f'model-{l:02d}.safetensors').exists()]
     for bits in BITS:

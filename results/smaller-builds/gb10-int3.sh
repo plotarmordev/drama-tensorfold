@@ -4,12 +4,14 @@
 set -euo pipefail
 
 pilot=/assets/drama3-pilot
-tensorfold=b1f4b9b4830c9bd43bf7c432cffe7dea21313537  # engine/nvfp4/UPSTREAM
 tool=tools/zig/drama_nvfp4_gptq.py
+# the pinned TensorFold's (engine/nvfp4/UPSTREAM b1f4b9b4) tool, as the pilot keeps it; the job has no network
+pinned=$pilot/eq/bin/fallback-cb17869b/drama_nvfp4_gptq.py
+echo "93e5eff8efe49746dbe9710b9de07ed478827f6f1cc0c5eb385d67f20c533b53  $pinned" | sha256sum -c
 
 work=$(mktemp -d)
 mkdir -p "$work/tools/zig" /work/out/int3
-curl -fsSL "https://raw.githubusercontent.com/plotarmordev/TensorFold/$tensorfold/$tool" -o "$work/$tool"
+cp "$pinned" "$work/$tool"
 git -C "$work" init -q
 git -C "$work" apply --include="$tool" "$PWD/engine/nvfp4/patches/0006-int3-routed-experts.patch"
 

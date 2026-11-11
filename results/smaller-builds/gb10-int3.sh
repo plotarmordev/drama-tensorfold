@@ -22,6 +22,22 @@ if [ -z "$python" ]; then
   ls /usr/bin/python* /usr/local/bin/python* 2>&1
   exit 1
 fi
+# The FP8 checkpoint is still downloading into the pilot folder. Wait for its index and for every shard to stop
+# growing, holding a CUDA context so the window does not close idle (30 minutes with nothing on the GPU).
+PYTHONPATH="$pilot/venv/lib/python3.12/site-packages" "$python" - "$pilot/checkpoint" <<'EOF'
+import json, sys, time
+from pathlib import Path
+import torch
+
+held, src = torch.ones(1, device="cuda"), Path(sys.argv[1])
+while True:
+    index = src / "model.safetensors.index.json"
+    shards = sorted(set(json.loads(index.read_text())["weight_map"].values())) if index.exists() else None
+    if shards and all((src / s).exists() and time.time() - (src / s).stat().st_mtime > 120 for s in shards):
+        break
+    time.sleep(60)
+print("checkpoint complete:", time.strftime("%T"), flush=True)
+EOF
 cd /work/out
 PYTHONPATH="$pilot/venv/lib/python3.12/site-packages" "$python" "$work/$tool" "$pilot/checkpoint" \
   "$pilot/eq/runs/fp8-calib-rows" int3 --mode int3 --provenance "$pilot/models/eq-nvfp4-v3/nvfp4-provenance.json" \

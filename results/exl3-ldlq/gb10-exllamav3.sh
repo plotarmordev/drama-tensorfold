@@ -18,14 +18,13 @@ mkdir -p "$out"
 tar -xzf "$here/exllamav3-bd1f519.tar.gz" -C "$work"
 
 nvidia-smi -L
-# the venv's interpreter links into the host's uv store, outside the job; its packages need a Python 3.12
+# the venv's python links into the host's uv store; its packages need a Python 3.12
 python=$(command -v python3.12)
 # exllamav3 compiles its CUDA extension on first import (torch.utils.cpp_extension), for the GB10 only; that needs a
-# host C++ compiler and ninja (the pip package's own binary: the venv's bin scripts point at the host interpreter),
-# so the job stops here, before any work, if the image lacks either
+# host C++ compiler and ninja (the venv's, a native binary), so the run stops here, before any work, without either
 packages=$pilot/venv/lib/python3.12/site-packages
 export CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=12.1 TORCH_EXTENSIONS_DIR=$work/ext
-export PATH=$CUDA_HOME/bin:$packages/ninja/data/bin:$PATH PYTHONPATH=$work/exllamav3-bd1f519:$here:$packages
+export PATH=$CUDA_HOME/bin:$pilot/venv/bin:$PATH PYTHONPATH=$work/exllamav3-bd1f519:$here:$packages
 for tool in c++ ninja nvcc; do command -v "$tool" || { echo "no $tool to build exllamav3's extension" >&2; exit 1; }; done
 {
   "$python" "$here/exllamav3_job.py" "$pilot/checkpoint" "$here/hessians" "$out/exllamav3.json"

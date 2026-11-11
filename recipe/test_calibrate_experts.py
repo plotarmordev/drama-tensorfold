@@ -50,13 +50,15 @@ class CalibrateExpertsTests(unittest.TestCase):
         self.assertEqual(report['covered_experts'], ce.LAYERS * 32)
         self.assertEqual(report['kept_rows_min_median'], [0, 1])
 
-    def test_a_usable_capture_has_rows_for_every_kept_expert_a_near_mix_and_matching_statistics(self):
+    def test_a_usable_capture_has_rows_for_every_kept_expert_but_the_named_exception_a_near_mix_and_matching_statistics(self):
         usable = {'missing_kept_by_layer': {}, 'class_weights': {'prompt_text': 0.75, 'prompt_audio': 0.85, 'generated': 1.43},
                   'nvfp4_stats_pairs': TARGET, 'stats_check': {'ratio_p05_p95': [0.96, 1.04]}}
         self.assertEqual(ce.failures(usable), [])
+        # The approved layer-36 experts may lack rows; any other kept expert without rows fails.
+        self.assertEqual(ce.failures({**usable, 'missing_kept_by_layer': {'36': list(ce.NEVER_ROUTED[36])}}), [])
         for change, reason in (
-                # The NVFP4 calibration gave layer 36's expert 0 no rows either; it still fails.
-                ({'missing_kept_by_layer': {'36': [0]}}, 'kept experts without rows'),
+                ({'missing_kept_by_layer': {'36': [0, 1]}}, "kept experts without rows: {'36': [1]}"),
+                ({'missing_kept_by_layer': {'35': [0]}}, "kept experts without rows: {'35': [0]}"),
                 ({'class_weights': {**usable['class_weights'], 'generated': 2.01}}, 'class weights'),
                 ({'class_weights': {**usable['class_weights'], 'prompt_text': float('inf')}}, 'class weights'),
                 ({'class_weights': {**usable['class_weights'], 'prompt_audio': 0.49}}, 'class weights'),

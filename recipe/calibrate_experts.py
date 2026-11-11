@@ -30,6 +30,9 @@ ERR_H_TOLERANCE = 0.05
 # Rows are weighted to the NVFP4 build's class mix; a class that needs more than this factor either way is captured
 # too far from that mix for weights to stand in for rows.
 MIX_LIMIT = 2
+# Kept experts allowed to have no rows (Drama lead, 11 Nov): over the 175,396-row capture none places above 171st of
+# the router's 256 logits, and the NVFP4 build's calibration gave them no rows either. Each uses its layer's rows.
+NEVER_ROUTED = {36: (0, 14, 39, 117, 120, 147, 173, 195, 202, 211, 227, 246)}
 FP4 = (0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6)
 HESSIAN = {
     'gate_up': 'X_e = the rows of layer-L.x.bf16 whose picks contain e, row i weighted by c_i = report.json '
@@ -258,6 +261,7 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, target=No
         'covered_kept_experts': len(kept) - sum(len(m) for m in missing_kept.values()),
         'kept_rows_min_median': [min(kept_counts), int(np.median(kept_counts))],
         'missing_kept_by_layer': {str(l): m for l, m in missing_kept.items() if m},
+        'never_routed_exception': {str(l): list(e) for l, e in NEVER_ROUTED.items()},
         'missing_kept_nvfp4_routed': {str(l): [e for e in m if reference[l, e]] for l, m in missing_kept.items()
                                       if any(reference[l, e] for e in m)},
         'missing_by_layer': {str(l): m for l, m in missing.items() if m},
@@ -277,18 +281,19 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, target=No
 
 
 def failures(report):
-    """Why a capture is not usable for the EXL3 quant: a kept expert without rows, a class too far from the NVFP4
-    build's mix or statistics outside the tolerance."""
+    """Why a capture is not usable for the EXL3 quant: a kept expert without rows outside NEVER_ROUTED, a class too far
+    from the NVFP4 build's mix or statistics outside the tolerance."""
     out = []
-    if report['missing_kept_by_layer']:
-        out.append(f'kept experts without rows: {report["missing_kept_by_layer"]}')
+    unexpected = {l: u for l, m in report['missing_kept_by_layer'].items()
+                  if (u := [e for e in m if e not in NEVER_ROUTED.get(int(l), ())])}
+    if unexpected:
+        out.append(f'kept experts without rows: {unexpected}')
     if not all(1 / MIX_LIMIT <= w <= MIX_LIMIT for w in report['class_weights'].values()):
         out.append(f'class weights {report["class_weights"]} outside 1/{MIX_LIMIT}-{MIX_LIMIT}: capture closer to '
                    f'the NVFP4 class mix {report["nvfp4_stats_pairs"]}')
     if not all(abs(r - 1) <= ERR_H_TOLERANCE for r in report['stats_check']['ratio_p05_p95']):
         out.append(f'err_h ratio outside 1 ± {ERR_H_TOLERANCE}: these rows do not match the NVFP4 statistics')
     return out
-    return report
 
 
 def main():

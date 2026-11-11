@@ -250,16 +250,18 @@ of its layer's rows. `recipe/exl3_experts.py` builds its Hessians this way and r
 The check recomputes the NVFP4 build's published `err_h` for every kept gate and up expert of layers 0, 3, 20 and
 39 with these rows' weighted per-column sums of squares: identical statistics give a ratio of exactly 1. The NVFP4
 build's `stats.safetensors` stays on the Spark and came from other text and audio, so the 5th and 95th percentile
-ratios must lie within 1 ± 0.05. The command fails when a kept expert has no rows, when a class weight is outside
-½–2 (the capture is too far from the NVFP4 mix for weights to stand in for rows) or when the ratios miss the
-tolerance.
+ratios must lie within 1 ± 0.05. The command fails when a kept expert outside the named exception below has no rows,
+when a class weight is outside ½–2 (the capture is too far from the NVFP4 mix for weights to stand in for rows) or
+when the ratios miss the tolerance.
 
 The capture on 11 Nov: 175,396 rows (34,207 prompt text, 90,000 prompt audio, 51,189 generated: 19.5 / 51.3 /
-29.2 % against the NVFP4 build's 14.7 / 43.5 / 41.9 %, weights 0.75 / 0.85 / 1.43), 29.2 GB on disk, 28 minutes.
-9,918 of the 10,240 experts have rows, 5,888 of the 5,900 kept ones (at least 14 rows each, 1 % under 1,005), so
-the command fails on it. The 12 without rows are layer 36's experts 0, 14, 39, 117, 120, 147, 173, 195, 202, 211,
+29.2 % against the NVFP4 build's 14.7 / 43.5 / 41.9 %, weights 0.75 / 0.85 / 1.43), 29.2 GB on disk, 28 minutes;
+validating it takes 21 s. 9,918 of the 10,240 experts have rows, 5,888 of the 5,900 kept ones (at least 14 rows
+each, 1 % under 1,005). The 12 without rows are layer 36's experts 0, 14, 39, 117, 120, 147, 173, 195, 202, 211,
 227 and 246; the quant keeps that layer whole. Over these 175,396 rows none of them places above 171st of the
-router's 256 logits (it takes the top 8), and the NVFP4 build's calibration gave them no rows either. The weighted
+router's 256 logits (it takes the top 8), and the NVFP4 build's calibration gave them no rows either, so the Drama
+lead approved them on 11 Nov as a named exception (`NEVER_ROUTED`, listed in `report.json` as
+`never_routed_exception`): each takes all of layer 36's rows for its Hessian, and the command passes. The weighted
 `err_h` ratio over 1,208 tensors: median 1.006, 5th–95th percentile 0.990–1.026.
 
 ### EXL3 routed experts

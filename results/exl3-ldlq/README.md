@@ -55,8 +55,8 @@ exllamav3's EXL3 over int3, per expert (gate / up / down → the three summed), 
 | after LDLQ | `refit_scales` refits `su`, `sv` against H | none |
 
 So the feedback is exllamav3's; the search and the scales are not, and they cost it **2.7× exllamav3's error** in sum
-at both bitrates (0.15–0.57× per expert: worst on the sparse experts and on `down_proj`, 2–6.7× there): far from the
-1.1× per projection that `measure.py parity` asks of a match ([`parity.json`](parity.json)).
+at both bitrates (1.7–6.5× per expert, worst on the sparse experts; 0.69–6.7× per projection, worst on `down_proj`):
+far from the 1.1× per projection that `measure.py parity` asks of a match ([`parity.json`](parity.json)).
 
 [`gb10-exllamav3.sh`](gb10-exllamav3.sh) ran exllamav3 `bd1f519`'s own `quantize_exl3` ([vendored](exllamav3-bd1f519.tar.gz),
 its CUDA extension built for sm_121) on the same six experts at 3.0 and 2.5 bits, W rebuilt from the pilot's FP8

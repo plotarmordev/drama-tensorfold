@@ -29,14 +29,6 @@ BITS = ('3.0', '2.5')
 PROJECTIONS = ('gate_proj', 'up_proj', 'down_proj')
 OUTPUT = ce.ASSETS / 'drama3-exl3-experts'
 RECEIPT = re.compile(r'hessian_error exl3=(\S+)')
-HESSIAN = {
-    'gate_up': 'X_e = the rows of layer-L.x.bf16 whose picks contain e (unweighted); H = X_e^T X_e / n_e',
-    'down': 'A_e = silu(X_e W_gate^T) * (X_e W_up^T) with the original weights, as one unquantized forward pass '
-            'collects them; H = A_e^T A_e / n_e',
-    'no_rows': 'an expert the calibration never routed to takes X_e = all of its layer\'s rows',
-    'error': 'trace((W - Q) H (W - Q)^T), W the FP8 original; NVFP4 Q is the published expert, GPTQ-calibrated on '
-             'other rows, so its error is measured on this run\'s H too',
-}
 
 
 def name(layer, expert, projection):
@@ -191,7 +183,7 @@ def write_checkpoint(out, bits, inputs, layers):
         'schema': 'drama-exl3-experts/1',
         'producer': 'recipe/exl3_experts.py + TensorFold tf-exl3-encode',
         'inputs': inputs,
-        'settings': {'bits_per_weight': float(bits), 'codebook': 'mul1', 'hessian': HESSIAN},
+        'settings': {'bits_per_weight': float(bits), 'codebook': 'mul1', 'hessian': ce.HESSIAN},
         'complete': len(layers) == ce.LAYERS,
         'experts': sum(r['experts'] for r in layers.values()),
         'bytes': total,

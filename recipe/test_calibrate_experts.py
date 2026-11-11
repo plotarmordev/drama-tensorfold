@@ -39,7 +39,7 @@ class CalibrateExpertsTests(unittest.TestCase):
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [list(range(r * 8, r * 8 + 8)) for r in range(ROWS)])
         kept = {(layer, 0) for layer in range(ce.LAYERS)} | {(5, 40), (5, 41)}
         reference = {(layer, expert): 1 for layer in range(ce.LAYERS) for expert in range(ce.EXPERTS)} | {(5, 41): 0}
-        report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, reference, stats=False)
+        report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, reference, weight_checks=False)
         self.assertEqual(report['class_rows'], {'prompt_text': 1, 'prompt_audio': 2, 'generated': 1})
         self.assertEqual(report['missing_kept_by_layer'], {'5': [40, 41]})
         self.assertEqual(report['missing_kept_nvfp4_routed'], {'5': [40]})
@@ -50,12 +50,12 @@ class CalibrateExpertsTests(unittest.TestCase):
     def test_rejects_a_row_that_picks_an_expert_twice(self):
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [[0] * 8] + [list(range(8))] * (ROWS - 1))
         with self.assertRaisesRegex(ValueError, 'distinct'):
-            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, stats=False)
+            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, weight_checks=False)
 
     def test_rejects_rows_from_another_checkpoint(self):
         write_rows(self.tmp / 'rows', b'{"other": 1}', lambda layer: [list(range(8))] * ROWS)
         with self.assertRaisesRegex(ValueError, 'identity'):
-            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, stats=False)
+            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, weight_checks=False)
 
     def test_column_squares_count_each_routed_row_once_per_expert(self):
         x = np.array([[1, 2], [3, 4]], np.float32)
@@ -65,6 +65,14 @@ class CalibrateExpertsTests(unittest.TestCase):
         np.testing.assert_array_equal(squares[1], [1, 4])
         np.testing.assert_array_equal(squares[8], [9, 16])
         np.testing.assert_array_equal(squares[15], [0, 0])
+
+    def test_best_rank_is_the_highest_place_an_expert_reaches_in_any_row(self):
+        # Logits per row: expert 0 = x0, expert 1 = x1, expert 2 = -x0 - x1. Expert 2 is never above third.
+        x = np.array([[3, 1], [1, 2], [0.5, 0.25]], np.float32)
+        gate = np.array([[1, 0], [0, 1], [-1, -1]], np.float32)
+        self.assertEqual(ce.best_ranks(x, gate, [0, 1, 2], np), {0: 0, 1: 0, 2: 2})
+        # A tie ranks the higher expert ID lower: expert 1 tied with expert 0 places second.
+        self.assertEqual(ce.best_ranks(np.array([[1, 1]], np.float32), gate, [0, 1], np), {0: 0, 1: 1})
 
     def test_e4m3_and_e2m1_decoding(self):
         e4m3 = ce.e4m3(np.array([0x38, 0xB8, 0x7E, 0x01, 0x00]), np)

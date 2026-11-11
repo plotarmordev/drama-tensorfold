@@ -25,7 +25,17 @@ LAYERS, EXPERTS, TOP_K, HIDDEN = 40, 256, 8, 2048
 CLASSES = ('prompt_text', 'prompt_audio', 'generated')
 REFERENCE_SECONDS, REFERENCES, SEEDS = 29, 3, (1, 2)
 CHECK_LAYERS = (0, 3, 20, 39)
+# These rows come from other text and audio than the NVFP4 build's, so its statistics are matched closely, not exactly.
+ERR_H_TOLERANCE = 0.05
 FP4 = (0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6)
+HESSIAN = {
+    'gate_up': 'X_e = the rows of layer-L.x.bf16 whose picks contain e (unweighted); H = X_e^T X_e / n_e',
+    'down': 'A_e = silu(X_e W_gate^T) * (X_e W_up^T) with the original weights, as one unquantized forward pass '
+            'collects them; H = A_e^T A_e / n_e',
+    'no_rows': 'an expert the calibration never routed to takes X_e = all of its layer\'s rows',
+    'error': 'trace((W - Q) H (W - Q)^T), W the FP8 original; NVFP4 Q is the published expert, GPTQ-calibrated on '
+             'other rows, so its error is measured on this run\'s H too',
+}
 
 
 def references(work, binary=BINARY, checkpoint=CHECKPOINT):
@@ -84,14 +94,27 @@ def layer_rows(output, layer, rows, np):
     return stem, picks, weights
 
 
+def widen(raw, np):
+    """BF16 bit patterns to float32."""
+    return (raw.astype(np.uint32) << 16).view(np.float32)
+
+
 def bf16(path, rows, np):
-    return (np.fromfile(path, '<u2').astype(np.uint32) << 16).view(np.float32).reshape(rows, HIDDEN)
+    return widen(np.fromfile(path, '<u2'), np).reshape(rows, HIDDEN)
 
 
 def column_squares(x, picks, np):
     """Per-expert, per-column sum of x^2 over the rows routed to the expert: the diagonal of X_e^T X_e."""
     squares = x * x
     return np.stack([squares[(picks == expert).any(1)].sum(0, dtype=np.float64) for expert in range(EXPERTS)])
+
+
+def best_ranks(x, gate, experts, np):
+    """Each expert's best router rank over the rows x, 0 being the top logit; the router keeps ranks 0 to 7. A tie
+    ranks the higher expert ID lower, so a tied expert is never reported as reachable when it may not be."""
+    logits = x @ gate.T
+    ids = np.arange(logits.shape[1])[None, :]
+    return {e: int(((logits > logits[:, [e]]) | ((logits == logits[:, [e]]) & (ids < e))).sum(1).min()) for e in experts}
 
 
 class Tensors:
@@ -110,10 +133,14 @@ class Tensors:
                 self.headers[path] = (8 + size, json.loads(f.read(size)))
         start, header = self.headers[path]
         meta = header[name]
-        dtype = {'F32': '<f4', 'U8': 'u1', 'F8_E4M3': 'u1'}[meta['dtype']]
+        dtype = {'F32': '<f4', 'U8': 'u1', 'F8_E4M3': 'u1', 'BF16': '<u2'}[meta['dtype']]
         begin, end = meta['data_offsets']
         raw = self.np.fromfile(path, dtype, (end - begin) // self.np.dtype(dtype).itemsize, offset=start + begin)
-        return raw.reshape(meta['shape']) if meta['dtype'] != 'F8_E4M3' else e4m3(raw, self.np).reshape(meta['shape'])
+        if meta['dtype'] == 'F8_E4M3':
+            raw = e4m3(raw, self.np)
+        elif meta['dtype'] == 'BF16':
+            raw = widen(raw, self.np)
+        return raw.reshape(meta['shape'])
 
 
 def e4m3(raw, np):
@@ -137,10 +164,11 @@ def nvfp4(tensors, name, np):
     return np.array(FP4, np.float32)[codes] * np.repeat(tensors(name + '.weight_scale'), 16, 1) * tensors(name + '.weight_scale_2')
 
 
-def stats_check(output, rows, kept, np):
+def stats_check(output, rows, kept, checkpoint, np):
     """err_h of the NVFP4 gate/up experts recomputed with this run's column sums of squares, against nvfp4-provenance.json."""
-    published = {t['name']: t['err_h'] for t in json.loads((NVFP4 / 'nvfp4-provenance.json').read_text())['tensors']}
-    source, quant = Tensors(CHECKPOINT, np), Tensors(NVFP4, np)
+    provenance = json.loads((NVFP4 / 'nvfp4-provenance.json').read_text())
+    published = {t['name']: t['err_h'] for t in provenance['tensors']}
+    source, quant = Tensors(checkpoint, np), Tensors(NVFP4, np)
     ratios = []
     for layer in CHECK_LAYERS:
         stem, picks, _ = layer_rows(output, layer, rows, np)
@@ -160,6 +188,10 @@ def stats_check(output, rows, kept, np):
         'tensors': len(ratios),
         'ratio_median': float(np.median(ratios)),
         'ratio_p05_p95': [float(np.percentile(ratios, 5)), float(np.percentile(ratios, 95))],
+        'tolerance': ERR_H_TOLERANCE,
+        'why_not_exactly_1': 'the NVFP4 statistics (stats.safetensors, kept on the Spark) come from its own '
+                             'calibration text and audio, in the class mix of nvfp4_stats_pairs',
+        'nvfp4_stats_pairs': provenance['stats_pairs'],
     }
 
 
@@ -169,7 +201,8 @@ def nvfp4_routed(provenance=NVFP4 / 'nvfp4-provenance.json'):
             for expert, count in enumerate(json.loads(source['metadata']['gptq'])['rows'])}
 
 
-def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, stats=True):
+def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, weight_checks=True):
+    """Checks a capture and reports its coverage; WEIGHT_CHECKS adds the checks that read the checkpoint's weights."""
     import numpy as np
 
     manifest = json.loads((output / 'rows.json').read_text())
@@ -214,15 +247,16 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, stats=Tru
                                       if any(reference[l, e] for e in m)},
         'missing_by_layer': {str(l): m for l, m in missing.items() if m},
         'bytes': sum(p.stat().st_size for p in output.iterdir() if p.name != 'report.json'),
-        'hessian': {
-            'gate_up': 'Expert e of layer L: X_e = the rows of layer-L.x.bf16 whose layer-L.picks.i32 row contains e '
-                       '(unweighted, the same row once per expert); H_e = X_e^T X_e / n_e, [2048, 2048].',
-            'down': 'Run the quantized gate and up projections of expert e on X_e, apply SwiGLU to get A_e [n_e, 512]; '
-                    'H_down,e = A_e^T A_e / n_e.',
-        },
+        'hessian': HESSIAN,
     }
-    if stats:
-        report['stats_check'] = stats_check(output, rows, kept, np)
+    if weight_checks:
+        router = Tensors(checkpoint, np)
+        # Why a kept expert got no rows: its best rank among the router's 256 logits over all of its layer's rows.
+        report['missing_kept_best_rank'] = {
+            str(layer): best_ranks(bf16(output / f'layer-{layer:02d}.x.bf16', rows, np),
+                                   router(f'model.language_model.layers.{layer}.mlp.gate.weight'), experts, np)
+            for layer, experts in missing_kept.items() if experts}
+        report['stats_check'] = stats_check(output, rows, kept, checkpoint, np)
     return report
 
 
@@ -236,10 +270,13 @@ def main():
     report = validate(args.output, args.checkpoint)
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({k: report[k] for k in ('rows', 'class_rows', 'covered_kept_experts', 'kept_experts', 'bytes')}))
-    print(f'kept experts without rows: {report["missing_kept_by_layer"]}')
+    print(f'kept experts without rows: {report["missing_kept_by_layer"]}, best router ranks: {report["missing_kept_best_rank"]}')
+    print(f'err_h ratio to the NVFP4 build: {report["stats_check"]["ratio_p05_p95"]} (5th-95th percentile)')
     # A kept expert the NVFP4 build's calibration routed rows to must get rows here too.
     if report['missing_kept_nvfp4_routed']:
         raise SystemExit(f'kept experts the NVFP4 calibration routed but this run did not: {report["missing_kept_nvfp4_routed"]}')
+    if not all(abs(r - 1) <= ERR_H_TOLERANCE for r in report['stats_check']['ratio_p05_p95']):
+        raise SystemExit(f'err_h ratio outside 1 ± {ERR_H_TOLERANCE}: these rows do not match the NVFP4 statistics')
 
 
 if __name__ == '__main__':

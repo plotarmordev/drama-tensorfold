@@ -55,7 +55,8 @@ EXL3 over int3, per expert (gate / up / down → the three summed):
 So the feedback is exllamav3's; the search and the scales are not. **Parity is not shown**: exllamav3's quantizer
 runs only on CUDA, and no encode of these experts by it exists yet. The check that closes it: exllamav3 `bd1f519`'s
 `quantize_exl3` on the same six experts' W and H at 3.0 and 2.5 bits, on the Spark; ours matches when every
-projection's `trace((W − Q) H (W − Q)ᵀ)` is within 1.1× of exllamav3's (its `proxy_err` × `trace(W H Wᵀ)`).
+projection's `trace((W − Q) H (W − Q)ᵀ)` is within 1.1× of exllamav3's: its returned `proxy_err` (after
+`refit_scales`: original basis, undamped H, relative) × `trace(W H Wᵀ)`.
 
 ```sh
 git -C TENSORFOLD checkout 6b01e7307 && git -C TENSORFOLD am results/exl3-ldlq/ldlq.patch

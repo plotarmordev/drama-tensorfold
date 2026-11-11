@@ -89,6 +89,10 @@ RTF 0.50). **Serve `drama3-nvfp4-t5900cover-v1`**: 25.0 GiB wired between reques
 quant has frame-cap takes (4096 frames) on some corpus items; quality against the full model was
 not measured.
 
+[`results/macos-pin-fb8fdf3d.json`](../results/macos-pin-fb8fdf3d.json) records the move of the Mac pin to
+TensorFold main `fb8fdf3d`: on both published quants, and on a 5,900-expert checkpoint with the trimmed head,
+BF16 codec and int3 experts, every corpus take is byte-identical to the 3d219d21 engine's.
+
 For the full-model recipe (the Mac build at TensorFold v1.1.9 has not been run yet):
 
 ```sh

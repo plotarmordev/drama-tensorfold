@@ -5,4 +5,6 @@
   (packed NVFP4 experts and CFG, request sampling, dialogue speakers), so those are gone; the other five are
   rebased and renumbered: 0001 GB10 voice files, 0002 a take with no audio is a 500, 0003 compact lm_head,
   0004 BF16 codec, 0005 int3 routed experts. Patch 0002 now edits `speech_stream.zig`, where main moved the
-  streamed reply. The CUDA NVFP4 pin and the full-model pin are unchanged.
+  streamed reply. The CUDA NVFP4 pin and the full-model pin are unchanged. Every Mac corpus take is
+  byte-identical to the old pin's on both published quants and on a trimmed-head, BF16-codec, int3 checkpoint
+  ([`results/macos-pin-fb8fdf3d.json`](results/macos-pin-fb8fdf3d.json)).

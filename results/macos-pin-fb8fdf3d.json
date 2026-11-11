@@ -1,0 +1,133 @@
+{
+ "scope": "Mac NVFP4 engine pin moved from ashhart/TensorFold 3d219d21 (24 Oct) to main fb8fdf3d (10 Nov): every Mac corpus take on the old and new engines, same checkpoint, byte for byte. No speed or quality claim.",
+ "platform": {
+  "observed_gpu": "Apple M5 Ultra",
+  "ram_gib": 256
+ },
+ "engines": {
+  "old": {
+   "base": "3d219d2156d4c25dcfb74370c8703cd89e58aa49",
+   "patches": 11,
+   "head": "376f4787843244d00309c05243f702cf1e534b45",
+   "native_sha256": "8a2af4398aa7b894f6633eb5212c2b9ed87004d36777060ddc17e93baad46d98"
+  },
+  "new": {
+   "base": "fb8fdf3d8501255058a3221452164c56cb9a57ca",
+   "patches": 5,
+   "head": "4b3dfb8dd624a17c5fcd9b76f8962d54c50ee90a",
+   "tree": "d7006ec4bfbc2d448aee8c75043153c9b8a4eb6a",
+   "build": "scripts/build-engine.sh --weights nvfp4",
+   "native_sha256": "0233151ee7e573c5a840f766328f0fe7f2310f4470bf19a482bd2bc1861468f2"
+  }
+ },
+ "launch": "recipe/pilot_macos.py --native-bin BIN --checkpoint DIR -- --cfg-gamma 1.5 --cfg-batched",
+ "workload": "bench/corpus_capture.py, builtin voice, 24 corpus items: 2 passes on the new engine, 1 on the old",
+ "device_gate": "drama3-metal-quant-check on the new engine: 16/16 NVFP4 and int3 cases PASS",
+ "checkpoints": {
+  "nvfp4-7369": {
+   "checkpoint": "plotarmordev/drama-3-NVFP4-Pruned@494db084, manifest recipe/checksums/nvfp4.sha256 verified",
+   "requests_new_pin": 48,
+   "http_200_new_pin": 48,
+   "repeat_pass_pcm_identical": "24/24",
+   "old_vs_new_pin_pcm_identical": "24/24",
+   "audio_s_per_pass": 280.9,
+   "note": "published checkpoint",
+   "pcm_sha256": {
+    "long-01": "ea950374e5ca0e4ca5ef51154d39a36600f2a79bc8bf839e3fee64c11b139bd6",
+    "long-02": "ec2e8cc147ee6b53abcfd7d16445f934373bdfc336033ee226d2d1216db5bd25",
+    "long-03": "30a49eae78c3e8a66d17d15fa4ed003067271ae0904da5020f3d555bb2a9e188",
+    "long-04": "2d19507f31ba2a86881ae5d7ac0caa411464e7d0e2a0e4f52b7b34d83e5e66a3",
+    "long-05": "ac74951ed6e43a99ebc739058f6086c0ebaa7623162e2cf6e74489564833894d",
+    "long-06": "265ae5207f8032f1346157b4e3df6f75a793524574339b60c366ba6a44886016",
+    "long-07": "228c9bb503ac5ccee2ed8d08a4a4a120fecce9115f2ff70aa96d0e0eebe67986",
+    "long-08": "b77847ee06a848de7daa9d08f7a9abec1e578bd0355fe8c7efec26afac08f760",
+    "medium-01": "ffa6dfa76dff93804c80a6a552d3cb343e50cdf0196dfe766d6aaebae21e524f",
+    "medium-02": "5e67b2a4bce4c682bdfee642202f6ad27c6eede94c80cd13ab49c16dd521071d",
+    "medium-03": "1a24d854b926e2fec18e1633268887e4b37d5f8ccabc260da29817f4be7fc51e",
+    "medium-04": "bf58ab805b5a60facef459e249fbcdc6b413e0c631ab44b097f3ab7d16b41c29",
+    "medium-05": "a5365205dd245bf55d18c6bc6d9e39efb0b6c0f8885f81440f8fcae942a38b0c",
+    "medium-06": "ddc810b65842f6c918713f038250923256636127b81b2e2ccbec69db3ad02932",
+    "medium-07": "ab887141c2c6586b737a0a50a52ef42d338c9cb4ad01f30d1588f18414c507f8",
+    "medium-08": "1052c8b8a7a7f3cd366720962cc87790167597b9adff06fded765c3de746799d",
+    "short-01": "119beb38cdf4428fe8961cafbce8a7b2f1cfedadcb9d5e0eda93923661bce30e",
+    "short-02": "78b176cd81afa1afe19293a1e9f4a9c0b735b6790f8677df23caabd25dedc807",
+    "short-03": "105a318fc8de20b888d335501ca2d6ace855eea8de2f565a2f5b3abd5d247eb8",
+    "short-04": "53e5ee9f7394d131456486ee608c10d0091b0af19e4529411d343406aa184741",
+    "short-05": "8961f338ad0e930390cc2f701dca9cb61a2d64c6723689bd9d11f9287a78396d",
+    "short-06": "3ee64b9520539791c9f020afda3cbfe79e21c2fc183a0fde5a068d5636ad87bd",
+    "short-07": "e5a630cff9a4504e66b1dac8c64066fb316b2bb36a5847cbff0eada0dbb2f4ef",
+    "short-08": "434f7df60775dae46797ab5dde4e4bbb0fcbe3d0ff1f8c4b42b6e51b9e92b46c"
+   }
+  },
+  "nvfp4-5900": {
+   "checkpoint": "plotarmordev/drama-3-NVFP4-Pruned-5900@4bfe2c32, manifest recipe/checksums/nvfp4-t5900cover.sha256 verified",
+   "requests_new_pin": 48,
+   "http_200_new_pin": 48,
+   "repeat_pass_pcm_identical": "24/24",
+   "old_vs_new_pin_pcm_identical": "24/24",
+   "audio_s_per_pass": 343.3,
+   "note": "published checkpoint",
+   "pcm_sha256": {
+    "long-01": "b59e14e5f40ff7cde5d194263e3f478bfc727fbc3ce1ead59d7e1dcffb3ff433",
+    "long-02": "4a352b7cc91f5019a43c7bd591680007a1c7cfd3a4da022ee171e94faa72135e",
+    "long-03": "249fbbfbf874ed795a14118a314a584f7e75f15e566a17ed3d6dee3a43888dce",
+    "long-04": "c8d2b4a7dbcc45ae39c716dcbab2d3625b7de4c97bfb9f2f4e923ac3cc40b847",
+    "long-05": "240aaa8392c483ac224cc312062d0c153951e60220f675c67e4e129277b65ffb",
+    "long-06": "5682dd0a546997d3099e55b56dbd53aba40b72d933535a64902a815a53725678",
+    "long-07": "d2912e0962efc74d72ab24846d2ece173fe3a78f7d5f82cafed733418920436d",
+    "long-08": "889d576d925079410f5fb73fe0e08fb9f803f124e1cbcf69f2b807122aacbaae",
+    "medium-01": "c851d88eeb5766f68f0e843d669a692fabdd0d2b5a4e47339398bb5015958749",
+    "medium-02": "664fd42e6a452b886ccb68c575cf1f51bcd15fdc13fa8e38fa8be76c6557ed46",
+    "medium-03": "cb93b20ff44269dabf4d8e755ca43d69ad6d7f30b164e41a63a2e5204a73d020",
+    "medium-04": "ec971b179b54786d2e66578d1485fbb0d5ecac429ac7aa14bb1ac17bdb9e440f",
+    "medium-05": "4506d35a87a244679d27b474e929c62a7e14ce021c5452a11c32ccf95ad6002a",
+    "medium-06": "be7980d39f0377ebfc9b1b9812ac741fd4cbe59ac03f15b5237b6de06692d3f3",
+    "medium-07": "5c3ac5925d9cd3c76403cfc86222fe86cec9748c181dfb4706d25cf04163560f",
+    "medium-08": "7c2d8202675499efe183415354ee2ad5fcaa4c94d7f8f6e58ba7050559ed14be",
+    "short-01": "8e9fc2fa8fcc5d96872116bb9d8c864587ca185541ce289899ef83e093dafeef",
+    "short-02": "970fbbbd79ff93eeef081df4ba7aea37584e7f379f72052c867834458c870493",
+    "short-03": "b2054e1cbc16adc86910a16f3faf88d0cc03a17af9459190c0aeb89d8f48d241",
+    "short-04": "4a01ce827ad9a23fd3a1cd19b70bc97c1a1221bb7b913905264e7918f04b969e",
+    "short-05": "70ea73f977c6d3afb71a962d22999424e72fc89dd64b750432ae8c68eb855f58",
+    "short-06": "4916da966dea9c4b9f62e270178a1e782a923dcaedef72c3aed7f0f20cb2f5a9",
+    "short-07": "47ec62517985c00564d9d0e05a5210c4d291b74fc42c818205becc4f7664fd8b",
+    "short-08": "182221d002654a642d48b74ad61ea977832668a73b46cb3f794f17a646001b98"
+   }
+  },
+  "merged-smaller": {
+   "checkpoint": "nvfp4-5900 through recipe/trim_head.py (4,097 head rows), recipe/codec_bf16.py (codec sha256 92711bd2...) and every routed expert repacked as int3, its E2M1 codes rounded to 0, 2, 4, 6 under unchanged scales; 15.6 GB",
+   "requests_new_pin": 48,
+   "http_200_new_pin": 48,
+   "repeat_pass_pcm_identical": "24/24",
+   "old_vs_new_pin_pcm_identical": "24/24",
+   "audio_s_per_pass": 356.8,
+   "note": "Exercises compact head, BF16 codec and int3 loaders together. Its takes differ from nvfp4-5900 by construction (rounded experts, BF16 codec); the int3 repack is a loader smoke, not a quality quant.",
+   "pcm_sha256": {
+    "long-01": "03dbe193b1350120ffb1f7ec453656273d018ea3d87fc50dd1d0fcf0a1f6808a",
+    "long-02": "9e70781411df3891cf8ecdea63b564efec38dd2064b0990e8872ceb11591a56f",
+    "long-03": "369289aa9008ed44dd4dfb7fbde5ceb675486ab3348ab523957e7c805b8e660b",
+    "long-04": "1e1bf813a871cc868550316e1e890084569c95fee4473d07aa9ec6ea06c685e9",
+    "long-05": "d7ee007f9226cc442badceec51b975f6f78d52ccd2e71d3450c48be744eee603",
+    "long-06": "ea4453e03e35a434f644c574122342f6064132036b68edadf6bff4a8e5d93820",
+    "long-07": "f6d78e35631658a0725413b77ccb3cd2dd13c812ec4f5d7bb73a84db8a841a5a",
+    "long-08": "ceef9e343987627a6c70342ea1bf89922604a2637b2f03fc68020e3611c3edeb",
+    "medium-01": "a0f25660d8db79ebc5a364c52868f2e8d34b8f09271e930d80ceff32338c217f",
+    "medium-02": "155fec3552e370071e28bb17056740ff88cc0c8d6d71367775649f7fb1488221",
+    "medium-03": "1cd4847c1aeba272e053317a97d623210311d7302223f9bce392f802afac9a6a",
+    "medium-04": "3dc230bbea1df02c13f7a2f5f693a56fe600cc31183f307b44c928ff73d6c80a",
+    "medium-05": "0902fd2ea75a668c4db3fce3f1a0551c5fe39fc3d1fda0958b756253f54c4894",
+    "medium-06": "20907fa7d1d9ab3c02213b619d208758a9f965cb85f65f78ab43f34e2b562ad8",
+    "medium-07": "cf356190fcbe6bcb35580552cb5b98eb120d310fa76fb8b1cf709ee72768230a",
+    "medium-08": "0da156739be7bd91c945d961eb812a11fef449e729fcacc3386731e0508028f3",
+    "short-01": "85f8398d1d60ab00d74d75d6c545b1927903ba8b02841017da725d218177b0ee",
+    "short-02": "b6237e5dd7fb3ad1cea092f0775f8cd0a900ed60920bfe32c59d2b9e760b9c61",
+    "short-03": "8906e6c16ae6ba3b7a9e3f2d260cc2d43806ba84cea23d198cf92b8fc396c64b",
+    "short-04": "dc2ef2e79f827d8ef5be3b0de82c9c1089098d44fb4365c4b986311cc3a4d04c",
+    "short-05": "5b9f1e542cd68ec25a093ed1e893c660d3f756e54a43bd3ba3f1ec04bee0cae3",
+    "short-06": "2a33ce7707fa5f1f6d01957deb8371bdd0d43a516379db0a47eb16f63d8df7d9",
+    "short-07": "e8b511f77e5c181f3bc1eb2a1d34ce49e5fbf24e39217203be12283fc2ddf097",
+    "short-08": "606e5ccbcdf7f5af3a6ace3dcb252cc5c372df2702cb2e6c57919aa74f525c36"
+   }
+  }
+ }
+}

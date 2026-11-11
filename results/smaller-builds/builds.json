@@ -1,0 +1,108 @@
+{
+ "base": "t5900",
+ "winner": "trim-bf16-int3",
+ "builds": {
+  "t5900": {
+   "bytes": 19693405440,
+   "voices": {
+    "builtin": {
+     "takes": 48,
+     "wer_mean": 0.06911,
+     "wer_pooled": 0.06269,
+     "failed": 6,
+     "failed_items": [
+      "long-01 s1",
+      "long-02 s0",
+      "long-05 s0",
+      "long-07 s0",
+      "short-01 s0",
+      "short-08 s0"
+     ]
+    },
+    "ref": {
+     "takes": 48,
+     "wer_mean": 0.01498,
+     "wer_pooled": 0.00746,
+     "failed": 0,
+     "failed_items": []
+    }
+   }
+  },
+  "trim": {
+   "bytes": 18676815104,
+   "voices": {
+    "builtin": {
+     "takes": 48,
+     "wer_mean": 0.06911,
+     "wer_pooled": 0.06269,
+     "failed": 6,
+     "failed_items": [
+      "long-01 s1",
+      "long-02 s0",
+      "long-05 s0",
+      "long-07 s0",
+      "short-01 s0",
+      "short-08 s0"
+     ]
+    },
+    "ref": {
+     "takes": 48,
+     "wer_mean": 0.01498,
+     "wer_pooled": 0.00746,
+     "failed": 0,
+     "failed_items": []
+    }
+   }
+  },
+  "trim-bf16": {
+   "bytes": 17893907311,
+   "voices": {
+    "builtin": {
+     "takes": 48,
+     "wer_mean": 0.06911,
+     "wer_pooled": 0.06269,
+     "failed": 6,
+     "failed_items": [
+      "long-01 s1",
+      "long-02 s0",
+      "long-05 s0",
+      "long-07 s0",
+      "short-01 s0",
+      "short-08 s0"
+     ]
+    },
+    "ref": {
+     "takes": 48,
+     "wer_mean": 0.01498,
+     "wer_pooled": 0.00746,
+     "failed": 0,
+     "failed_items": []
+    }
+   }
+  },
+  "trim-bf16-int3": {
+   "bytes": 15573912279,
+   "voices": {
+    "builtin": {
+     "takes": 48,
+     "wer_mean": 0.05777,
+     "wer_pooled": 0.03731,
+     "failed": 4,
+     "failed_items": [
+      "long-01 s1",
+      "medium-05 s0",
+      "medium-05 s1",
+      "short-01 s0"
+     ]
+    },
+    "ref": {
+     "takes": 48,
+     "wer_mean": 0.01782,
+     "wer_pooled": 0.0097,
+     "failed": 0,
+     "failed_items": []
+    }
+   }
+  }
+ }
+}

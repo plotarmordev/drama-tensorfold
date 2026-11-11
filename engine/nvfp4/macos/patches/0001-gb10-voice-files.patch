@@ -1,4 +1,4 @@
-From ca3978097fa214dcfacdc79fdd5f4a7e25a399da Mon Sep 17 00:00:00 2001
+From ea1c454c05c38dc7f0f39d64c36217b117d12d44 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Wed, 4 Nov 2026 01:39:50 +0800
 Subject: [PATCH] server: load the CUDA engine's drama3-voice/1 and /2 files in
@@ -14,7 +14,7 @@ Subject: [PATCH] server: load the CUDA engine's drama3-voice/1 and /2 files in
  create mode 100644 zig/src/server/speech_gb10_voices_test.zig
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 2169f747..995c21f3 100644
+index 004590a5b..2f272968a 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
@@ -23,14 +23,14 @@ index 2169f747..995c21f3 100644
  
 +- Drama `--voices` folders also load the CUDA engine's `drama3-voice/1` and `drama3-voice/2` files as written, with their `codes_sha256` checked and their attestation kept; no re-encoding or reference audio. See [GB10 voice files](docs/drama-http-voices.md#gb10-voice-files).
 +
- - Drama speech accepts dialogue tags `<|speaker:0|>` through `<|speaker:15|>` in whole and streamed HTTP requests and catalog reference transcripts. Untagged text still uses speaker 0, and catalogs still allow at most four reference passages. See [dialogue speakers](docs/drama-http-voices.md#dialogue-speakers).
+ - GLM-5.3-Flash on Metal with `--vision`: a prompt chunk sends the vision tower only the images that end after its start, so two interleaved image prompts no longer re-encode images their earlier chunks already injected (12 images through the tower instead of 18 in a host test); each image is still encoded on its own and read through its own span, so the rows a chunk reads are unchanged (#2744).
  
- - Drama speech requests accept `temperature`, `top_p`, `top_k` (1 through 64) and exact unsigned 64-bit `seed` values. Whole replies, streams, catalog voices and redraws retain the requested settings; omitted or null fields keep the existing defaults. Explicit seeds advance by the attempt number for redraws. See [speech sampling](docs/speech-sampling.md).
+ - Flash Next on Metal: `TF_FLASHNEXT_SCALE_INDEX=1` (off by default; M1 through M4) has the 4-bit expert kernels read each group's scale and bias through a 16-bit index into its tensor's table of pairs: the same values from 10% fewer weight bytes, so replies keep their tokens. On an M3 Ultra with the MLX 4-bit checkpoint, drafted decode on one stream is 1.3% to 3.9% faster (prose 137.3 to 139.1 tok/s, a copy-heavy edit 262.8 to 273.2) and `"draft": false` 0.8% to 2.2% faster, with every token unchanged. The index sits beside the stored scales and biases, which prompt passes still read: 7.3 GiB more in use and about 3 s more load (#2760, part of #2751).
 diff --git a/docs/drama-http-voices.md b/docs/drama-http-voices.md
-index 17013be6..630f0377 100644
+index 50a507a9b..a04d945cc 100644
 --- a/docs/drama-http-voices.md
 +++ b/docs/drama-http-voices.md
-@@ -24,6 +24,10 @@ Reference `text` is the exact transcript. Codes are frame-major signed integers,
+@@ -25,6 +25,10 @@ Reference `text` is the exact transcript. Codes are frame-major signed integers,
  
  The loader enforces the family's reference count, transcript length, frame count and codebook ranges before serving. It also rejects empty references, structural prompt tokens, malformed speaker tags, oversized files and oversized catalogs. The assembled prompt must still fit the engine's advertised prompt budget. Reference rows go through the same family `prompt.build` used by the generation CLI; only the tokenizer interface is adapted.
  
@@ -42,10 +42,10 @@ index 17013be6..630f0377 100644
  
  Speech input and reference transcripts accept `<|speaker:N|>` with decimal IDs from `0` through `15`. Tags can change speakers within one request. Untagged text defaults to speaker 0; a leading tag after Unicode whitespace is preserved. Leading zeros, negative IDs, non-ASCII digits, incomplete tags and IDs above 15 are rejected.
 diff --git a/zig/src/server/drama_voice.zig b/zig/src/server/drama_voice.zig
-index 41f24c96..6e3517e9 100644
+index 5e6e9571f..18114849c 100644
 --- a/zig/src/server/drama_voice.zig
 +++ b/zig/src/server/drama_voice.zig
-@@ -25,40 +25,86 @@ fn text(value: ?[]const u8, limit: usize) ![]const u8 {
+@@ -25,36 +25,31 @@ fn text(value: ?[]const u8, limit: usize) ![]const u8 {
      return s;
  }
  
@@ -95,6 +95,9 @@ index 41f24c96..6e3517e9 100644
 +        ref.* = .{ .transcript = transcript, .codes = try if (http) frameMajor(a, value) else codebookMajor(a, value) };
      }
      return refs;
+ }
+@@ -71,6 +66,57 @@ fn describe(a: Allocator, bytes: []const u8) ![]const u8 {
+     return s;
  }
  
 +fn attested(doc: json.Value, kinds: []const []const u8) !void {
@@ -152,20 +155,20 @@ index 41f24c96..6e3517e9 100644
      var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
      defer dir.close(io);
 diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
-index ebcb27e1..13e17e00 100644
+index 03933c34b..cad114521 100644
 --- a/zig/src/server/root.zig
 +++ b/zig/src/server/root.zig
-@@ -55,6 +55,7 @@ test {
-     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_stream_test.zig"); // over a Unix socket pair
-     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_sampling_test.zig");
+@@ -83,6 +83,7 @@ test {
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_lane_release_test.zig");
      if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_speakers_test.zig");
+     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_sampling_test.zig");
 +    if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_gb10_voices_test.zig");
      _ = @import("drama_voice_tool.zig");
      _ = @import("speech_redraw.zig");
      if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_redraw_test.zig"); // over a Unix socket pair
 diff --git a/zig/src/server/speech_gb10_voices_test.zig b/zig/src/server/speech_gb10_voices_test.zig
 new file mode 100644
-index 00000000..b23b8652
+index 000000000..b23b8652b
 --- /dev/null
 +++ b/zig/src/server/speech_gb10_voices_test.zig
 @@ -0,0 +1,84 @@

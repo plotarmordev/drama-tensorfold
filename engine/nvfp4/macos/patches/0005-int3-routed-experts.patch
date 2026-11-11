@@ -1,4 +1,4 @@
-From 35ce8c3efb1c0d92df6c371e0ce4ca4bfae34d0c Mon Sep 17 00:00:00 2001
+From c23b90dba772ecc59fa160a3a2c09a535595639e Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 12:56:25 +0800
 Subject: [PATCH] drama3 metal: int3 routed experts (3.5 bits) in

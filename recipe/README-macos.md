@@ -89,6 +89,10 @@ RTF 0.50). **Serve `drama3-nvfp4-t5900cover-v1`**: 25.0 GiB wired between reques
 quant has frame-cap takes (4096 frames) on some corpus items; quality against the full model was
 not measured.
 
+[`results/macos-pin-fb8fdf3d.json`](../results/macos-pin-fb8fdf3d.json) records the move of the Mac pin to
+TensorFold main `fb8fdf3d`: on both published quants, and on a 5,900-expert checkpoint with the trimmed head,
+BF16 codec and int3 experts, every corpus take is byte-identical to the 3d219d21 engine's.
+
 For the full-model recipe (the Mac build at TensorFold v1.1.9 has not been run yet):
 
 ```sh
@@ -212,7 +216,7 @@ after one take stopped speaking and ran to the frame cap.
 
 The engine can also sample end of speech at a take's first frame, after about 2 s of prompt; without a
 request `seed` the draw comes from the prompt, so the same text gives the same empty take again. Metal
-patch 0008 makes the engine answer such a take, whole or streamed, with `500` "the model ended speech before
+patch 0002 makes the engine answer such a take, whole or streamed, with `500` "the model ended speech before
 its first audio frame" instead of `200` with no audio. The server never passes it on: on that error, or on
 empty audio from an engine without the patch, it draws that segment again with `seed` set to the request's
 seed (or 0) plus 1, then plus 2, and if all three draws are empty it answers `502` with a `server_error`,

@@ -3,12 +3,16 @@
 
   measure.py probe ENCODER INT3_DIR LAYER/EXPERT OUT_DIR   # one expert into OUT_DIR/LAYER-EXPERT.json
   measure.py report OUT_DIR OUT.json                       # card 35's six experts and the verdict
+  measure.py hessians OUT_DIR                              # the six experts' Hessians for exllamav3_job.py
+  measure.py parity PROBES.json EXLLAMAV3.json OUT.json    # ours against exllamav3's own encodes
 
 ENCODER is tf-exl3-encode built with ldlq.patch; INT3_DIR holds the int3 build's layer-LL.safetensors (int3.sha256 in
 ../smaller-builds). Each expert's error is trace((W - Q) H (W - Q)^T) over gate, up and down, W the FP8 original and H
 its Hessians from the NVFP4-mix calibration rows (recipe/exl3_experts.py's recipe), for EXL3 at 3.0 and 2.5 bits, the
-published NVFP4 and int3. EXL3 beats int3 at a bitrate when it is smaller and its summed error is lower.
+published NVFP4 and int3. EXL3 beats int3 at a bitrate when it is smaller and its summed error is lower. Ours matches
+exllamav3 when every projection's error is within PARITY of exllamav3's on the same W and H.
 """
+import hashlib
 import json
 import struct
 import sys
@@ -21,6 +25,7 @@ import calibrate_experts as ce  # noqa: E402
 import exl3_experts as ex  # noqa: E402
 
 PROBES = ((0, 237), (0, 16), (0, 117), (2, 42), (2, 222), (2, 5))  # card 35: fewest, median, most rows in layers 0 and 2
+PARITY = 1.1
 
 
 class Int3(ce.Tensors):
@@ -82,14 +87,18 @@ def verdict(probes):
     return out
 
 
-def probe(encoder, int3_dir, layer, expert, out_dir):
+def routed_rows(layer, expert):
     rows = json.loads((ce.OUTPUT / 'rows.json').read_text())['rows']
     stem, picks, _ = ce.layer_rows(ce.OUTPUT, layer, rows, np)
     routed = (picks == expert).any(1)
-    x = ce.bf16(f'{stem}.x.bf16', rows, np)[routed]
+    return ce.bf16(f'{stem}.x.bf16', rows, np)[routed]
+
+
+def probe(encoder, int3_dir, layer, expert, out_dir):
+    x = routed_rows(layer, expert)
     result = measure_expert(encoder, ce.Tensors(ce.CHECKPOINT, np), ce.Tensors(ce.NVFP4, np),
                             Int3(int3_dir, [layer]), layer, expert, x)
-    record = {'encoder_sha256': ex.sha256(encoder), 'rows': int(routed.sum()), **result}
+    record = {'encoder_sha256': ex.sha256(encoder), 'rows': len(x), **result}
     (out_dir / f'{layer}-{expert}.json').write_text(json.dumps(record, indent=1) + '\n')
 
 
@@ -98,12 +107,44 @@ def report(out_dir, out):
     out.write_text(json.dumps({'rows': str(ce.OUTPUT), 'probes': probes, 'verdict': verdict(probes)}, indent=1) + '\n')
 
 
+def weight_sha256(w):
+    return hashlib.sha256(np.ascontiguousarray(w, np.float32).tobytes()).hexdigest()
+
+
+def hessians(out_dir):
+    """Per expert, OUT_DIR/LAYER-EXPERT.npz: the upper triangles of its gate/up and down Hessians in float32 and the
+    sha256 of each projection's float32 W, which exllamav3_job.py rebuilds from the FP8 checkpoint and checks."""
+    source = ce.Tensors(ce.CHECKPOINT, np)
+    for layer, expert in PROBES:
+        w = {p: ce.original(source, ex.name(layer, expert, p), np) for p in ex.PROJECTIONS}
+        with np.errstate(all='ignore'):
+            h_in, h_down = ex.hessians(routed_rows(layer, expert), w['gate_proj'], w['up_proj'])
+        np.savez_compressed(out_dir / f'{layer}-{expert}.npz', h_in=h_in[np.triu_indices(len(h_in))].astype(np.float32),
+                            h_down=h_down[np.triu_indices(len(h_down))].astype(np.float32),
+                            **{f'{p}_sha256': weight_sha256(w[p]) for p in ex.PROJECTIONS})
+
+
+def parity(probes, exllamav3):
+    """Per bitrate and probe, each projection's error over exllamav3's, and whether all of them are within PARITY."""
+    ratios = {bits: {k: {p: probes[k][f'exl3-{bits}'][p] / ref[bits][p] for p in ex.PROJECTIONS}
+                     for k, ref in exllamav3.items()} for bits in ex.BITS}
+    worst = max(r for per_bits in ratios.values() for per_probe in per_bits.values() for r in per_probe.values())
+    return {'ours_over_exllamav3': ratios, 'worst': worst, 'matches': worst <= PARITY}
+
+
 def main():
-    if sys.argv[1] == 'probe':
-        layer, expert = map(int, sys.argv[4].split('/'))
-        probe(Path(sys.argv[2]).resolve(), Path(sys.argv[3]), layer, expert, Path(sys.argv[5]))
+    command, args = sys.argv[1], sys.argv[2:]
+    if command == 'probe':
+        layer, expert = map(int, args[2].split('/'))
+        probe(Path(args[0]).resolve(), Path(args[1]), layer, expert, Path(args[3]))
+    elif command == 'report':
+        report(Path(args[0]), Path(args[1]))
+    elif command == 'hessians':
+        hessians(Path(args[0]))
     else:
-        report(Path(sys.argv[2]), Path(sys.argv[3]))
+        probes = json.loads(Path(args[0]).read_text())['probes']
+        result = parity(probes, json.loads(Path(args[1]).read_text()))
+        Path(args[2]).write_text(json.dumps(result, indent=1) + '\n')
 
 
 if __name__ == '__main__':

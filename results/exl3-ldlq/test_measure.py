@@ -31,5 +31,19 @@ class VerdictTest(unittest.TestCase):
         self.assertAlmostEqual(v['exl3-2.5']['bytes_over_int3'], 0.73)
 
 
+class ParityTest(unittest.TestCase):
+    def test_matches_only_when_every_projection_is_within_parity(self):
+        errors = lambda g, u, d: {'gate_proj': g, 'up_proj': u, 'down_proj': d}  # noqa: E731
+        ours = {'0/1': {'exl3-3.0': errors(1.0, 2.0, 3.0), 'exl3-2.5': errors(2.0, 4.0, 6.0)}}
+        reference = {'0/1': {'3.0': errors(1.0, 2.0, 3.0), '2.5': errors(2.0, 4.0, 6.0)}}
+        self.assertTrue(measure.parity(ours, reference)['matches'])
+        # one projection 1.2x worse than exllamav3 fails it, though the sum over the expert is within 1.1x
+        ours['0/1']['exl3-2.5']['gate_proj'] = 2.4
+        result = measure.parity(ours, reference)
+        self.assertFalse(result['matches'])
+        self.assertAlmostEqual(result['worst'], 1.2)
+        self.assertAlmostEqual(result['ours_over_exllamav3']['2.5']['0/1']['gate_proj'], 1.2)
+
+
 if __name__ == '__main__':
     unittest.main()

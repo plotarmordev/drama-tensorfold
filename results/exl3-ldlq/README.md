@@ -58,18 +58,22 @@ So the feedback is exllamav3's; the search and the scales are not, and they cost
 at both bitrates (1.7–6.5× per expert, worst on the sparse experts; 0.69–6.7× per projection, worst on `down_proj`):
 far from the 1.1× per projection that `measure.py parity` asks of a match ([`parity.json`](parity.json)).
 
-[`gb10-exllamav3.sh`](gb10-exllamav3.sh) ran exllamav3 `bd1f519`'s own `quantize_exl3` ([vendored](exllamav3-bd1f519.tar.gz),
-its CUDA extension built for sm_121) on the same six experts at 3.0 and 2.5 bits, W rebuilt from the pilot's FP8
-checkpoint and checked by sha256 against [`hessians/`](hessians) (`measure.py hessians`: each expert's two Hessians as
-float32 upper triangles, which reproduce `probes.json`'s NVFP4 errors to 2e-7). [`exllamav3_job.py`](exllamav3_job.py)
-scores exllamav3's returned Q (after `refit_scales`, original basis) on the undamped H in float64; `measure.py parity`
-divides ours by it and scores exllamav3 against int3 and NVFP4 on our bytes (its trellis and `su`/`sv` take the same
-bytes at each bitrate). It ran on the Spark host in the 12 Nov 04:51 window, since the job image has no C++ compiler
-for the extension: building it took 2.5 min, the 36 encodes and their scoring 22 s.
+[`gb10-exllamav3.sh`](gb10-exllamav3.sh) ran exllamav3 `bd1f519`'s own `quantize_exl3` ([vendored](exllamav3-bd1f519.tar.gz))
+on the same six experts at 3.0 and 2.5 bits, W rebuilt from the pilot's FP8 checkpoint and checked by sha256 against
+[`hessians/`](hessians) (`measure.py hessians`: each expert's two Hessians as float32 upper triangles, which reproduce
+`probes.json`'s NVFP4 errors to 2e-7). [`exllamav3_job.py`](exllamav3_job.py) scores exllamav3's returned Q (after
+`refit_scales`, original basis) on the undamped H in float64; `measure.py parity` divides ours by it and scores
+exllamav3 against int3 and NVFP4 on our bytes (its trellis and `su`/`sv` take the same bytes at each bitrate).
+
+The job image has no C++ compiler, so exllamav3's CUDA extension is prebuilt for sm_121 by
+[`build-exllamav3-ext.sh`](build-exllamav3-ext.sh) in `python:3.12.12-bookworm` (the image's base, with g++ 12)
+against the pilot venv's torch, and the job loads it ([`exllamav3_ext-bd1f519-sm121.so.gz`](exllamav3_ext-bd1f519-sm121.so.gz),
+checked by sha256). Job `bottom-f822a8a1d507` ran it from commit `a625218df` in the 12 Nov 05:47 window and exited 0
+after 22 s of encodes; [`exllamav3.log`](exllamav3.log), `exllamav3.json` and `parity.json` are its `/work/out`
+(the errors byte-identical to an earlier run on the host itself).
 
 ```sh
-# on the Spark host, from a checkout of this repo
-PILOT=<drama3-pilot folder> OUT=<scratch> results/exl3-ldlq/gb10-exllamav3.sh   # OUT/exl3-ref/parity.json
+job start gpu middle plotarmordev/<repo> <sha> results/exl3-ldlq/gb10-exllamav3.sh   # /work/out/exl3-ref/parity.json
 ```
 
 ```sh
@@ -99,8 +103,8 @@ All 5,900 kept experts at 3.0 bits through exllamav3 `bd1f519`'s `quantize_exl3`
    the Spark has no network in a job and the repo cannot carry them.
 2. **Encode** in one Spark window: `exllamav3_job.py` turned into a writer that keeps exllamav3's trellis, `su` and
    `sv` per projection in `recipe/exl3_experts.py`'s shard names and records each error. At this run's 0.6 s per
-   projection (FP8 load and float64 scoring included) the 17,700 projections take **~3 h of GPU**, plus 2.5 min to
-   build the extension on the host.
+   projection (FP8 load and float64 scoring included) the 17,700 projections take **~3 h of GPU** in a job, with
+   the prebuilt extension.
 3. **Then:** splice the shards into `trim-bf16` and speak the 48 takes per voice with `../smaller-builds`' harness.
    No patch in `engine/` loads EXL3 routed experts yet; that loader, and checking that it decodes exllamav3's
    trellis as exllamav3 does, is the step between the conversion and the listening test.

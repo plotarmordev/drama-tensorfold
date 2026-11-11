@@ -262,9 +262,11 @@ quantizes the 5,900 experts the pruned quant keeps to EXL3 at 3.0 and 2.5 bits p
 (not from NVFP4), with TensorFold's CPU encoder `tf-exl3-encode` (TensorFold card 23; no CUDA or torch). The
 encoder checks that its written trellis reloads and decodes bit for bit. Each expert's Hessians come from the
 calibration rows above: H = XᵀX / n over the rows routed to it, and for `down_proj` the same over SwiGLU(gate, up)
-of the original weights. The 12 layer-36 experts without rows use all of their layer's rows. Finished experts stay in
-`drama3-exl3-experts/work`, so a stopped run resumes where it left off. Each finished layer becomes one shard in
-`drama3-exl3-experts/exl3-3.0/` and `exl3-2.5/`, holding only the expert groups (`trellis`, `suh`, `svh`, `mul1`).
+of the original weights. The 12 layer-36 experts without rows use all of their layer's rows. `--workers` (default 8)
+converts that many layers at once, one process each, every one writing only its layer's folder under
+`drama3-exl3-experts/work`; finished experts stay there, so a stopped run resumes where it left off. Once every
+worker is done, each converted layer becomes one shard in `drama3-exl3-experts/exl3-3.0/` and `exl3-2.5/`, holding
+only the expert groups (`trellis`, `suh`, `svh`, `mul1`); if a layer fails, none is written.
 Each folder also gets an index and `exl3-provenance.json`: input paths and hashes, encoder commit and hash, settings,
 bytes against the NVFP4 experts, and per layer and projection `trace((W − Q) H (W − Q)ᵀ)` for EXL3 and for the
 published NVFP4 expert on the same H.

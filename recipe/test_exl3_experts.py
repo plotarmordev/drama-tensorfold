@@ -17,7 +17,6 @@ ROWS, ROUTED, UNROUTED, LAYERS = 6, 3, 7, (0, 1)
 PICKS = [[ROUTED, *range(10, 17)], [*range(20, 28)], [ROUTED, *range(10, 17)], [*range(20, 28)], [*range(20, 28)],
          [ROUTED, *range(10, 17)]]
 CLASSES = [0, 1, 2, 2, 1, 2]
-WEIGHTS = {'prompt_text': 0.5, 'prompt_audio': 1.0, 'generated': 2.0}
 # Reports trace(H) as its EXL3 error and writes one group of the real encoder's tensor names and shapes, with suh
 # carrying diag(H) so a shard's bytes depend on the rows each expert was encoded against.
 FAKE_ENCODER = f"""#!{sys.executable}
@@ -67,12 +66,11 @@ def checkpoints(root):
 
 
 def rows(root):
-    """Each layer's calibration rows, other rows per layer, their classes and class weights; returns layer 0's x as
-    the converter reads it back."""
+    """Each layer's calibration rows, other rows per layer, and their classes; returns layer 0's x as the converter
+    reads it back."""
     out = root / 'rows'
     out.mkdir()
     (out / 'rows.json').write_text(json.dumps({'rows': ROWS, 'identity': {'config_sha256': hashlib.sha256(b'{}').hexdigest()}}))
-    (out / 'report.json').write_text(json.dumps({'class_weights': WEIGHTS}))
     np.array(CLASSES, np.uint8).tofile(out / 'class.u8')
     for layer in LAYERS:
         x = np.random.default_rng(layer).standard_normal((ROWS, ce.HIDDEN)).astype('<f4')
@@ -80,12 +78,6 @@ def rows(root):
         np.array(PICKS, '<i4').tofile(out / f'layer-{layer:02d}.picks.i32')
         np.full((ROWS, ce.TOP_K), 1 / ce.TOP_K, '<f4').tofile(out / f'layer-{layer:02d}.w.f32')
     return ce.bf16(out / 'layer-00.x.bf16', ROWS, np).astype(np.float64)
-
-
-def weighted(x, c):
-    # Accelerate's matmul raises FP flags on finite inputs, as in exl3_experts.convert_expert.
-    with np.errstate(all='ignore'):
-        return (x.T * c) @ x / c.sum()
 
 
 class Exl3ExpertsTests(unittest.TestCase):
@@ -110,10 +102,10 @@ class Exl3ExpertsTests(unittest.TestCase):
         self.run_converter(out, workers).check_returncode()
         return {bits: json.loads((self.root / f'{out}/exl3-{bits}/exl3-provenance.json').read_text()) for bits in ex.BITS}
 
-    def test_each_expert_is_measured_on_its_own_class_weighted_rows_against_the_published_nvfp4(self):
+    def test_each_expert_is_measured_on_its_own_rows_against_the_published_nvfp4(self):
         provenance = self.convert()
-        c = np.array([WEIGHTS[ce.CLASSES[k]] for k in CLASSES])
-        h_routed, h_all = weighted(self.x[[0, 2, 5]], c[[0, 2, 5]]), weighted(self.x, c)
+        routed = self.x[[0, 2, 5]]
+        h_routed, h_all = routed.T @ routed / 3, self.x.T @ self.x / ROWS
         gate = provenance['3.0']['layers']['0']['gate_proj']
         # The stand-in reports trace(H); every weight is off its NVFP4 copy by 0.5 in each of 512 rows.
         self.assertAlmostEqual(gate['exl3_error'] / (np.trace(h_routed) + np.trace(h_all)), 1, places=9)
@@ -161,9 +153,10 @@ class Exl3ExpertsTests(unittest.TestCase):
         suh = f'{ex.name(0, ROUTED, "gate_proj")}.suh'
         self.assertNotEqual(zero[suh], one[suh.replace('layers.0.', 'layers.1.')])
 
-    def test_a_work_folder_encoded_with_other_class_weights_is_not_resumed(self):
+    def test_a_work_folder_encoded_from_other_rows_is_not_resumed(self):
         self.convert()
-        (self.root / 'rows/report.json').write_text(json.dumps({'class_weights': {**WEIGHTS, 'generated': 1.5}}))
+        # Two rows swap classes: the counts, the manifest and every tensor stay the same.
+        np.array([1, 0, 2, 2, 1, 2], np.uint8).tofile(self.root / 'rows/class.u8')
         run = self.run_converter('out', workers=2)
         self.assertNotEqual(run.returncode, 0)
         self.assertIn(b'other Hessians', run.stderr)

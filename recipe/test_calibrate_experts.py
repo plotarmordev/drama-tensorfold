@@ -10,8 +10,9 @@ import numpy as np
 import calibrate_experts as ce
 
 ROWS = 4
-# The NVFP4 build's mix: rows 0-3 are one text, two audio and one generated row, so text and generated get weight 1.2.
+# The NVFP4 build's mix: rows 0-3 are one text, two audio and one generated row, against its 30 / 40 / 30 %.
 TARGET = {'prompt_text': 3, 'prompt_audio': 4, 'generated': 3}
+SHARES = {'prompt_text': 0.3, 'prompt_audio': 0.4, 'generated': 0.3}
 
 
 def write_rows(out, config, picks_for):
@@ -36,32 +37,35 @@ class CalibrateExpertsTests(unittest.TestCase):
         self.checkpoint.mkdir()
         (self.checkpoint / 'config.json').write_bytes(b'{}')
 
-    def test_reports_kept_experts_without_rows_by_layer_and_the_class_weights(self):
+    def test_reports_kept_experts_without_rows_by_layer_and_the_class_mix(self):
         # Rows cover experts 0-31 in every layer; layer 5 keeps 40 and 41, which have none. Only 40 had NVFP4 rows.
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [list(range(r * 8, r * 8 + 8)) for r in range(ROWS)])
         kept = {(layer, 0) for layer in range(ce.LAYERS)} | {(5, 40), (5, 41)}
         reference = {(layer, expert): 1 for layer in range(ce.LAYERS) for expert in range(ce.EXPERTS)} | {(5, 41): 0}
         report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, reference, TARGET, weight_checks=False)
         self.assertEqual(report['class_rows'], {'prompt_text': 1, 'prompt_audio': 2, 'generated': 1})
-        self.assertEqual(report['class_weights'], {'prompt_text': 1.2, 'prompt_audio': 0.8, 'generated': 1.2})
+        self.assertEqual(report['class_shares'], {'prompt_text': 0.25, 'prompt_audio': 0.5, 'generated': 0.25})
+        self.assertEqual(report['nvfp4_class_shares'], SHARES)
         self.assertEqual(report['missing_kept_by_layer'], {'5': [40, 41]})
         self.assertEqual(report['missing_kept_nvfp4_routed'], {'5': [40]})
         self.assertEqual(report['covered_kept_experts'], len(kept) - 2)
         self.assertEqual(report['covered_experts'], ce.LAYERS * 32)
         self.assertEqual(report['kept_rows_min_median'], [0, 1])
 
-    def test_a_usable_capture_has_rows_for_every_kept_expert_but_the_named_exception_a_near_mix_and_matching_statistics(self):
-        usable = {'missing_kept_by_layer': {}, 'class_weights': {'prompt_text': 0.75, 'prompt_audio': 0.85, 'generated': 1.43},
-                  'nvfp4_stats_pairs': TARGET, 'stats_check': {'ratio_p05_p95': [0.96, 1.04]}}
+    def test_usable_rows_cover_every_kept_expert_but_the_named_exception_in_the_nvfp4_mix_with_matching_statistics(self):
+        usable = {'missing_kept_by_layer': {}, 'class_shares': {'prompt_text': 0.309, 'prompt_audio': 0.391, 'generated': 0.3},
+                  'nvfp4_class_shares': SHARES, 'stats_check': {'ratio_p05_p95': [0.96, 1.04]}}
         self.assertEqual(ce.failures(usable), [])
         # The approved layer-36 experts may lack rows; any other kept expert without rows fails.
         self.assertEqual(ce.failures({**usable, 'missing_kept_by_layer': {'36': list(ce.NEVER_ROUTED[36])}}), [])
         for change, reason in (
                 ({'missing_kept_by_layer': {'36': [0, 1]}}, "kept experts without rows: {'36': [1]}"),
                 ({'missing_kept_by_layer': {'35': [0]}}, "kept experts without rows: {'35': [0]}"),
-                ({'class_weights': {**usable['class_weights'], 'generated': 2.01}}, 'class weights'),
-                ({'class_weights': {**usable['class_weights'], 'prompt_text': float('inf')}}, 'class weights'),
-                ({'class_weights': {**usable['class_weights'], 'prompt_audio': 0.49}}, 'class weights'),
+                # The 11 Nov capture's own mix against the NVFP4 build's 14.67 / 43.45 / 41.88 %.
+                ({'class_shares': {'prompt_text': 0.1950, 'prompt_audio': 0.5131, 'generated': 0.2918},
+                  'nvfp4_class_shares': {'prompt_text': 0.1467, 'prompt_audio': 0.4345, 'generated': 0.4188}},
+                 'class shares'),
+                ({'class_shares': {**usable['class_shares'], 'generated': 0.311}}, 'class shares'),
                 ({'stats_check': {'ratio_p05_p95': [0.94, 1.0]}}, 'err_h ratio'),
                 ({'stats_check': {'ratio_p05_p95': [1.0, 1.06]}}, 'err_h ratio')):
             with self.subTest(change=change):
@@ -79,14 +83,24 @@ class CalibrateExpertsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'identity'):
             ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, TARGET, weight_checks=False)
 
-    def test_column_squares_count_each_routed_row_once_per_expert_at_its_class_weight(self):
+    def test_column_squares_count_each_routed_row_once_per_expert(self):
         x = np.array([[1, 2], [3, 4]], np.float32)
         picks = np.array([[0, 1, 2, 3, 4, 5, 6, 7], [0, 8, 9, 10, 11, 12, 13, 14]])
-        squares = ce.column_squares(x, picks, np.array([1, 0.5]), np)
-        np.testing.assert_array_equal(squares[0], [5.5, 12])
+        squares = ce.column_squares(x, picks, np)
+        np.testing.assert_array_equal(squares[0], [10, 20])
         np.testing.assert_array_equal(squares[1], [1, 4])
-        np.testing.assert_array_equal(squares[8], [4.5, 8])
+        np.testing.assert_array_equal(squares[8], [9, 16])
         np.testing.assert_array_equal(squares[15], [0, 0])
+
+    def test_selection_keeps_the_nvfp4_mix_and_every_kept_experts_rows(self):
+        # 10 text, 20 audio and 15 generated rows for a 20 / 30 / 50 % mix: all 15 generated rows, 6 text, 9 audio.
+        # Expert 99, kept in layer 2, is routed only in two text rows, which the floor keeps before the random fill.
+        classes = np.array([0] * 10 + [1] * 20 + [2] * 15, np.uint8)
+        picks = {layer: np.tile(np.arange(8, dtype='<i4'), (len(classes), 1)) for layer in range(ce.LAYERS)}
+        picks[2][[3, 7], 0] = 99
+        keep = ce.select(classes, picks, {(2, 99)}, {'prompt_text': 2, 'prompt_audio': 3, 'generated': 5}, np)
+        self.assertEqual(np.bincount(classes[keep]).tolist(), [6, 9, 15])
+        self.assertTrue({3, 7} <= set(keep.tolist()))
 
     def test_best_rank_is_the_highest_place_an_expert_reaches_in_any_row(self):
         # Logits per row: expert 0 = x0, expert 1 = x1, expert 2 = -x0 - x1. Expert 2 is never above third.

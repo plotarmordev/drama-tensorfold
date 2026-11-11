@@ -3,7 +3,8 @@
 
 The Metal engine (`drama3-generate --calibration-rows`) generates every request, then prefills its prompt and the
 generated frames again and dumps the MoE input x, the eight original-ID picks and their routing weights for every row
-of all 40 layers, in the layout of the GPTQ --rows dumps. No CUDA, torch or Spark is involved.
+of all 40 layers, in the layout of the GPTQ --rows dumps. The calibration rows are the subset of that capture in the
+NVFP4 build's class mix that keeps every kept expert's rows. No CUDA, torch or Spark is involved.
 """
 import argparse
 import hashlib
@@ -17,7 +18,8 @@ ROOT = Path(__file__).resolve().parent.parent
 ASSETS = Path('/Users/Shared/agent-work/drama-assets')
 CHECKPOINT = ASSETS / 'checkpoint-bf16'
 NVFP4 = ASSETS / 'drama3-nvfp4-t5900cover-v1/model'
-OUTPUT = ASSETS / 'exl3-calibration-rows-v2'
+CAPTURE = ASSETS / 'exl3-calibration-rows-v2'
+OUTPUT = ASSETS / 'exl3-calibration-rows-v3'
 VOICE = ASSETS / 'voices/capri'
 CORPUS = ROOT / 'bench/corpus/drama-bench-en-v1.jsonl'
 BINARY = ROOT / 'build/tensorfold/zig-out/bin/drama3-generate'
@@ -25,7 +27,24 @@ LAYERS, EXPERTS, TOP_K, HIDDEN = 40, 256, 8, 2048
 CLASSES = ('prompt_text', 'prompt_audio', 'generated')
 REFERENCE_SECONDS, REFERENCES, SEEDS = 29, 3, (1, 2)
 CHECK_LAYERS = (0, 3, 20, 39)
+# These rows come from other text and audio than the NVFP4 build's, so its statistics are matched closely, not exactly.
+ERR_H_TOLERANCE = 0.05
+# Each class's share of the rows may differ this much from its share of the NVFP4 build's stats_pairs.
+MIX_TOLERANCE = 0.01
+# Rows of every kept expert the selection keeps before filling the class mix (all of them, if it has fewer).
+FLOOR = 64
+# Kept experts allowed to have no rows (Drama lead, 11 Nov): over the 175,396-row capture none places above 171st of
+# the router's 256 logits, and the NVFP4 build's calibration gave them no rows either. Each uses its layer's rows.
+NEVER_ROUTED = {36: (0, 14, 39, 117, 120, 147, 173, 195, 202, 211, 227, 246)}
 FP4 = (0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6)
+HESSIAN = {
+    'gate_up': 'X_e = the rows of layer-L.x.bf16 whose picks contain e; H = X_e^T X_e / n_e',
+    'down': 'A_e = silu(X_e W_gate^T) * (X_e W_up^T) with the original weights, as one unquantized forward pass '
+            'collects them; H = A_e^T A_e / n_e',
+    'no_rows': 'an expert the calibration never routed to takes X_e = all of its layer\'s rows',
+    'error': 'trace((W - Q) H (W - Q)^T), W the FP8 original; NVFP4 Q is the published expert, GPTQ-calibrated on '
+             'other rows, so its error is measured on this run\'s H too',
+}
 
 
 def references(work, binary=BINARY, checkpoint=CHECKPOINT):
@@ -84,14 +103,67 @@ def layer_rows(output, layer, rows, np):
     return stem, picks, weights
 
 
+def widen(raw, np):
+    """BF16 bit patterns to float32."""
+    return (raw.astype(np.uint32) << 16).view(np.float32)
+
+
 def bf16(path, rows, np):
-    return (np.fromfile(path, '<u2').astype(np.uint32) << 16).view(np.float32).reshape(rows, HIDDEN)
+    return widen(np.fromfile(path, '<u2'), np).reshape(rows, HIDDEN)
 
 
 def column_squares(x, picks, np):
     """Per-expert, per-column sum of x^2 over the rows routed to the expert: the diagonal of X_e^T X_e."""
     squares = x * x
     return np.stack([squares[(picks == expert).any(1)].sum(0, dtype=np.float64) for expert in range(EXPERTS)])
+
+
+def select(classes, picks, kept, target, np):
+    """Row indices in the NVFP4 build's class mix (TARGET, its stats_pairs), as many as the class the capture holds
+    least of for that mix allows: FLOOR random rows of every kept expert (PICKS holds each layer's), then random rows
+    of each class up to its share."""
+    pairs = sum(target.values())
+    total = min(int((classes == i).sum()) * pairs // target[name] for i, name in enumerate(CLASSES))
+    order = np.random.default_rng(0).permutation(len(classes))
+    shuffled = {layer: p[order] for layer, p in picks.items()}
+    chosen = np.zeros(len(classes), bool)
+    for layer, expert in kept:
+        chosen[order[(shuffled[layer] == expert).any(1)][:FLOOR]] = True
+    for i, name in enumerate(CLASSES):
+        free = order[(classes[order] == i) & ~chosen[order]]
+        chosen[free[:max(0, total * target[name] // pairs - int(chosen[classes == i].sum()))]] = True
+    return np.flatnonzero(chosen)
+
+
+def write_subset(capture, output, kept, target):
+    """The capture's rows in the NVFP4 class mix, as a new rows directory; rows.json, written last, marks it done."""
+    import numpy as np
+
+    manifest = json.loads((capture / 'rows.json').read_text())
+    rows, classes = manifest['rows'], np.fromfile(capture / 'class.u8', np.uint8)
+    picks = {layer: layer_rows(capture, layer, rows, np)[1] for layer in range(LAYERS)}
+    keep = select(classes, picks, kept, target, np)
+    output.mkdir()
+    classes[keep].tofile(output / 'class.u8')
+    for layer in range(LAYERS):
+        stem, layer_picks, weights = layer_rows(capture, layer, rows, np)
+        np.fromfile(f'{stem}.x.bf16', '<u2').reshape(rows, HIDDEN)[keep].tofile(output / f'{stem.name}.x.bf16')
+        layer_picks[keep].tofile(output / f'{stem.name}.picks.i32')
+        weights[keep].tofile(output / f'{stem.name}.w.f32')
+    # The capture's chunks (one per sequence) do not survive a row selection.
+    manifest = {k: v for k, v in manifest.items() if k != 'chunks'}
+    manifest.update(rows=len(keep), selection={'capture': str(capture), 'capture_rows': rows, 'floor': FLOOR, 'seed': 0})
+    for part in ('class', 'x', 'picks', 'w'):
+        manifest[part]['shape'][0] = len(keep)
+    (output / 'rows.json').write_text(json.dumps(manifest, indent=1) + '\n')
+
+
+def best_ranks(x, gate, experts, np):
+    """Each expert's best router rank over the rows x, 0 being the top logit; the router keeps ranks 0 to 7. A tie
+    ranks the higher expert ID lower, so a tied expert is never reported as reachable when it may not be."""
+    logits = x @ gate.T
+    ids = np.arange(logits.shape[1])[None, :]
+    return {e: int(((logits > logits[:, [e]]) | ((logits == logits[:, [e]]) & (ids < e))).sum(1).min()) for e in experts}
 
 
 class Tensors:
@@ -110,10 +182,14 @@ class Tensors:
                 self.headers[path] = (8 + size, json.loads(f.read(size)))
         start, header = self.headers[path]
         meta = header[name]
-        dtype = {'F32': '<f4', 'U8': 'u1', 'F8_E4M3': 'u1'}[meta['dtype']]
+        dtype = {'F32': '<f4', 'U8': 'u1', 'F8_E4M3': 'u1', 'BF16': '<u2'}[meta['dtype']]
         begin, end = meta['data_offsets']
         raw = self.np.fromfile(path, dtype, (end - begin) // self.np.dtype(dtype).itemsize, offset=start + begin)
-        return raw.reshape(meta['shape']) if meta['dtype'] != 'F8_E4M3' else e4m3(raw, self.np).reshape(meta['shape'])
+        if meta['dtype'] == 'F8_E4M3':
+            raw = e4m3(raw, self.np)
+        elif meta['dtype'] == 'BF16':
+            raw = widen(raw, self.np)
+        return raw.reshape(meta['shape'])
 
 
 def e4m3(raw, np):
@@ -137,10 +213,10 @@ def nvfp4(tensors, name, np):
     return np.array(FP4, np.float32)[codes] * np.repeat(tensors(name + '.weight_scale'), 16, 1) * tensors(name + '.weight_scale_2')
 
 
-def stats_check(output, rows, kept, np):
+def stats_check(output, rows, kept, checkpoint, np):
     """err_h of the NVFP4 gate/up experts recomputed with this run's column sums of squares, against nvfp4-provenance.json."""
     published = {t['name']: t['err_h'] for t in json.loads((NVFP4 / 'nvfp4-provenance.json').read_text())['tensors']}
-    source, quant = Tensors(CHECKPOINT, np), Tensors(NVFP4, np)
+    source, quant = Tensors(checkpoint, np), Tensors(NVFP4, np)
     ratios = []
     for layer in CHECK_LAYERS:
         stem, picks, _ = layer_rows(output, layer, rows, np)
@@ -160,6 +236,9 @@ def stats_check(output, rows, kept, np):
         'tensors': len(ratios),
         'ratio_median': float(np.median(ratios)),
         'ratio_p05_p95': [float(np.percentile(ratios, 5)), float(np.percentile(ratios, 95))],
+        'tolerance': ERR_H_TOLERANCE,
+        'why_not_exactly_1': 'the NVFP4 statistics (stats.safetensors, kept on the Spark) come from its own '
+                             'calibration text and audio; these rows match only its class mix',
     }
 
 
@@ -169,7 +248,9 @@ def nvfp4_routed(provenance=NVFP4 / 'nvfp4-provenance.json'):
             for expert, count in enumerate(json.loads(source['metadata']['gptq'])['rows'])}
 
 
-def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, stats=True):
+def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, target=None, weight_checks=True):
+    """Checks calibration rows and reports their coverage and class mix; TARGET is the NVFP4 build's stats_pairs.
+    WEIGHT_CHECKS adds the checks that read the checkpoint's weights."""
     import numpy as np
 
     manifest = json.loads((output / 'rows.json').read_text())
@@ -182,6 +263,8 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, stats=Tru
         raise ValueError(f'{output}: class.u8 does not hold one valid class per row')
     kept = kept_experts() if kept is None else kept
     reference = nvfp4_routed() if reference is None else reference
+    target = json.loads((NVFP4 / 'nvfp4-provenance.json').read_text())['stats_pairs'] if target is None else target
+    class_rows = {name: int((classes == i).sum()) for i, name in enumerate(CLASSES)}
     missing, missing_kept, routed = {}, {}, {}
     for layer in range(LAYERS):
         stem, picks, weights = layer_rows(output, layer, rows, np)
@@ -202,44 +285,71 @@ def validate(output, checkpoint=CHECKPOINT, kept=None, reference=None, stats=Tru
         'checkpoint': str(checkpoint),
         'config_sha256': config_sha,
         'rows': rows,
-        'sequences': len(manifest['chunks']),
-        'class_rows': {name: int((classes == i).sum()) for i, name in enumerate(CLASSES)},
+        'class_rows': class_rows,
+        'nvfp4_stats_pairs': target,
+        'class_shares': {name: class_rows[name] / rows for name in CLASSES},
+        'nvfp4_class_shares': {name: target[name] / sum(target.values()) for name in CLASSES},
+        'selection': manifest.get('selection'),
         'routed_experts': LAYERS * EXPERTS,
         'covered_experts': sum(EXPERTS - len(m) for m in missing.values()),
         'kept_experts': len(kept),
         'covered_kept_experts': len(kept) - sum(len(m) for m in missing_kept.values()),
         'kept_rows_min_median': [min(kept_counts), int(np.median(kept_counts))],
         'missing_kept_by_layer': {str(l): m for l, m in missing_kept.items() if m},
+        'never_routed_exception': {str(l): list(e) for l, e in NEVER_ROUTED.items()},
         'missing_kept_nvfp4_routed': {str(l): [e for e in m if reference[l, e]] for l, m in missing_kept.items()
                                       if any(reference[l, e] for e in m)},
         'missing_by_layer': {str(l): m for l, m in missing.items() if m},
         'bytes': sum(p.stat().st_size for p in output.iterdir() if p.name != 'report.json'),
-        'hessian': {
-            'gate_up': 'Expert e of layer L: X_e = the rows of layer-L.x.bf16 whose layer-L.picks.i32 row contains e '
-                       '(unweighted, the same row once per expert); H_e = X_e^T X_e / n_e, [2048, 2048].',
-            'down': 'Run the quantized gate and up projections of expert e on X_e, apply SwiGLU to get A_e [n_e, 512]; '
-                    'H_down,e = A_e^T A_e / n_e.',
-        },
+        'hessian': HESSIAN,
     }
-    if stats:
-        report['stats_check'] = stats_check(output, rows, kept, np)
+    if weight_checks:
+        router = Tensors(checkpoint, np)
+        # Why a kept expert got no rows: its best rank among the router's 256 logits over all of its layer's rows.
+        report['missing_kept_best_rank'] = {
+            str(layer): best_ranks(bf16(output / f'layer-{layer:02d}.x.bf16', rows, np),
+                                   router(f'model.language_model.layers.{layer}.mlp.gate.weight'), experts, np)
+            for layer, experts in missing_kept.items() if experts}
+        report['stats_check'] = stats_check(output, rows, kept, checkpoint, np)
     return report
+
+
+def failures(report):
+    """Why calibration rows are not usable for the EXL3 quant: a kept expert without rows outside NEVER_ROUTED, a
+    class mix off the NVFP4 build's or statistics outside the tolerance."""
+    out = []
+    unexpected = {l: u for l, m in report['missing_kept_by_layer'].items()
+                  if (u := [e for e in m if e not in NEVER_ROUTED.get(int(l), ())])}
+    if unexpected:
+        out.append(f'kept experts without rows: {unexpected}')
+    if any(abs(report['class_shares'][k] - report['nvfp4_class_shares'][k]) > MIX_TOLERANCE for k in CLASSES):
+        out.append(f'class shares {report["class_shares"]} differ from the NVFP4 build\'s '
+                   f'{report["nvfp4_class_shares"]} by more than {MIX_TOLERANCE}')
+    if not all(abs(r - 1) <= ERR_H_TOLERANCE for r in report['stats_check']['ratio_p05_p95']):
+        out.append(f'err_h ratio outside 1 ± {ERR_H_TOLERANCE}: these rows do not match the NVFP4 statistics')
+    return out
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, default=CHECKPOINT)
-    parser.add_argument('--output', type=Path, default=OUTPUT, help='new directory; an existing capture is only validated')
+    parser.add_argument('--capture', type=Path, default=CAPTURE, help='the full capture; made when missing')
+    parser.add_argument('--output', type=Path, default=OUTPUT,
+                        help='the calibration rows, selected from the capture when missing, then validated')
     args = parser.parse_args()
+    if not (args.capture / 'rows.json').exists():
+        capture(args.capture, args.checkpoint)
     if not (args.output / 'rows.json').exists():
-        capture(args.output, args.checkpoint)
+        target = json.loads((NVFP4 / 'nvfp4-provenance.json').read_text())['stats_pairs']
+        write_subset(args.capture, args.output, kept_experts(), target)
     report = validate(args.output, args.checkpoint)
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
-    print(json.dumps({k: report[k] for k in ('rows', 'class_rows', 'covered_kept_experts', 'kept_experts', 'bytes')}))
-    print(f'kept experts without rows: {report["missing_kept_by_layer"]}')
-    # A kept expert the NVFP4 build's calibration routed rows to must get rows here too.
-    if report['missing_kept_nvfp4_routed']:
-        raise SystemExit(f'kept experts the NVFP4 calibration routed but this run did not: {report["missing_kept_nvfp4_routed"]}')
+    print(json.dumps({k: report[k] for k in ('rows', 'class_shares', 'nvfp4_class_shares', 'covered_kept_experts',
+                                             'kept_experts', 'kept_rows_min_median', 'bytes')}))
+    print(f'best router ranks of kept experts without rows: {report["missing_kept_best_rank"]}')
+    print(f'err_h ratio to the NVFP4 build: {report["stats_check"]["ratio_p05_p95"]} (5th-95th percentile)')
+    if problems := failures(report):
+        raise SystemExit('\n'.join(problems))
 
 
 if __name__ == '__main__':

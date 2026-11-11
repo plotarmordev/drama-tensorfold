@@ -237,21 +237,34 @@ python3 recipe/calibrate_experts.py      # about 30 min
 captures, on a Mac and from the FP8 originals in `/Users/Shared/agent-work/drama-assets/checkpoint-bf16`, the
 input every routed expert sees, in the layout of the GPTQ `--rows` dumps: `layer-NN.x.bf16` (the MoE input),
 `layer-NN.picks.i32` (the eight original expert IDs), `layer-NN.w.f32` (their routing weights) and `class.u8`
-(prompt text, prompt audio or generated) for all 40 layers, in
-`/Users/Shared/agent-work/drama-assets/exl3-calibration-rows-v2`. Every bench corpus line is generated alone and
+(prompt text, prompt audio or generated) for all 40 layers. The full capture lands in
+`/Users/Shared/agent-work/drama-assets/exl3-calibration-rows-v2`: every bench corpus line is generated alone and
 after each of three 29 s clips of the Capri reference, at two seeds, then prefilled again with its generated frames.
-No CUDA, torch or Spark is used; the validation step needs numpy. `report.json` gives the class mix, the experts per
-layer without rows (all 10,240 and the 5,900 the pruned quant keeps), the size on disk, the check against the NVFP4
-build's statistics and how to build each expert's Hessian: H_e = X_eᵀX_e / n_e over the rows whose picks hold e,
-and for `down_proj` the same over SwiGLU(gate, up) of those rows. The check recomputes the NVFP4 build's published
-`err_h` for every kept gate and up expert of layers 0, 3, 20 and 39 with these rows' per-column sums of squares:
-identical statistics give a ratio of exactly 1.
+The calibration rows, in `exl3-calibration-rows-v3`, are the subset of it in the NVFP4 build's class mix
+(`stats_pairs` in its `nvfp4-provenance.json`): every row of the class the capture holds least of for that mix,
+first 64 random rows of every kept expert (all of them when it has fewer), then random rows of each class up to its
+share. No CUDA, torch or Spark is used; the selection and validation need numpy. `report.json` gives the class mix
+against the NVFP4 build's, the experts per layer without rows (all 10,240 and the 5,900 the pruned quant keeps), the
+size on disk, the check against the NVFP4 build's statistics and how to build each expert's Hessian:
+H_e = X_eᵀX_e / n_e over the rows whose picks hold e, and for `down_proj` the same over SwiGLU(gate, up) of those
+rows with the original weights; an expert with no rows takes all of its layer's rows. `recipe/exl3_experts.py`
+builds its Hessians this way and records the same recipe.
+The check recomputes the NVFP4 build's published `err_h` for every kept gate and up expert of layers 0, 3, 20 and
+39 with these rows' per-column sums of squares: identical statistics give a ratio of exactly 1. The NVFP4 build's
+`stats.safetensors` stays on the Spark and came from other text and audio, so the 5th and 95th percentile ratios
+must lie within 1 ± 0.05. The command fails when a kept expert outside the named exception below has no rows, when a
+class's share of the rows is more than 0.01 off its NVFP4 share or when the ratios miss the tolerance.
 
-The capture on 11 Nov: 175,396 rows (34,207 prompt text, 90,000 prompt audio, 51,189 generated; the NVFP4 build
-had 15 / 43 / 42 %), 29.2 GB on disk, 28 minutes. 9,918 of the 10,240 experts have rows, 5,888 of the 5,900 kept
-ones (at least 14 rows each, 1 % under 1,005). The 12 without rows are in layer 36, which the quant keeps whole;
-the NVFP4 build's own calibration also gave them none, so the router does not pick them. The `err_h` ratio over
-1,208 tensors: median 1.006, 5th–95th percentile 0.991–1.027.
+The capture on 11 Nov: 175,396 rows (34,207 prompt text, 90,000 prompt audio, 51,189 generated: 19.5 / 51.3 /
+29.2 %, against the NVFP4 build's 14.67 / 43.45 / 41.88 %), 29.2 GB on disk, 28 minutes. Its NVFP4-mix subset:
+122,228 rows (17,927 / 53,113 / 51,188: 14.67 / 43.45 / 41.88 %), 20.3 GB on disk, 43 s to select and validate.
+9,918 of the 10,240 experts have rows in the capture, 5,888 of the 5,900 kept ones, and the subset keeps all 5,888
+(at least 14 rows each, 1 % under 650). The 12 without rows are layer 36's experts 0, 14, 39, 117, 120, 147, 173,
+195, 202, 211, 227 and 246; the quant keeps that layer whole. Over the 175,396 rows none of them places above 171st
+of the router's 256 logits (it takes the top 8), and the NVFP4 build's calibration gave them no rows either, so the
+Drama lead approved them on 11 Nov as a named exception (`NEVER_ROUTED`, listed in `report.json` as
+`never_routed_exception`): each takes all of layer 36's rows for its Hessian, and the command passes. The `err_h`
+ratio over 1,208 tensors: 5th–95th percentile 0.990–1.026.
 
 ### EXL3 routed experts
 
@@ -265,8 +278,11 @@ encoder checks that its written trellis reloads and decodes bit for bit. Each ex
 calibration rows above: H = XᵀX / n over the rows routed to it, and for `down_proj` the same over SwiGLU(gate, up)
 of the original weights. The 12 layer-36 experts without rows use all of their layer's rows. `--workers` (default 8)
 converts that many layers at once, one process each, every one writing only its layer's folder under
-`drama3-exl3-experts/work`; finished experts stay there, so a stopped run resumes where it left off. Resume checks
-only that an expert's record exists: clear `work/` after changing the rows, checkpoint or encoder. Once every
+`drama3-exl3-experts/work`; finished experts stay there, so a stopped run resumes where it left off. `work/hessian.json`
+holds the Hessian recipe and one hash over every rows file but `report.json` (class labels, x, picks and weights;
+hashing the 20.3 GB takes about 14 s at each start); a run whose recipe or rows differ, or a `work/` without it,
+stops and asks for a new `--output`. Resume checks only that an expert's record exists: clear `work/` after
+changing the checkpoint or encoder. Once every
 worker is done, each converted layer becomes one shard in `drama3-exl3-experts/exl3-3.0/` and `exl3-2.5/`, holding
 only the expert groups (`trellis`, `suh`, `svh`, `mul1`); if a layer fails, none is written.
 Each folder also gets an index and `exl3-provenance.json`: input paths and hashes, encoder commit and hash, settings,
@@ -277,7 +293,8 @@ Measured on 11 Nov from the finished-expert records in `work/`, on a shared Mac:
 experts/h over 06:04–08:04 (62/h over its whole 5 h run, 315 experts; load average about 66). It was stopped at
 08:04 and `--workers 12` took over its work folder, keeping those 315: 96 experts/h over 08:19–08:34 and 78/h over
 08:04–08:50 (60 experts). Other jobs had meanwhile raised the load average to 300–490, and each encoder got only
-6–48 % of a core; the remaining 5,525 experts take about 70 h at 78/h.
+6–48 % of a core; the remaining 5,525 experts take about 70 h at 78/h. That run (recipe snapshot 94a5fb2) used the
+full capture, not the NVFP4-mix rows, and has no `work/hessian.json`, so this converter does not resume its folder.
 
 Eight experts on 11 Nov (the median-row and most-routed kept expert of layers 0, 13, 26 and 39), EXL3 error over the
 published NVFP4's:

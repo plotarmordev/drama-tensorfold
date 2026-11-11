@@ -16,6 +16,7 @@ RECIPE = Path(__file__).resolve().parent
 ROWS, ROUTED, UNROUTED, LAYERS = 6, 3, 7, (0, 1)
 PICKS = [[ROUTED, *range(10, 17)], [*range(20, 28)], [ROUTED, *range(10, 17)], [*range(20, 28)], [*range(20, 28)],
          [ROUTED, *range(10, 17)]]
+CLASSES = [0, 1, 2, 2, 1, 2]
 # Reports trace(H) as its EXL3 error and writes one group of the real encoder's tensor names and shapes, with suh
 # carrying diag(H) so a shard's bytes depend on the rows each expert was encoded against.
 FAKE_ENCODER = f"""#!{sys.executable}
@@ -65,10 +66,12 @@ def checkpoints(root):
 
 
 def rows(root):
-    """Each layer's calibration rows, other rows per layer; returns layer 0's x as the converter reads it back."""
+    """Each layer's calibration rows, other rows per layer, and their classes; returns layer 0's x as the converter
+    reads it back."""
     out = root / 'rows'
     out.mkdir()
     (out / 'rows.json').write_text(json.dumps({'rows': ROWS, 'identity': {'config_sha256': hashlib.sha256(b'{}').hexdigest()}}))
+    np.array(CLASSES, np.uint8).tofile(out / 'class.u8')
     for layer in LAYERS:
         x = np.random.default_rng(layer).standard_normal((ROWS, ce.HIDDEN)).astype('<f4')
         (x.view('<u4') >> 16).astype('<u2').tofile(out / f'layer-{layer:02d}.x.bf16')
@@ -149,6 +152,14 @@ class Exl3ExpertsTests(unittest.TestCase):
         zero, one = (ex.read_safetensors(self.root / f'parallel/exl3-3.0/model-{l:02d}.safetensors')[0] for l in LAYERS)
         suh = f'{ex.name(0, ROUTED, "gate_proj")}.suh'
         self.assertNotEqual(zero[suh], one[suh.replace('layers.0.', 'layers.1.')])
+
+    def test_a_work_folder_encoded_from_other_rows_is_not_resumed(self):
+        self.convert()
+        # Two rows swap classes: the counts, the manifest and every tensor stay the same.
+        np.array([1, 0, 2, 2, 1, 2], np.uint8).tofile(self.root / 'rows/class.u8')
+        run = self.run_converter('out', workers=2)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn(b'other Hessians', run.stderr)
 
     def test_a_failed_layer_leaves_the_others_work_but_writes_no_shard_index_or_provenance(self):
         (self.root / 'rows/layer-01.picks.i32').unlink()

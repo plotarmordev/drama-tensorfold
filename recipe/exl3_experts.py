@@ -29,14 +29,6 @@ BITS = ('3.0', '2.5')
 PROJECTIONS = ('gate_proj', 'up_proj', 'down_proj')
 OUTPUT = ce.ASSETS / 'drama3-exl3-experts'
 RECEIPT = re.compile(r'hessian_error exl3=(\S+)')
-HESSIAN = {
-    'gate_up': 'X_e = the rows of layer-L.x.bf16 whose picks contain e (unweighted); H = X_e^T X_e / n_e',
-    'down': 'A_e = silu(X_e W_gate^T) * (X_e W_up^T) with the original weights, as one unquantized forward pass '
-            'collects them; H = A_e^T A_e / n_e',
-    'no_rows': 'an expert the calibration never routed to takes X_e = all of its layer\'s rows',
-    'error': 'trace((W - Q) H (W - Q)^T), W the FP8 original; NVFP4 Q is the published expert, GPTQ-calibrated on '
-             'other rows, so its error is measured on this run\'s H too',
-}
 
 
 def name(layer, expert, projection):
@@ -163,6 +155,17 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def rows_sha256(rows):
+    """One hash over every file of the rows directory but its report: the Hessians depend on all of their bytes."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in rows.iterdir() if p.name != 'report.json'):
+        digest.update(path.name.encode())
+        with path.open('rb') as f:
+            while block := f.read(1 << 24):
+                digest.update(block)
+    return digest.hexdigest()
+
+
 def nvfp4_bytes(nvfp4, layer, experts):
     """On-disk bytes of the published NVFP4 tensors of these experts."""
     index = json.loads((nvfp4 / 'model.safetensors.index.json').read_text())['weight_map']
@@ -191,7 +194,7 @@ def write_checkpoint(out, bits, inputs, layers):
         'schema': 'drama-exl3-experts/1',
         'producer': 'recipe/exl3_experts.py + TensorFold tf-exl3-encode',
         'inputs': inputs,
-        'settings': {'bits_per_weight': float(bits), 'codebook': 'mul1', 'hessian': HESSIAN},
+        'settings': {'bits_per_weight': float(bits), 'codebook': 'mul1', 'hessian': ce.HESSIAN},
         'complete': len(layers) == ce.LAYERS,
         'experts': sum(r['experts'] for r in layers.values()),
         'bytes': total,
@@ -223,10 +226,17 @@ def main():
     inputs = {
         'checkpoint': str(args.checkpoint), 'config_sha256': config,
         'nvfp4': str(args.nvfp4), 'nvfp4_index_sha256': sha256(args.nvfp4 / 'model.safetensors.index.json'),
-        'rows': str(args.rows), 'rows_json_sha256': sha256(args.rows / 'rows.json'), 'row_count': manifest['rows'],
+        'rows': str(args.rows), 'rows_sha256': rows_sha256(args.rows), 'row_count': manifest['rows'],
         'encoder': str(args.encoder), 'encoder_sha256': sha256(args.encoder),
         'encoder_commit': commit.stdout.strip() or None,
     }
+    # One recipe for every record, so a work folder encoded from other rows or with other Hessians is never resumed.
+    recipe = {'hessian': ce.HESSIAN, 'rows_sha256': inputs['rows_sha256']}
+    stamp = args.output / 'work' / 'hessian.json'
+    if (args.output / 'work').exists() and (not stamp.exists() or json.loads(stamp.read_text()) != recipe):
+        raise SystemExit(f'{args.output / "work"} holds experts encoded with other Hessians; use a new --output')
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(json.dumps(recipe))
     kept = ce.kept_experts(args.nvfp4 / 'model.safetensors.index.json')
     experts = {layer: sorted(e for l, e in kept if l == layer) for layer in range(ce.LAYERS)}
     for bits in BITS:

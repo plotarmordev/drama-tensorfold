@@ -1,4 +1,4 @@
-From 9ed6b55fcc8ee52e40594959e6a36c079d0a1af0 Mon Sep 17 00:00:00 2001
+From c6e15b2bf7e0a257693f340c1209fcbdda5de688 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 15:05:34 +0800
 Subject: [PATCH] drama: read BF16 codec checkpoints
@@ -8,7 +8,7 @@ Subject: [PATCH] drama: read BF16 codec checkpoints
  1 file changed, 25 insertions(+), 4 deletions(-)
 
 diff --git a/zig/src/families/drama3/codec_pth.zig b/zig/src/families/drama3/codec_pth.zig
-index d470ddbca..7481b4441 100644
+index 98850ed82..6f4690b85 100644
 --- a/zig/src/families/drama3/codec_pth.zig
 +++ b/zig/src/families/drama3/codec_pth.zig
 @@ -91,11 +91,11 @@ pub const Archive = struct {
@@ -30,8 +30,8 @@ index d470ddbca..7481b4441 100644
          const key = try std.fmt.allocPrint(gpa, "{s}data/{s}", .{ self.prefix, t.storage });
          defer gpa.free(key);
          const m = self.members.get(key) orelse return error.MissingStorage;
--        if (m.size != t.storage_numel * 4) return error.BadArchive;
-+        if (m.size != t.storage_numel * elementBytes(t.dtype)) return error.BadArchive;
+-        if (m.size != std.math.mul(u64, t.storage_numel, 4) catch return error.BadArchive) return error.BadArchive;
++        if (m.size != std.math.mul(u64, t.storage_numel, elementBytes(t.dtype)) catch return error.BadArchive) return error.BadArchive;
 +        if (t.dtype == .bf16) {
 +            const all = try gpa.alloc(u16, @intCast(t.storage_numel));
 +            defer gpa.free(all);
@@ -68,8 +68,8 @@ index d470ddbca..7481b4441 100644
 +}
 +
  test "the state-dict VM refuses globals outside the allow-list" {
-     // PROTO 2; GLOBAL os.system; STOP
-     const evil = "\x80\x02cos\nsystem\n.";
+     const log_level = std.testing.log_level;
+     std.testing.log_level = .err;
 -- 
 2.54.0 (Apple Git-157)
 

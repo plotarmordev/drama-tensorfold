@@ -1,4 +1,4 @@
-From 8d90c35739b5bc4161e817f08bc8f1b157f6d252 Mon Sep 17 00:00:00 2001
+From be1b2bbbaa86ae461e5659285857403448b57828 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 19:30:00 +0800
 Subject: [PATCH] server: a Drama take that ends speech before its first audio
@@ -10,12 +10,12 @@ clean stop with 0 samples, answered 200 with empty audio. Whole replies and
 streams now answer 500 naming it, so a client can draw again with another seed.
 ---
  CHANGELOG.md                          |  2 ++
- zig/src/server/speech.zig             | 23 +++++-------------
+ zig/src/server/speech_stream.zig      | 23 +++++-------------
  zig/src/server/speech_stream_test.zig | 34 ++++++++-------------------
  3 files changed, 18 insertions(+), 41 deletions(-)
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 995c21f3..d85bfea8 100644
+index 2f272968a..eafe366ed 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
@@ -26,18 +26,18 @@ index 995c21f3..d85bfea8 100644
 +
  - Drama `--voices` folders also load the CUDA engine's `drama3-voice/1` and `drama3-voice/2` files as written, with their `codes_sha256` checked and their attestation kept; no re-encoding or reference audio. See [GB10 voice files](docs/drama-http-voices.md#gb10-voice-files).
  
- - Drama speech accepts dialogue tags `<|speaker:0|>` through `<|speaker:15|>` in whole and streamed HTTP requests and catalog reference transcripts. Untagged text still uses speaker 0, and catalogs still allow at most four reference passages. See [dialogue speakers](docs/drama-http-voices.md#dialogue-speakers).
-diff --git a/zig/src/server/speech.zig b/zig/src/server/speech.zig
-index 07b75904..6bf6cd4d 100644
---- a/zig/src/server/speech.zig
-+++ b/zig/src/server/speech.zig
-@@ -319,35 +319,24 @@ fn left(srv: *Server, c: *Conn, id: []const u8, prompt_len: usize, received: i96
+ - GLM-5.3-Flash on Metal with `--vision`: a prompt chunk sends the vision tower only the images that end after its start, so two interleaved image prompts no longer re-encode images their earlier chunks already injected (12 images through the tower instead of 18 in a host test); each image is still encoded on its own and read through its own span, so the rows a chunk reads are unchanged (#2744).
+diff --git a/zig/src/server/speech_stream.zig b/zig/src/server/speech_stream.zig
+index 3d13dcbed..f6837ab7f 100644
+--- a/zig/src/server/speech_stream.zig
++++ b/zig/src/server/speech_stream.zig
+@@ -22,15 +22,18 @@ pub fn left(srv: *Server, c: *Conn, id: []const u8, prompt_len: usize, received:
      log.line("{s}", .{log.ended(&buf, id, null, prompt_len, 0, clock.seconds(clock.nowNs(srv.io) - received))});
  }
  
 -/// Why a finished synthesis has no complete audio, or null; an empty reply is no fault, length and silence clip it.
 +/// Why a finished synthesis has no complete audio, or null; length and silence clip it.
- fn why(box: *const Mailbox, samples: usize, capacity: usize) ?[]const u8 {
+ pub fn why(box: *const Mailbox, samples: usize, capacity: usize) ?[]const u8 {
      return switch (box.reason) {
 -        .stop, .length, .silence => if (samples > capacity) "the engine wrote more audio than the reply holds" else null,
 +        // Drama can sample end of speech at frame 0: a take with no audio is a fault, never an empty success.
@@ -50,8 +50,10 @@ index 07b75904..6bf6cd4d 100644
 +const no_audio = "the model ended speech before its first audio frame";
 +
  /// An error reply when synthesis ends before any audio; else the chunks, and the terminator only after a complete one.
- fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, plan: Plan, received: i96, box: *Mailbox, engine_id: api.Id, pcm: []f32, result: *const api.SpeechResult, metadata: Metadata) void {
-     const sent = streamAudio(srv, c, sp, box, engine_id, pcm, metadata) orelse return left(srv, c, id, plan.prompt.len, received);
+ pub fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, plan: Plan, received: i96, box: *Mailbox, engine_id: api.Id, pcm: []f32, result: *const api.SpeechResult, metadata: Metadata, lane_released: *bool) void {
+     const sent = streamAudio(srv, c, sp, box, engine_id, pcm, metadata, lane_released) orelse return left(srv, c, id, plan.prompt.len, received);
+@@ -38,21 +41,7 @@ pub fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.Spee
+     speech.releaseLane(srv, lane_released);
      const mismatch: ?[]const u8 = if (result.samples != sent.samples) "the finished synthesis does not match the audio it published" else null;
      const problem = why(box, result.samples, pcm.len) orelse mismatch;
 -    if (sent.samples == 0) {
@@ -74,10 +76,10 @@ index 07b75904..6bf6cd4d 100644
          c.close = true; // no terminating chunk: the client's HTTP/1.1 parser reports an incomplete body
          log.line("speech {s} stream ended incomplete after samples={d}: {s}", .{ id, sent.samples, message });
 diff --git a/zig/src/server/speech_stream_test.zig b/zig/src/server/speech_stream_test.zig
-index 72339b0c..44a7f491 100644
+index 40cb36d39..a6e20e261 100644
 --- a/zig/src/server/speech_stream_test.zig
 +++ b/zig/src/server/speech_stream_test.zig
-@@ -383,30 +383,16 @@ test "a failure before any audio is an error reply" {
+@@ -409,30 +409,16 @@ test "a failure before any audio is an error reply" {
      try std.testing.expect(std.mem.indexOf(u8, try s.readRest(), "the model ended speech before its first audio frame") != null);
  }
  

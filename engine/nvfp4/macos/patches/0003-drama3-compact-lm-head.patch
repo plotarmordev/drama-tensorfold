@@ -1,4 +1,4 @@
-From 75b31c4bc7086ccccf89d7bf4f8068ae4e341394 Mon Sep 17 00:00:00 2001
+From ed585d64a7795a3e14debd493b9a56ce101c7db0 Mon Sep 17 00:00:00 2001
 From: netrunner <299844489+plotarmordev@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 13:00:00 +0800
 Subject: [PATCH] drama3: load a compact lm_head holding only the candidate
@@ -16,7 +16,7 @@ and copies it whole; a full [vocab, 2048] head still loads as before.
  4 files changed, 36 insertions(+), 4 deletions(-)
 
 diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
-index 910885947..a6d21862a 100644
+index 6a3f3a3db..8fead83ad 100644
 --- a/zig/build/drama3_host.zig
 +++ b/zig/build/drama3_host.zig
 @@ -48,7 +48,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi

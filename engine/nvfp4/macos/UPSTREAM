@@ -1,4 +1,5 @@
-# Native Metal base for the NVFP4 checkpoint; patches/ adds its packed experts, compaction and guidance.
+# Native Metal base for the NVFP4 checkpoint: ashhart/TensorFold main as of 10 Nov 2026, which carries the
+# packed experts, CFG, sampling controls and dialogue speakers; patches/ adds the rest.
 # The CUDA NVFP4 pin at ../UPSTREAM and the full-model pin at ../../UPSTREAM remain unchanged.
 TENSORFOLD_REPOSITORY=https://github.com/ashhart/TensorFold.git
-TENSORFOLD_COMMIT=3d219d2156d4c25dcfb74370c8703cd89e58aa49
+TENSORFOLD_COMMIT=fb8fdf3d8501255058a3221452164c56cb9a57ca

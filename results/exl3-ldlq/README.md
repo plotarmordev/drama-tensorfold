@@ -52,11 +52,18 @@ EXL3 over int3, per expert (gate / up / down → the three summed):
 | output scales `sv` | random signs × per-column RMS | per-column RMS / 1.2437 |
 | after LDLQ | `refit_scales` refits `su`, `sv` against H | none |
 
-So the feedback is exllamav3's; the search and the scales are not. **Parity is not shown**: exllamav3's quantizer
-runs only on CUDA, and no encode of these experts by it exists yet. The check that closes it: exllamav3 `bd1f519`'s
-`quantize_exl3` on the same six experts' W and H at 3.0 and 2.5 bits, on the Spark; ours matches when every
-projection's `trace((W − Q) H (W − Q)ᵀ)` is within 1.1× of exllamav3's: its returned `proxy_err` (after
-`refit_scales`: original basis, undamped H, relative) × `trace(W H Wᵀ)`.
+So the feedback is exllamav3's; the search and the scales are not. **Parity is not shown yet**: exllamav3's quantizer
+runs only on CUDA. [`gb10-exllamav3.sh`](gb10-exllamav3.sh) closes it in one Spark GPU window: exllamav3 `bd1f519`'s
+own `quantize_exl3` ([vendored](exllamav3-bd1f519.tar.gz), its extension built in the job for sm_121) on the same six
+experts at 3.0 and 2.5 bits, W rebuilt from the pilot's FP8 checkpoint and checked by sha256 against
+[`hessians/`](hessians) (`measure.py hessians`: each expert's two Hessians as float32 upper triangles, which reproduce
+`probes.json`'s NVFP4 errors to 2e-7). [`exllamav3_job.py`](exllamav3_job.py) scores exllamav3's returned Q (after
+`refit_scales`, original basis) on the undamped H in float64, and `measure.py parity` divides ours by it; ours
+matches when every projection is within 1.1×.
+
+```sh
+job start gpu middle plotarmordev/<repo> <sha> results/exl3-ldlq/gb10-exllamav3.sh   # /work/out/exl3-ref/parity.json
+```
 
 ```sh
 git -C TENSORFOLD checkout 6b01e7307 && git -C TENSORFOLD am results/exl3-ldlq/ldlq.patch

@@ -15,7 +15,7 @@ while true; do
   reply=$(ssh top-menu "job start gpu bottom plotarmordev/drama-tensorfold $1 $2" 2>&1)
   case $reply in
     *started*) echo "$reply"; exit 0 ;;
-    busy:* | *'deepseek pause'*) echo "$(date +%T) waiting for a free GPU: $reply" >&2; sleep "${POLL:-300}" ;;
+    *busy:* | *'deepseek pause'*) echo "$(date +%T) waiting for a free GPU: $reply" >&2; sleep "${POLL:-300}" ;;
     *) echo "$reply" >&2; exit 1 ;;
   esac
 done

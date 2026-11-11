@@ -78,7 +78,7 @@ On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTRE
 guidance γ 1.5 and batched guidance, as measured; a `--cfg-gamma` of your own after `--` replaces both.
 On Mac it builds [`engine/nvfp4/macos/UPSTREAM`](engine/nvfp4/macos/UPSTREAM) plus its patch series.
 Metal's `--cfg-batched` pairs independent states in one command buffer, not a vectorized GEMM.
-`--weights full` builds [`engine/UPSTREAM`](engine/UPSTREAM) with the empty [`engine/patches`](engine/patches) series.
+`--weights full` builds [`engine/UPSTREAM`](engine/UPSTREAM) with the one-patch [`engine/patches`](engine/patches) series.
 
 When it prints `DRAMA_PILOT_READY`, synthesize from another terminal. The second command streams and plays as
 it arrives:
@@ -175,7 +175,8 @@ See the [CUDA patch index](engine/nvfp4/patches/README.md) for scope and tests.
 
 ### Full-model engine
 
-The full-model engine (`--weights full`) is TensorFold v1.1.9 with no patches: every feature the old patch series
+The full-model engine (`--weights full`) is TensorFold v1.1.9 plus one Metal-only patch, `drama3-generate
+--calibration-rows` ([below](#calibration-rows-for-the-exl3-quant)): every feature the old patch series
 added is upstream. Each flagged feature stays off until you pass its flag, so a server started without them answers as plain
 TensorFold does. The Linux recipe sets `TF_DRAMA_PREFILL_ROWS=128` for native full-model and custom-checkpoint
 launches to keep batched prefill; TensorFold otherwise defaults to single-row prefill. NVFP4 and the sglang
@@ -224,6 +225,71 @@ A voice catalog is a directory of `drama3-http-voice/1` files, each with a `sour
 model invented, your own, or one whose owner has consented on record, as the model license requires
 ([License](#license), IV(b)). `clips/` and `voices/` are git-ignored here. `recipe/pilot.py` runs the server in
 `--runtime-dir`, so pass `--voices` an absolute path.
+
+### Calibration rows for the EXL3 quant
+
+```sh
+scripts/build-engine.sh --weights full   # once
+python3 recipe/calibrate_experts.py      # about 30 min
+```
+
+captures, on a Mac and from the FP8 originals in `/Users/Shared/agent-work/drama-assets/checkpoint-bf16`, the
+input every routed expert sees, in the layout of the GPTQ `--rows` dumps: `layer-NN.x.bf16` (the MoE input),
+`layer-NN.picks.i32` (the eight original expert IDs), `layer-NN.w.f32` (their routing weights) and `class.u8`
+(prompt text, prompt audio or generated) for all 40 layers, in
+`/Users/Shared/agent-work/drama-assets/exl3-calibration-rows-v2`. Every bench corpus line is generated alone and
+after each of three 29 s clips of the Capri reference, at two seeds, then prefilled again with its generated frames.
+No CUDA, torch or Spark is used; the validation step needs numpy. `report.json` gives the class mix, the experts per
+layer without rows (all 10,240 and the 5,900 the pruned quant keeps), the size on disk, the check against the NVFP4
+build's statistics and how to build each expert's Hessian: H_e = X_eᵀX_e / n_e over the rows whose picks hold e,
+and for `down_proj` the same over SwiGLU(gate, up) of those rows. The check recomputes the NVFP4 build's published
+`err_h` for every kept gate and up expert of layers 0, 3, 20 and 39 with these rows' per-column sums of squares:
+identical statistics give a ratio of exactly 1.
+
+The capture on 11 Nov: 175,396 rows (34,207 prompt text, 90,000 prompt audio, 51,189 generated; the NVFP4 build
+had 15 / 43 / 42 %), 29.2 GB on disk, 28 minutes. 9,918 of the 10,240 experts have rows, 5,888 of the 5,900 kept
+ones (at least 14 rows each, 1 % under 1,005). The 12 without rows are in layer 36, which the quant keeps whole;
+the NVFP4 build's own calibration also gave them none, so the router does not pick them. The `err_h` ratio over
+1,208 tensors: median 1.006, 5th–95th percentile 0.991–1.027.
+
+### EXL3 routed experts
+
+```sh
+python3 recipe/exl3_experts.py --encoder TENSORFOLD/zig-out/bin/tf-exl3-encode --workers 12   # resumable
+```
+
+quantizes the 5,900 experts the pruned quant keeps to EXL3 at 3.0 and 2.5 bits per weight, from the FP8 originals
+(not from NVFP4), with TensorFold's CPU encoder `tf-exl3-encode` (TensorFold card 23; no CUDA or torch). The
+encoder checks that its written trellis reloads and decodes bit for bit. Each expert's Hessians come from the
+calibration rows above: H = XᵀX / n over the rows routed to it, and for `down_proj` the same over SwiGLU(gate, up)
+of the original weights. The 12 layer-36 experts without rows use all of their layer's rows. `--workers` (default 8)
+converts that many layers at once, one process each, every one writing only its layer's folder under
+`drama3-exl3-experts/work`; finished experts stay there, so a stopped run resumes where it left off. Resume checks
+only that an expert's record exists: clear `work/` after changing the rows, checkpoint or encoder. Once every
+worker is done, each converted layer becomes one shard in `drama3-exl3-experts/exl3-3.0/` and `exl3-2.5/`, holding
+only the expert groups (`trellis`, `suh`, `svh`, `mul1`); if a layer fails, none is written.
+Each folder also gets an index and `exl3-provenance.json`: input paths and hashes, encoder commit and hash, settings,
+bytes against the NVFP4 experts, and per layer and projection `trace((W − Q) H (W − Q)ᵀ)` for EXL3 and for the
+published NVFP4 expert on the same H.
+
+Measured on 11 Nov from the finished-expert records in `work/`, on a shared Mac: the single process did 58
+experts/h over 06:04–08:04 (62/h over its whole 5 h run, 315 experts; load average about 66). It was stopped at
+08:04 and `--workers 12` took over its work folder, keeping those 315: 96 experts/h over 08:19–08:34 and 78/h over
+08:04–08:50 (60 experts). Other jobs had meanwhile raised the load average to 300–490, and each encoder got only
+6–48 % of a core; the remaining 5,525 experts take about 70 h at 78/h.
+
+Eight experts on 11 Nov (the median-row and most-routed kept expert of layers 0, 13, 26 and 39), EXL3 error over the
+published NVFP4's:
+
+| bits | gate | up | down | per expert on disk | seconds per expert |
+|---|---|---|---|---|---|
+| 3.0 | 7–133 | 6–112 | 3.3–40 | 1.197 MB | 28–30 |
+| 2.5 | 12–223 | 11–218 | 5.8–69 | 1.000 MB | 24 |
+
+NVFP4's experts take 1.769 MB each. The encoder matches its own round-to-nearest NVFP4 at 3.0 bits (1.04× on layer 0
+expert 117 `gate_proj`). The published NVFP4 is GPTQ'd, though, and its error lies along directions the calibration
+H barely weights. `tf-exl3-encode` weights only H's diagonal, with no LDLQ feedback, so it cannot do the same; that
+gap, not the bitrate, sets these ratios.
 
 ## Legacy: the patched engine
 

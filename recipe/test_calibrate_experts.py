@@ -10,6 +10,8 @@ import numpy as np
 import calibrate_experts as ce
 
 ROWS = 4
+# The NVFP4 build's mix: rows 0-3 are one text, two audio and one generated row, so text and generated get weight 1.2.
+TARGET = {'prompt_text': 3, 'prompt_audio': 4, 'generated': 3}
 
 
 def write_rows(out, config, picks_for):
@@ -34,36 +36,54 @@ class CalibrateExpertsTests(unittest.TestCase):
         self.checkpoint.mkdir()
         (self.checkpoint / 'config.json').write_bytes(b'{}')
 
-    def test_reports_kept_experts_without_rows_by_layer(self):
+    def test_reports_kept_experts_without_rows_by_layer_and_the_class_weights(self):
         # Rows cover experts 0-31 in every layer; layer 5 keeps 40 and 41, which have none. Only 40 had NVFP4 rows.
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [list(range(r * 8, r * 8 + 8)) for r in range(ROWS)])
         kept = {(layer, 0) for layer in range(ce.LAYERS)} | {(5, 40), (5, 41)}
         reference = {(layer, expert): 1 for layer in range(ce.LAYERS) for expert in range(ce.EXPERTS)} | {(5, 41): 0}
-        report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, reference, weight_checks=False)
+        report = ce.validate(self.tmp / 'rows', self.checkpoint, kept, reference, TARGET, weight_checks=False)
         self.assertEqual(report['class_rows'], {'prompt_text': 1, 'prompt_audio': 2, 'generated': 1})
+        self.assertEqual(report['class_weights'], {'prompt_text': 1.2, 'prompt_audio': 0.8, 'generated': 1.2})
         self.assertEqual(report['missing_kept_by_layer'], {'5': [40, 41]})
         self.assertEqual(report['missing_kept_nvfp4_routed'], {'5': [40]})
         self.assertEqual(report['covered_kept_experts'], len(kept) - 2)
         self.assertEqual(report['covered_experts'], ce.LAYERS * 32)
         self.assertEqual(report['kept_rows_min_median'], [0, 1])
 
+    def test_a_usable_capture_has_rows_for_every_kept_expert_a_near_mix_and_matching_statistics(self):
+        usable = {'missing_kept_by_layer': {}, 'class_weights': {'prompt_text': 0.75, 'prompt_audio': 0.85, 'generated': 1.43},
+                  'nvfp4_stats_pairs': TARGET, 'stats_check': {'ratio_p05_p95': [0.96, 1.04]}}
+        self.assertEqual(ce.failures(usable), [])
+        for change, reason in (
+                # The NVFP4 calibration gave layer 36's expert 0 no rows either; it still fails.
+                ({'missing_kept_by_layer': {'36': [0]}}, 'kept experts without rows'),
+                ({'class_weights': {**usable['class_weights'], 'generated': 2.01}}, 'class weights'),
+                ({'class_weights': {**usable['class_weights'], 'prompt_text': float('inf')}}, 'class weights'),
+                ({'class_weights': {**usable['class_weights'], 'prompt_audio': 0.49}}, 'class weights'),
+                ({'stats_check': {'ratio_p05_p95': [0.94, 1.0]}}, 'err_h ratio'),
+                ({'stats_check': {'ratio_p05_p95': [1.0, 1.06]}}, 'err_h ratio')):
+            with self.subTest(change=change):
+                problems = ce.failures({**usable, **change})
+                self.assertEqual(len(problems), 1)
+                self.assertIn(reason, problems[0])
+
     def test_rejects_a_row_that_picks_an_expert_twice(self):
         write_rows(self.tmp / 'rows', b'{}', lambda layer: [[0] * 8] + [list(range(8))] * (ROWS - 1))
         with self.assertRaisesRegex(ValueError, 'distinct'):
-            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, weight_checks=False)
+            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, TARGET, weight_checks=False)
 
     def test_rejects_rows_from_another_checkpoint(self):
         write_rows(self.tmp / 'rows', b'{"other": 1}', lambda layer: [list(range(8))] * ROWS)
         with self.assertRaisesRegex(ValueError, 'identity'):
-            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, weight_checks=False)
+            ce.validate(self.tmp / 'rows', self.checkpoint, set(), {}, TARGET, weight_checks=False)
 
-    def test_column_squares_count_each_routed_row_once_per_expert(self):
+    def test_column_squares_count_each_routed_row_once_per_expert_at_its_class_weight(self):
         x = np.array([[1, 2], [3, 4]], np.float32)
         picks = np.array([[0, 1, 2, 3, 4, 5, 6, 7], [0, 8, 9, 10, 11, 12, 13, 14]])
-        squares = ce.column_squares(x, picks, np)
-        np.testing.assert_array_equal(squares[0], [10, 20])
+        squares = ce.column_squares(x, picks, np.array([1, 0.5]), np)
+        np.testing.assert_array_equal(squares[0], [5.5, 12])
         np.testing.assert_array_equal(squares[1], [1, 4])
-        np.testing.assert_array_equal(squares[8], [9, 16])
+        np.testing.assert_array_equal(squares[8], [4.5, 8])
         np.testing.assert_array_equal(squares[15], [0, 0])
 
     def test_best_rank_is_the_highest_place_an_expert_reaches_in_any_row(self):

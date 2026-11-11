@@ -61,12 +61,13 @@ def write_safetensors(path, tensors, metadata):
     partial.rename(path)
 
 
-def hessians(x, gate, up):
-    """The gate/up and down Hessians of an expert from its rows x [n, 2048] and its original gate and up [512, 2048]."""
+def hessians(x, c, gate, up):
+    """The gate/up and down Hessians of an expert from its rows x [n, 2048], their class weights c [n] and its
+    original gate and up [512, 2048]."""
     x = x.astype(np.float64)
     g, u = x @ gate.T, x @ up.T
     a = g / (1 + np.exp(-g)) * u
-    return x.T @ x / len(x), a.T @ a / len(a)
+    return (x.T * c) @ x / c.sum(), (a.T * c) @ a / c.sum()
 
 
 def hessian_error(w, q, h):
@@ -86,14 +87,14 @@ def encode(encoder, weight, h, bits):
     return float(RECEIPT.search(run.stdout)[1]), {k[len('weight.'):]: v for k, v in tensors.items()}
 
 
-def convert_expert(encoder, source, quant, layer, expert, x, rows, work):
-    """Encodes one expert, with x its calibration rows (ROWS of them routed), at every bitrate into WORK; the record,
-    written last, marks it done."""
+def convert_expert(encoder, source, quant, layer, expert, x, c, rows, work):
+    """Encodes one expert, with x its calibration rows (ROWS of them routed) and c their class weights, at every
+    bitrate into WORK; the record, written last, marks it done."""
     weights = {p: ce.original(source, name(layer, expert, p), np) for p in PROJECTIONS}
     record = {'rows': rows, 'seconds': {}, 'nvfp4': {}, 'exl3': {}}
     # Accelerate's matmul raises FP flags on finite inputs and still returns the right values.
     with np.errstate(all='ignore'):
-        h_in, h_down = hessians(x, weights['gate_proj'], weights['up_proj'])
+        h_in, h_down = hessians(x, c, weights['gate_proj'], weights['up_proj'])
         for p in PROJECTIONS:
             h = h_down if p == 'down_proj' else h_in
             record['nvfp4'][p] = hessian_error(weights[p], ce.nvfp4(quant, name(layer, expert, p), np), h)
@@ -111,7 +112,7 @@ def convert_expert(encoder, source, quant, layer, expert, x, rows, work):
     partial.rename(work / f'{expert:03d}.json')
 
 
-def convert_layer(args, layer, experts, rows):
+def convert_layer(args, layer, experts, rows, c):
     """Converts the layer's unfinished experts into its own work folder; a worker process runs one layer at a time."""
     work = args.output / 'work' / f'layer-{layer:02d}'
     work.mkdir(parents=True, exist_ok=True)
@@ -123,7 +124,8 @@ def convert_layer(args, layer, experts, rows):
         for expert in todo:
             routed = (picks == expert).any(1)
             count = int(routed.sum())
-            convert_expert(args.encoder, source, quant, layer, expert, x[routed] if count else x, count, work)
+            convert_expert(args.encoder, source, quant, layer, expert, *((x[routed], c[routed]) if count else (x, c)),
+                           count, work)
             print(f'layer {layer} expert {expert}: {count} rows', flush=True)
 
 
@@ -219,6 +221,16 @@ def main():
         'encoder': str(args.encoder), 'encoder_sha256': sha256(args.encoder),
         'encoder_commit': commit.stdout.strip() or None,
     }
+    # The class weights calibrate_experts.py validated; one recipe for every record, so an earlier run's work folder
+    # with other weights is never resumed.
+    weights = json.loads((args.rows / 'report.json').read_text())['class_weights']
+    recipe = {'hessian': ce.HESSIAN, 'class_weights': weights, 'rows_json_sha256': inputs['rows_json_sha256']}
+    stamp = args.output / 'work' / 'hessian.json'
+    if (args.output / 'work').exists() and (not stamp.exists() or json.loads(stamp.read_text()) != recipe):
+        raise SystemExit(f'{args.output / "work"} holds experts encoded with other Hessians; use a new --output')
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(json.dumps(recipe))
+    c = np.array([weights[k] for k in ce.CLASSES])[np.fromfile(args.rows / 'class.u8', np.uint8)]
     kept = ce.kept_experts(args.nvfp4 / 'model.safetensors.index.json')
     experts = {layer: sorted(e for l, e in kept if l == layer) for layer in range(ce.LAYERS)}
     for bits in BITS:
@@ -226,7 +238,8 @@ def main():
     layers = sorted(set(args.layers))
     # Each worker writes only its layer's work folder; a failed layer stops the run here, before any shard is written.
     with ProcessPoolExecutor(args.workers) as pool:
-        list(pool.map(convert_layer, repeat(args), layers, [experts[l] for l in layers], repeat(manifest['rows'])))
+        list(pool.map(convert_layer, repeat(args), layers, [experts[l] for l in layers], repeat(manifest['rows']),
+                      repeat(c)))
     for layer in layers:
         write_shards(args.output, layer, experts[layer])
     # A run over some layers still reports every layer an earlier run finished.

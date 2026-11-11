@@ -5,11 +5,11 @@ Subject: [PATCH] native: EXL3 encoder rounds by exllamav3's LDLQ over the full
  Hessian
 
 ---
- zig/src/core/exl3_encode.zig | 159 +++++++++++++++++++++--------------
- 1 file changed, 95 insertions(+), 64 deletions(-)
+ zig/src/core/exl3_encode.zig | 199 ++++++++++++++++++++++++-----------
+ 1 file changed, 135 insertions(+), 64 deletions(-)
 
 diff --git a/zig/src/core/exl3_encode.zig b/zig/src/core/exl3_encode.zig
-index 88b3c1d..497de63 100644
+index 88b3c1d..e1481e2 100644
 --- a/zig/src/core/exl3_encode.zig
 +++ b/zig/src/core/exl3_encode.zig
 @@ -108,8 +108,8 @@ fn emitBits(w: exl3.Width, p: usize) u5 {
@@ -263,3 +263,50 @@ index 88b3c1d..497de63 100644
      for (0..k) |i| for (0..k) |j| for (0..rank) |r| {
          h[i * k + j] += x[r * k + i] * x[r * k + j] / rank;
      };
+@@ -412,6 +443,46 @@ test "the Hessian-weighted search beats the same search with H = I under an unev
+     }
+ }
+ 
++test "feedback equals exllamav3's block-LDL compensation" {
++    const k = 64;
++    const n = 32;
++    var x: [k * k]f64 = undefined;
++    var l: [k * k]f64 = @splat(0);
++    var e: [k * n]f64 = undefined;
++    gaussian(31, &x);
++    gaussian(32, &e);
++    for (0..k) |i| for (0..k) |j| for (0..k) |r| {
++        l[i * k + j] += x[r * k + i] * x[r * k + j] / k;
++    };
++    for (0..k) |i| l[i * k + i] += 0.1;
++    try cholesky(&l, k);
++    for (0..k) |i| @memset(l[i * k + i + 1 ..][0 .. k - i - 1], 0);
++    var r0: usize = 0;
++    while (r0 < k) : (r0 += 16) {
++        // exllamav3's block_ldl: each later row of L times the inverse of the block's diagonal of L, by forward
++        // substitution; ldlq then adds the transpose of those rows times their errors to the block's target
++        var inv: [16 * 16]f64 = @splat(0);
++        for (0..16) |c| {
++            inv[c * 16 + c] = 1 / l[(r0 + c) * k + r0 + c];
++            for (c + 1..16) |r| {
++                var s: f64 = 0;
++                for (c..r) |m| s += l[(r0 + r) * k + r0 + m] * inv[m * 16 + c];
++                inv[r * 16 + c] = -s / l[(r0 + r) * k + r0 + r];
++            }
++        }
++        var expected: [16 * n]f64 = @splat(0);
++        for (r0 + 16..k) |i| for (0..16) |c| {
++            var lic: f64 = 0;
++            for (0..16) |m| lic += l[i * k + r0 + m] * inv[m * 16 + c];
++            for (expected[c * n ..][0..n], e[i * n ..][0..n]) |*v, y| v.* += lic * y;
++        };
++        var target: [k * n]f64 = @splat(0);
++        var sum: [16 * n]f64 = undefined;
++        feedback(&l, &e, &target, &sum, k, n, r0);
++        for (expected, target[r0 * n ..][0 .. 16 * n]) |want, got| try std.testing.expectApproxEqAbs(want, got, 1e-9);
++    }
++}
++
+ test "Drama down shape [2048,512] with a correlated Hessian" {
+     const k = 512;
+     const n = 2048;

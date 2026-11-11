@@ -32,21 +32,30 @@ EXL3 over int3, per expert (gate / up / down → the three summed):
 - **3.0 bits beats int3 on every expert and every projection**, at 0.87 of its bytes. 2.5 bits beats it in sum but
   loses on layer 0's two busiest experts, so 3.0 is the build to make.
 - The int3 and NVFP4 GPTQ ran on the Spark's own statistics (other text and audio, per-expert shrinkage toward a
-  prior), EXL3 on these rows; each is scored here on these rows' H, which favours EXL3. The gap is too wide for that
-  to flip it on the busy experts (0.5–0.6×), but the sparse experts' 0.01–0.03× mostly reflect it. These are proxy
-  errors, not listening tests.
+  prior), EXL3 on these rows; each is scored here on these rows' H, which favours EXL3 by an amount not measured
+  here (no held-out rows). The sparse experts' 0.01–0.03× mostly reflect it. These are proxy errors, not listening
+  tests.
 - Card 35's old encoder summed 63× NVFP4's error at 3.0 bits over 841 experts; with LDLQ it is 2.1× here. On layer 2
   expert 222, the old encoder gave 48× NVFP4 on `gate_proj` and 13× on `down_proj` with these rows, LDLQ 0.71× and 1.14×.
 
 ## The encoder change
 
 [`ldlq.patch`](ldlq.patch) applies to TensorFold `6b01e7307` (`zig/src/core/exl3_encode.zig` is the same on main
-`630390e6e`). As in exllamav3's `quantize_exl3`: H is rotated with W's input signs and Hadamard, damped by 2.5 % of
-its mean diagonal and factored (Cholesky, H' = L Lᵀ); the 16-row tile blocks are quantized from last to first, each
-target first absorbing L_jj⁻ᵀ Σᵢ>ⱼ L_ijᵀ eᵢ of the errors already made, and every tile is the least squared error to
-its target. Two differences from exllamav3 remain: the tile search is TensorFold's 128-wide beam over the closed ring
-instead of exllamav3's exact Viterbi, and the scales (`suh` signs, `svh` per output) are TensorFold's. exllamav3's own
-converter could not be run: it needs CUDA, and this Mac has no way to start a Spark GPU job.
+`630390e6e`). Checked against exllamav3 `bd1f519` (`exllamav3/modules/quant/exl3_lib/quantize.py`):
+
+| step | exllamav3 | `ldlq.patch` |
+|---|---|---|
+| H damping | `sigma_reg` 0.025 × mean diagonal | the same |
+| LDLQ | `block_ldl` + `ldlq`, 16-row blocks last to first | Cholesky form; equal to `block_ldl`'s compensation to 1e-9 (patch test `feedback equals exllamav3's block-LDL compensation`) |
+| tile search | exact tail-biting Viterbi (CUDA `quantize_tiles`) | 128-wide beam over the closed ring |
+| input scales `su` | random signs × per-row RMS, then a searched global scale (`regularize`, `g_scale_gss`) | random signs only |
+| output scales `sv` | random signs × per-column RMS | per-column RMS / 1.2437 |
+| after LDLQ | `refit_scales` refits `su`, `sv` against H | none |
+
+So the feedback is exllamav3's; the search and the scales are not. **Parity is not shown**: exllamav3's quantizer
+runs only on CUDA, and no encode of these experts by it exists yet. The check that closes it: exllamav3 `bd1f519`'s
+`quantize_exl3` on the same six experts' W and H at 3.0 and 2.5 bits, on the Spark; ours matches when every
+projection's `trace((W − Q) H (W − Q)ᵀ)` is within 1.1× of exllamav3's (its `proxy_err` × `trace(W H Wᵀ)`).
 
 ```sh
 git -C TENSORFOLD checkout 6b01e7307 && git -C TENSORFOLD am results/exl3-ldlq/ldlq.patch
@@ -56,8 +65,9 @@ python3 results/exl3-ldlq/measure.py report OUT_DIR results/exl3-ldlq/probes.jso
 ```
 
 `INT3_DIR` holds the int3 job's `layer-LL.safetensors` ([`int3.sha256`](../smaller-builds/int3.sha256)). The encoder
-here is sha256 `4e987037…47c4ae`; its unit tests pass, including LDLQ beating the same search without feedback
-under a low-rank H, and its written trellis still reloads and decodes bit for bit.
+that made `probes.json` is sha256 `4e987037…47c4ae`, from the patch without its parity test (the test adds no code to
+the encoder). The patch's unit tests pass, including LDLQ beating the same search without feedback under a low-rank H,
+and its written trellis still reloads and decodes bit for bit.
 
 ## Build plan
 

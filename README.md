@@ -255,7 +255,7 @@ the NVFP4 build's own calibration also gave them none, so the router does not pi
 ### EXL3 routed experts
 
 ```sh
-python3 recipe/exl3_experts.py --encoder TENSORFOLD/zig-out/bin/tf-exl3-encode   # about 85 h, resumable
+python3 recipe/exl3_experts.py --encoder TENSORFOLD/zig-out/bin/tf-exl3-encode --workers 12   # resumable
 ```
 
 quantizes the 5,900 experts the pruned quant keeps to EXL3 at 3.0 and 2.5 bits per weight, from the FP8 originals
@@ -264,12 +264,19 @@ encoder checks that its written trellis reloads and decodes bit for bit. Each ex
 calibration rows above: H = XᵀX / n over the rows routed to it, and for `down_proj` the same over SwiGLU(gate, up)
 of the original weights. The 12 layer-36 experts without rows use all of their layer's rows. `--workers` (default 8)
 converts that many layers at once, one process each, every one writing only its layer's folder under
-`drama3-exl3-experts/work`; finished experts stay there, so a stopped run resumes where it left off. Once every
+`drama3-exl3-experts/work`; finished experts stay there, so a stopped run resumes where it left off. Resume checks
+only that an expert's record exists: clear `work/` after changing the rows, checkpoint or encoder. Once every
 worker is done, each converted layer becomes one shard in `drama3-exl3-experts/exl3-3.0/` and `exl3-2.5/`, holding
 only the expert groups (`trellis`, `suh`, `svh`, `mul1`); if a layer fails, none is written.
 Each folder also gets an index and `exl3-provenance.json`: input paths and hashes, encoder commit and hash, settings,
 bytes against the NVFP4 experts, and per layer and projection `trace((W − Q) H (W − Q)ᵀ)` for EXL3 and for the
 published NVFP4 expert on the same H.
+
+Measured on 11 Nov from the finished-expert records in `work/`, on a shared Mac: the single process did 58
+experts/h over 06:04–08:04 (62/h over its whole 5 h run, 315 experts; load average about 66). It was stopped at
+08:04 and `--workers 12` took over its work folder, keeping those 315: 96 experts/h over 08:19–08:34 and 78/h over
+08:04–08:50 (60 experts). Other jobs had meanwhile raised the load average to 300–490, and each encoder got only
+6–48 % of a core; the remaining 5,525 experts take about 70 h at 78/h.
 
 Eight experts on 11 Nov (the median-row and most-routed kept expert of layers 0, 13, 26 and 39), EXL3 error over the
 published NVFP4's:

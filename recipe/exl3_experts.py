@@ -113,7 +113,10 @@ def convert_expert(encoder, source, quant, layer, expert, x, rows, work):
             tensors.update({f'{name(layer, expert, p)}.{k}': v for k, v in parts.items()})
         record['seconds'][bits] = time.monotonic() - started
         write_safetensors(work / f'{expert:03d}-{bits}.safetensors', tensors, {'format': 'exl3'})
-    (work / f'{expert:03d}.json').write_text(json.dumps(record))
+    # Through a temporary file, like the shards: a run killed mid-write must not leave a record that reads as done.
+    partial = work / f'{expert:03d}.json.partial'
+    partial.write_text(json.dumps(record))
+    partial.rename(work / f'{expert:03d}.json')
 
 
 def convert_layer(args, layer, experts, rows):
@@ -205,10 +208,13 @@ def main():
     parser.add_argument('--nvfp4', type=Path, default=ce.NVFP4, help='the published 5,900-expert NVFP4 checkpoint')
     parser.add_argument('--rows', type=Path, default=ce.OUTPUT, help='calibration rows from calibrate_experts.py')
     parser.add_argument('--output', type=Path, default=OUTPUT)
-    parser.add_argument('--layers', type=int, nargs='+', default=range(ce.LAYERS))
+    parser.add_argument('--layers', type=int, nargs='+', choices=range(ce.LAYERS), default=range(ce.LAYERS),
+                        metavar='LAYER')
     parser.add_argument('--workers', type=int, default=8,
                         help='layers converted at once, one process each holding its layer\'s rows (~1.5 GB)')
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error('--workers must be at least 1')
     manifest = json.loads((args.rows / 'rows.json').read_text())
     config = sha256(args.checkpoint / 'config.json')
     if manifest['identity']['config_sha256'] != config:

@@ -17,5 +17,5 @@ git -C "$work" apply --include="$tool" "$PWD/engine/nvfp4/patches/0006-int3-rout
 
 nvidia-smi -L
 cd /work/out
-/usr/bin/time -v "$pilot/venv/bin/python" "$work/$tool" "$pilot/checkpoint" "$pilot/eq/runs/fp8-calib-rows" int3 \
+"$pilot/venv/bin/python" "$work/$tool" "$pilot/checkpoint" "$pilot/eq/runs/fp8-calib-rows" int3 \
   --mode int3 --provenance "$pilot/models/eq-nvfp4-v3/nvfp4-provenance.json" 2>&1 | tee int3.log

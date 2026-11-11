@@ -27,9 +27,11 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
   no failed reference take and 4 failed built-in takes against 6. It is 3.84 GiB (21 %) smaller than `t5900`.
 - `trim` speaks the same audio as `t5900`, byte for byte; `trim-bf16`'s differs, with the same word errors on every
   take.
-- The built-in voice's failures are the base model's: the same six takes fail on all three NVFP4 builds. Two salts
-  are half the four of [`quant-15gb`](../quant-15gb/README.md), so a difference of two failed takes is within the
-  noise.
+- The three NVFP4 builds fail the same six built-in takes. `trim-bf16-int3` fails two of them (`short-01` s0,
+  `long-01` s1) and one text of its own: built-in `medium-05` runs to the 1024-frame cap (47.55 s) on both salts,
+  speaking only its first sentence (WER 0.68), where the NVFP4 builds say it all in about 8 s. The rule counts
+  failed takes, not which ones; with two salts, half the four of [`quant-15gb`](../quant-15gb/README.md), that
+  runaway is the thing to hear before shipping.
 
 | File | What it holds |
 |---|---|
@@ -41,5 +43,7 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
 `eq-3ref` reference voice with guidance γ 1.5 batched or the built-in voice; failed = capped, WER > 0.2 or a quiet
-run of 3 s or more inside speech. The listening page (`measure.py listen`, salt 0, one text of each length in both
-voices) and the audio stay on the Mac and are not published. No speed, memory or speaker-similarity claim.
+run of 3 s or more inside speech. The listening page (`measure.py listen`: salt 0, one text of each length and
+`medium-05`, both voices, every build) and the audio stay on the Mac and are not published: open
+`/Users/Shared/agent-work/drama-assets/drama3-smaller-builds/listening.html` in a browser there. No speed, memory or
+speaker-similarity claim.

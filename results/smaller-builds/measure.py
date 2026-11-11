@@ -28,7 +28,7 @@ CORPUS = [json.loads(line) for line in (REPO / 'bench/corpus/drama-bench-en-v1.j
 VOICES = Path(os.environ.get('DRAMA_VOICES', '/tmp/b37/voices'))  # holds eq-3ref.json (sha256 86ccbe54...)
 PORT = 18797
 GUIDED = ['--voices', str(VOICES), '--default-voice', 'eq-3ref', '--cfg-gamma', '1.5', '--cfg-batched']
-LISTEN = ('short-03', 'medium-04', 'long-02')  # one item of each length on the page
+LISTEN = ('short-03', 'medium-04', 'long-02', 'medium-05')  # one text of each length, and int3's built-in runaway
 
 
 def full_vs_quant_score():

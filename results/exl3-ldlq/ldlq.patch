@@ -1,0 +1,312 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Builder 2 <b2@local>
+Date: Thu, 12 Nov 2026 03:41:13 +0800
+Subject: [PATCH] native: EXL3 encoder rounds by exllamav3's LDLQ over the full
+ Hessian
+
+---
+ zig/src/core/exl3_encode.zig | 199 ++++++++++++++++++++++++-----------
+ 1 file changed, 135 insertions(+), 64 deletions(-)
+
+diff --git a/zig/src/core/exl3_encode.zig b/zig/src/core/exl3_encode.zig
+index 88b3c1d..e1481e2 100644
+--- a/zig/src/core/exl3_encode.zig
++++ b/zig/src/core/exl3_encode.zig
+@@ -108,8 +108,8 @@ fn emitBits(w: exl3.Width, p: usize) u5 {
+     return @intCast(w.halves / 2 + if (w.isHalf()) p % 2 else 0);
+ }
+ 
+-/// Weighted beam Viterbi over a tile's ring; with `start`, value 0's wrapped window is forced to it, closing the ring.
+-fn beam(target: *const [256]f64, importance: *const [256]f64, book: *const Book, w: exl3.Width, start: ?u32, states: *[256]u32) void {
++/// Beam Viterbi over a tile's ring, least squared error; with `start`, value 0's wrapped window is forced to it, closing the ring.
++fn beam(target: *const [256]f64, book: *const Book, w: exl3.Width, start: ?u32, states: *[256]u32) void {
+     var candidates: [beam_width * 16]Candidate = undefined;
+     var history: [256][beam_width]u32 = undefined;
+     var parents: [256][beam_width]u32 = undefined;
+@@ -151,7 +151,7 @@ fn beam(target: *const [256]f64, importance: *const [256]f64, book: *const Book,
+         const node_mask = @as(u32, 0xffff) >> emitBits(w, (p + 1) % 256);
+         for (candidates[0..count]) |*c| {
+             const d = target[p] - book.values[c.state];
+-            c.cost += importance[p] * d * d;
++            c.cost += d * d;
+             c.node = c.state & node_mask;
+         }
+         std.sort.pdq(Candidate, candidates[0..count], {}, lessNode);
+@@ -178,15 +178,11 @@ fn beam(target: *const [256]f64, importance: *const [256]f64, book: *const Book,
+ }
+ 
+ /// Tail-biting search: a free pass over the tile turned by half picks the closing state, a second pass closes there.
+-fn searchTile(target: *const [256]f64, importance: *const [256]f64, book: *const Book, w: exl3.Width, states: *[256]u32) void {
+-    var turned_target: [256]f64 = undefined;
+-    var turned_importance: [256]f64 = undefined;
+-    for (0..256) |p| {
+-        turned_target[p] = target[(p + 128) % 256];
+-        turned_importance[p] = importance[(p + 128) % 256];
+-    }
+-    beam(&turned_target, &turned_importance, book, w, null, states);
+-    beam(target, importance, book, w, states[127] & (@as(u32, 0xffff) >> emitBits(w, 0)), states);
++fn searchTile(target: *const [256]f64, book: *const Book, w: exl3.Width, states: *[256]u32) void {
++    var turned: [256]f64 = undefined;
++    for (&turned, 0..) |*t, p| t.* = target[(p + 128) % 256];
++    beam(&turned, book, w, null, states);
++    beam(target, book, w, states[127] & (@as(u32, 0xffff) >> emitBits(w, 0)), states);
+ }
+ 
+ /// Exact sum_n (W-Q)^T H (W-Q), with matrices in [K,N] layout.
+@@ -205,40 +201,85 @@ pub fn hessianError(w: []const f64, q: []const f64, h: []const f64, k: usize, n:
+     return total;
+ }
+ 
+-/// One band of tile rows: the chosen trellis words and their rotated-domain values.
++/// One row of tiles, split over workers by tile column: the chosen trellis words and their rotated-domain values.
+ const Job = struct {
+-    rotated: []const f64,
+-    hd: []const f64,
+-    gd: []const f64,
++    target: []const f64,
+     book: *const Book,
+     width: exl3.Width,
+     n: usize,
++    tr: usize,
+     trellis: []i16,
+     q: []f64,
+ 
+-    fn rows(job: *const Job, first: usize, last: usize) void {
++    fn columns(job: *const Job, first: usize, last: usize) void {
+         var placement: [256]exl3.Placement = undefined;
+         exl3.tilePlacement(&placement);
+         const words = job.width.tileWords();
+-        for (first..last) |tr| for (0..job.n / 16) |tc| {
++        for (first..last) |tc| {
+             var target: [256]f64 = undefined;
+-            var importance: [256]f64 = undefined;
+-            for (placement, &target, &importance) |at, *x, *weight| {
+-                const row = tr * 16 + at.row;
+-                const col = tc * 16 + at.col;
+-                x.* = job.rotated[row * job.n + col];
+-                weight.* = job.hd[row] * job.gd[col];
+-            }
++            for (placement, &target) |at, *x| x.* = job.target[(job.tr * 16 + at.row) * job.n + tc * 16 + at.col];
+             var states: [256]u32 = undefined;
+-            searchTile(&target, &importance, job.book, job.width, &states);
+-            const tile = (tr * (job.n / 16) + tc) * words;
++            searchTile(&target, job.book, job.width, &states);
++            const tile = (job.tr * (job.n / 16) + tc) * words;
+             packTile(job.width, &states, job.trellis[tile..][0..words]);
+-            for (placement, states) |at, s| job.q[(tr * 16 + at.row) * job.n + tc * 16 + at.col] = job.book.values[s];
+-        };
++            for (placement, states) |at, s| job.q[(job.tr * 16 + at.row) * job.n + tc * 16 + at.col] = job.book.values[s];
++        }
++    }
++
++    // tiles are independent: each worker's columns match a serial pass byte for byte
++    fn run(job: *const Job) void {
++        const tiles = job.n / 16;
++        const workers = @min(max_workers, std.Thread.getCpuCount() catch 1, tiles);
++        const per = (tiles + workers - 1) / workers;
++        var threads: [max_workers]?std.Thread = @splat(null);
++        for (1..workers) |t| threads[t] = std.Thread.spawn(.{}, columns, .{ job, @min(tiles, t * per), @min(tiles, (t + 1) * per) }) catch null;
++        job.columns(0, @min(tiles, per));
++        for (1..workers) |t| if (threads[t]) |thread| thread.join() else job.columns(@min(tiles, t * per), @min(tiles, (t + 1) * per));
+     }
+ };
+ 
+-/// Encode [K,N] with its full [K,K] Hessian; `reconstructed` comes from the chosen states, not the packed trellis.
++/// Lower Cholesky factor of the [k,k] matrix `m`, in place; the upper triangle is left as it was.
++fn cholesky(m: []f64, k: usize) !void {
++    for (0..k) |j| {
++        const row_j = m[j * k ..][0..j];
++        var d = m[j * k + j];
++        for (row_j) |v| d -= v * v;
++        if (!(d > 0)) return error.NotPositiveDefinite;
++        const root = @sqrt(d);
++        m[j * k + j] = root;
++        for (j + 1..k) |i| {
++            var s = m[i * k + j];
++            for (m[i * k ..][0..j], row_j) |a, b| s -= a * b;
++            m[i * k + j] = s / root;
++        }
++    }
++}
++
++/// LDLQ feedback into rows [r0, r0+16) of `target` from the errors `e` of every later row, with `l` the lower Cholesky
++/// factor of H: the 16 rows' error is weighed by H only through their own block once the target absorbs
++/// L_jj^-T sum_{i>j} L_ij^T e_i, built in `sum` [16,n].
++fn feedback(l: []const f64, e: []const f64, target: []f64, sum: []f64, k: usize, n: usize, r0: usize) void {
++    @memset(sum, 0);
++    for (r0 + 16..k) |i| for (0..16) |c| {
++        const lic = l[i * k + r0 + c];
++        for (sum[c * n ..][0..n], e[i * n ..][0..n]) |*v, x| v.* += lic * x;
++    };
++    var c: usize = 16;
++    while (c > 0) {
++        c -= 1;
++        for (c + 1..16) |r| {
++            const lrc = l[(r0 + r) * k + r0 + c];
++            for (sum[c * n ..][0..n], sum[r * n ..][0..n]) |*v, x| v.* -= lrc * x;
++        }
++        const diag = l[(r0 + c) * k + r0 + c];
++        for (sum[c * n ..][0..n]) |*v| v.* /= diag;
++    }
++    for (target[r0 * n ..][0 .. 16 * n], sum) |*x, v| x.* += v;
++}
++
++/// Encode [K,N] with its full [K,K] Hessian by exllamav3's LDLQ: H rotated like W and damped by 2.5 % of its mean
++/// diagonal, 16-row blocks from last to first, each tile the least squared error to its fed-back target.
++/// `reconstructed` comes from the chosen states, not the packed trellis.
+ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usize, n: usize, width: exl3.Width) !Result {
+     if (k == 0 or n == 0 or k % 128 != 0 or n % 128 != 0 or weight.len != k * n or hessian.len != k * k or width.halves < 4 or width.halves > 8) return error.BadShape;
+     var arena_state = std.heap.ArenaAllocator.init(gpa);
+@@ -270,23 +311,16 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
+     }
+     rotateFast(rotated, k, n, 1);
+ 
+-    const hd = try a.alloc(f64, k);
+-    for (0..k / 128) |b| for (0..128) |r| {
+-        const row = b * 128 + r;
+-        var sum: f64 = 0;
+-        for (0..128) |i| for (0..128) |j| {
+-            const u = @as(f64, suh[b * 128 + i]);
+-            const v = @as(f64, suh[b * 128 + j]);
+-            sum += u * v * hessian[(b * 128 + i) * k + b * 128 + j] * had(r, i) * had(r, j) / 128.0;
+-        };
+-        hd[row] = @max(0, sum);
++    const l = try a.alloc(f64, k * k);
++    for (0..k) |i| for (0..k) |j| {
++        l[i * k + j] = @as(f64, suh[i]) * @as(f64, suh[j]) * hessian[i * k + j];
+     };
+-    const gd = try a.alloc(f64, n);
+-    for (0..n / 128) |b| {
+-        var sum: f64 = 0;
+-        for (svh[b * 128 ..][0..128]) |s| sum += @as(f64, s) * @as(f64, s);
+-        @memset(gd[b * 128 ..][0..128], sum / 128.0);
+-    }
++    rotateFast(l, k, k, 0);
++    rotateFast(l, k, k, 1);
++    var mean: f64 = 0;
++    for (0..k) |i| mean += l[i * k + i];
++    for (0..k) |i| l[i * k + i] += 0.025 * mean / @as(f64, @floatFromInt(k));
++    try cholesky(l, k);
+ 
+     const book = try a.create(Book);
+     book.init();
+@@ -295,24 +329,22 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
+     errdefer gpa.free(trellis);
+     const q = try gpa.alloc(f64, k * n);
+     errdefer gpa.free(q);
+-    const job = Job{ .rotated = rotated, .hd = hd, .gd = gd, .book = book, .width = width, .n = n, .trellis = trellis, .q = q };
+-    // tile rows are independent: each worker's band matches a serial pass byte for byte
+-    const tiles_k = k / 16;
+-    const workers = @min(max_workers, std.Thread.getCpuCount() catch 1, tiles_k);
+-    const per = (tiles_k + workers - 1) / workers;
+-    var threads: [max_workers]?std.Thread = @splat(null);
+-    for (1..workers) |t| threads[t] = std.Thread.spawn(.{}, Job.rows, .{ &job, @min(tiles_k, t * per), @min(tiles_k, (t + 1) * per) }) catch null;
+-    job.rows(0, @min(tiles_k, per));
+-    for (1..workers) |t| if (threads[t]) |thread| thread.join() else job.rows(@min(tiles_k, t * per), @min(tiles_k, (t + 1) * per));
++    const target = try a.dupe(f64, rotated);
++    const e = try a.alloc(f64, k * n);
++    const sum = try a.alloc(f64, 16 * n);
++    var tr = k / 16;
++    while (tr > 0) {
++        tr -= 1;
++        feedback(l, e, target, sum, k, n, tr * 16);
++        const job = Job{ .target = target, .book = book, .width = width, .n = n, .tr = tr, .trellis = trellis, .q = q };
++        job.run();
++        for (e[tr * 16 * n ..][0 .. 16 * n], rotated[tr * 16 * n ..][0 .. 16 * n], q[tr * 16 * n ..][0 .. 16 * n]) |*d, w, v| d.* = w - v;
++    }
+ 
+     exl3.restore(q, k, n, suh, svh);
+     return .{ .width = width, .k = k, .n = n, .trellis = trellis, .suh = suh, .svh = svh, .reconstructed = q };
+ }
+ 
+-fn had(r: usize, c: usize) f64 {
+-    return if (@popCount(r & c) % 2 == 0) 1 else -1;
+-}
+-
+ /// Decode the packed trellis and require the encoder's own reconstruction bit for bit; returns the Hessian error.
+ fn expectBitExact(weight: []const f64, hessian: []const f64, k: usize, n: usize, halves: u16) !f64 {
+     const gpa = std.testing.allocator;
+@@ -351,7 +383,6 @@ test "the closed ring decodes to its chosen states and stays near the free beam"
+     defer std.testing.allocator.destroy(book);
+     book.init();
+     var target: [256]f64 = undefined;
+-    const importance: [256]f64 = @splat(1);
+     for ([_]u16{ 4, 5, 6, 8 }) |halves| {
+         const w = exl3.Width{ .halves = halves };
+         var free_error: f64 = 0;
+@@ -360,8 +391,8 @@ test "the closed ring decodes to its chosen states and stays near the free beam"
+             gaussian(seed, &target);
+             var free: [256]u32 = undefined;
+             var closed: [256]u32 = undefined;
+-            beam(&target, &importance, book, w, null, &free);
+-            searchTile(&target, &importance, book, w, &closed);
++            beam(&target, book, w, null, &free);
++            searchTile(&target, book, w, &closed);
+             var tile: [64]i16 = undefined;
+             packTile(w, &closed, tile[0..w.tileWords()]);
+             var decoded: [256]u32 = undefined;
+@@ -389,7 +420,7 @@ test "seeded Gaussian gate [512,2048] with H = I" {
+     try expectWidths(w, h, k, n, 0.15);
+ }
+ 
+-test "the Hessian-weighted search beats the same search with H = I under an uneven Hessian" {
++test "LDLQ beats the same search with H = I (no feedback) under a low-rank Hessian" {
+     const k = 256;
+     const n = 256;
+     const rank = 4;
+@@ -399,7 +430,7 @@ test "the Hessian-weighted search beats the same search with H = I under an unev
+     var identity: [k * k]f64 = @splat(0);
+     gaussian(26, &w);
+     gaussian(27, &x);
+-    // few calibration rows: the rotated diagonal varies widely within each 128-row block
++    // few calibration rows: most of H's weight lies on a few directions LDLQ can push the error out of
+     for (0..k) |i| for (0..k) |j| for (0..rank) |r| {
+         h[i * k + j] += x[r * k + i] * x[r * k + j] / rank;
+     };
+@@ -412,6 +443,46 @@ test "the Hessian-weighted search beats the same search with H = I under an unev
+     }
+ }
+ 
++test "feedback equals exllamav3's block-LDL compensation" {
++    const k = 64;
++    const n = 32;
++    var x: [k * k]f64 = undefined;
++    var l: [k * k]f64 = @splat(0);
++    var e: [k * n]f64 = undefined;
++    gaussian(31, &x);
++    gaussian(32, &e);
++    for (0..k) |i| for (0..k) |j| for (0..k) |r| {
++        l[i * k + j] += x[r * k + i] * x[r * k + j] / k;
++    };
++    for (0..k) |i| l[i * k + i] += 0.1;
++    try cholesky(&l, k);
++    for (0..k) |i| @memset(l[i * k + i + 1 ..][0 .. k - i - 1], 0);
++    var r0: usize = 0;
++    while (r0 < k) : (r0 += 16) {
++        // exllamav3's block_ldl: each later row of L times the inverse of the block's diagonal of L, by forward
++        // substitution; ldlq then adds the transpose of those rows times their errors to the block's target
++        var inv: [16 * 16]f64 = @splat(0);
++        for (0..16) |c| {
++            inv[c * 16 + c] = 1 / l[(r0 + c) * k + r0 + c];
++            for (c + 1..16) |r| {
++                var s: f64 = 0;
++                for (c..r) |m| s += l[(r0 + r) * k + r0 + m] * inv[m * 16 + c];
++                inv[r * 16 + c] = -s / l[(r0 + r) * k + r0 + r];
++            }
++        }
++        var expected: [16 * n]f64 = @splat(0);
++        for (r0 + 16..k) |i| for (0..16) |c| {
++            var lic: f64 = 0;
++            for (0..16) |m| lic += l[i * k + r0 + m] * inv[m * 16 + c];
++            for (expected[c * n ..][0..n], e[i * n ..][0..n]) |*v, y| v.* += lic * y;
++        };
++        var target: [k * n]f64 = @splat(0);
++        var sum: [16 * n]f64 = undefined;
++        feedback(&l, &e, &target, &sum, k, n, r0);
++        for (expected, target[r0 * n ..][0 .. 16 * n]) |want, got| try std.testing.expectApproxEqAbs(want, got, 1e-9);
++    }
++}
++
+ test "Drama down shape [2048,512] with a correlated Hessian" {
+     const k = 512;
+     const n = 2048;

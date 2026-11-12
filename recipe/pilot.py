@@ -45,9 +45,10 @@ def guard(weights: int, external_admission: bool) -> tuple[int | None, int | Non
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--weights', choices=tuple(weight_selection.WEIGHTS),
-                        help='Download (first run), verify and serve these pinned weights with the engine '
-                             'scripts/build-engine.sh --weights builds for them; the NVFP4 quants also apply their '
-                             'measured guidance, --cfg-gamma 1.5 --cfg-batched, unless a guidance flag follows --')
+                        help='Download (first run, published weights), verify and serve these pinned weights with '
+                             'the engine scripts/build-engine.sh --weights builds for them; the NVFP4 quants also '
+                             'apply their measured guidance, --cfg-gamma 1.5 --cfg-batched, unless a guidance flag '
+                             'follows --')
     parser.add_argument('--backend', choices=('native', 'sglang-omni'), default='native')
     parser.add_argument('--native-bin', type=Path,
                         help='tensorfold-native executable (default with --weights: its build in build/)')

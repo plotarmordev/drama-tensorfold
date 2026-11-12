@@ -91,7 +91,7 @@ pairs into the new job, and the encoder validates the recipe and checksums befor
   difference was zero. This synthetic gate is not an exllamav3-produced full-model speech measurement.
 - No `builds.json` entry, winner, measured size or listening sample has been invented for the unbuilt model.
 - `nice -n 10 scripts/test.sh`: passed (91 recipe tests, two skipped; eight smaller-build tests; four LDLQ
-  tests; nine full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
+  tests; eleven full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
   Input-identity smoke rejects mismatched calibration/checkpoint config before creating output.
 - The BOTTOM CPU smoke ran the real `rows_bottom.prepare` over all 40 layers, saved the report, and rejected
   exactly layer 36 experts 188 and 243. No coverage/statistics tolerance changed.

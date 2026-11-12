@@ -33,7 +33,8 @@ The catalog itself is not in Git (reference audio, codec rows and generated cata
 
 The fixed catalog was measured on a second engine of the same int3 build (engine sha256 `5493f1fe…`), because
 the live server loads its catalog folder at start; the `shell-nolaugh` rows are from the live server on port
-18793. Both engines are the same build profile and the same two known lines behave the same on each.
+18793. Each row's `server` field names the engine that produced it (`second-engine` or `live-18793`). Both
+engines are the same build profile and the same two known lines behave the same on each.
 
 ## Files for listening
 

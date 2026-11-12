@@ -35,7 +35,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 9.29,
-   "trailing_silence_s": 0.19
+   "trailing_silence_s": 0.19,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -44,7 +45,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.62,
-   "trailing_silence_s": 0.12
+   "trailing_silence_s": 0.12,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -53,7 +55,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.96,
-   "trailing_silence_s": 0.36
+   "trailing_silence_s": 0.36,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -62,7 +65,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.64,
-   "trailing_silence_s": 0.04
+   "trailing_silence_s": 0.04,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -71,7 +75,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.11,
-   "trailing_silence_s": 0.11
+   "trailing_silence_s": 0.11,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -80,7 +85,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.06,
-   "trailing_silence_s": 0.06
+   "trailing_silence_s": 0.06,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -89,7 +95,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.76,
-   "trailing_silence_s": 0.06
+   "trailing_silence_s": 0.06,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -98,7 +105,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 9.47,
-   "trailing_silence_s": 0.17
+   "trailing_silence_s": 0.17,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -107,7 +115,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.13,
-   "trailing_silence_s": 0.13
+   "trailing_silence_s": 0.13,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -116,7 +125,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.24,
-   "trailing_silence_s": 0.34
+   "trailing_silence_s": 0.34,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -125,7 +135,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 9.43,
-   "trailing_silence_s": 0.13
+   "trailing_silence_s": 0.13,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -134,7 +145,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.18,
-   "trailing_silence_s": 0.08
+   "trailing_silence_s": 0.08,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -143,7 +155,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.78,
-   "trailing_silence_s": 0.08
+   "trailing_silence_s": 0.08,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -152,7 +165,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.59,
-   "trailing_silence_s": 0.19
+   "trailing_silence_s": 0.19,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -161,7 +175,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.32,
-   "trailing_silence_s": 0.12
+   "trailing_silence_s": 0.12,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -170,7 +185,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 9.71,
-   "trailing_silence_s": 0.01
+   "trailing_silence_s": 0.01,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -179,7 +195,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.83,
-   "trailing_silence_s": 0.13
+   "trailing_silence_s": 0.13,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -188,7 +205,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.71,
-   "trailing_silence_s": 0.01
+   "trailing_silence_s": 0.01,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -197,7 +215,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.64,
-   "trailing_silence_s": 0.04
+   "trailing_silence_s": 0.04,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long",
@@ -206,7 +225,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.78,
-   "trailing_silence_s": 0.08
+   "trailing_silence_s": 0.08,
+   "server": "second-engine"
   },
   {
    "voice": "shell-nolaugh",
@@ -215,7 +235,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.13,
-   "trailing_silence_s": 0.23
+   "trailing_silence_s": 0.23,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -224,7 +245,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.8,
-   "trailing_silence_s": 0.1
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -233,7 +255,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.39,
-   "trailing_silence_s": 0.19
+   "trailing_silence_s": 0.19,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -242,7 +265,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.5,
-   "trailing_silence_s": 0.1
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -251,7 +275,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.5,
-   "trailing_silence_s": 0.1
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -260,7 +285,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.43,
-   "trailing_silence_s": 0.13
+   "trailing_silence_s": 0.13,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -269,7 +295,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.76,
-   "trailing_silence_s": 0.06
+   "trailing_silence_s": 0.06,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -278,7 +305,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 8.17,
-   "trailing_silence_s": 0.07
+   "trailing_silence_s": 0.07,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -287,7 +315,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.53,
-   "trailing_silence_s": 0.13
+   "trailing_silence_s": 0.13,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -296,7 +325,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.64,
-   "trailing_silence_s": 0.34
+   "trailing_silence_s": 0.34,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -305,7 +335,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.78,
-   "trailing_silence_s": 0.08
+   "trailing_silence_s": 0.08,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -314,7 +345,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.48,
-   "trailing_silence_s": 0.08
+   "trailing_silence_s": 0.08,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -323,7 +355,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.9,
-   "trailing_silence_s": 0.1
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -332,7 +365,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.76,
-   "trailing_silence_s": 0.26
+   "trailing_silence_s": 0.26,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -341,7 +375,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 4.46,
-   "trailing_silence_s": 0.06
+   "trailing_silence_s": 0.06,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -350,7 +385,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 7.62,
-   "trailing_silence_s": 0.12
+   "trailing_silence_s": 0.12,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -359,7 +395,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.71,
-   "trailing_silence_s": 0.11
+   "trailing_silence_s": 0.11,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -368,7 +405,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 6.22,
-   "trailing_silence_s": 0.12
+   "trailing_silence_s": 0.12,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -377,7 +415,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.71,
-   "trailing_silence_s": 0.11
+   "trailing_silence_s": 0.11,
+   "server": "live-18793"
   },
   {
    "voice": "shell-nolaugh",
@@ -386,7 +425,8 @@
    "status": 200,
    "finish": "stop",
    "seconds": 5.06,
-   "trailing_silence_s": 0.16
+   "trailing_silence_s": 0.16,
+   "server": "live-18793"
   },
   {
    "voice": "capri-clean-long-47s",
@@ -395,7 +435,8 @@
    "status": 200,
    "finish": "silence",
    "seconds": 10.36,
-   "trailing_silence_s": 10.06
+   "trailing_silence_s": 10.06,
+   "server": "second-engine"
   },
   {
    "voice": "capri-clean-long-47s",
@@ -404,7 +445,8 @@
    "status": 200,
    "finish": "silence",
    "seconds": 10.68,
-   "trailing_silence_s": 9.98
+   "trailing_silence_s": 9.98,
+   "server": "second-engine"
   }
  ]
 }

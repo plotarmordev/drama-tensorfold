@@ -41,14 +41,15 @@ def full(triangle):
 
 
 def quantize(quantize_exl3, w, h, bits):
-    """exllamav3's Q of W [out, in] at BITS against H, in W's layout: a fresh capture each time, so no sign flips are
-    shared, and Q in the original basis with its scales refit (quantize_exl3 works on [in, out])."""
+    """exllamav3's Q of W [out, in] at BITS against H, in W's layout, and the tensors it stores (trellis, suh, svh and
+    the codebook marker) as numpy: a fresh capture each time, so no sign flips are shared, and Q in the original basis
+    with its scales refit (quantize_exl3 works on [in, out])."""
     capture = {'H': torch.tensor(h, dtype=torch.float32, device='cuda'), 'count': 1, 'finalized': False}
     k = float(bits)
     # whole bitrates index kernels and shift by K, so they must be ints; half-integers take the fractional trellis
     args = {'seed': 0, 'K': int(k) if k.is_integer() else k, 'devices': [0], 'apply_out_scales': None, 'mul1': True}
-    q, _, _ = quantize_exl3(torch.tensor(w.T, device='cuda'), capture, args, return_weight_q=True)
-    return q.T.double().cpu().numpy()
+    q, _, stored = quantize_exl3(torch.tensor(w.T, device='cuda'), capture, args, return_weight_q=True)
+    return q.T.double().cpu().numpy(), {role: t.cpu().numpy() for role, t in stored.items()}
 
 
 def main(checkpoint, hessians, out):
@@ -62,7 +63,7 @@ def main(checkpoint, hessians, out):
                 sys.exit(f'{layer}/{expert} {p}: W differs from the one the Hessians were made with')
             h = full(stored['h_down' if p == 'down_proj' else 'h_in'].astype(np.float64))
             for bits in ex.BITS:
-                errors[bits][p] = ex.hessian_error(w, quantize(quantize_exl3, w, h, bits), h)
+                errors[bits][p] = ex.hessian_error(w, quantize(quantize_exl3, w, h, bits)[0], h)
                 print(f'{layer}/{expert} {p} {bits}: {errors[bits][p]:.6g}', flush=True)
     out.write_text(json.dumps(result, indent=1) + '\n')
 

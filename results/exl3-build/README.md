@@ -17,6 +17,9 @@ open the 3.5-hour window below; the existing int3 result remains unchanged, not 
 projections at card 39's 0.6 s each (FP8 load and float64 scoring included) is 2.95 h, plus the 40 layers' rows
 (500 MB each) and their Hessians on the GPU; **ask the Desk for a 3.5-hour window**.
 
+The local Metal operator check (synthetic routed projections, no model conversion) is budgeted at **0.02 GPU-hours**
+on the Mac before it starts. It does not request or open a Spark window and does not replace full-build measurement.
+
 - W is each projection's FP8 original from the pilot checkpoint; H its expert's Hessians from the NVFP4-mix rows
   (`exl3-calibration-rows-v3`, `recipe/exl3_experts.py`'s recipe; the twelve never-routed layer-36 experts take
   their layer's rows), built in float32 on the GPU, where float64 on the CPU would take hours a layer.
@@ -42,10 +45,13 @@ results/smaller-builds/gb10-start.sh <sha> results/exl3-build/gb10-exl3.sh   # /
 
 ## After the job, on the Mac
 
-1. Splice the 40 layers into `trim-bf16` as `splice_int3.py` does for int3.
-2. Load them in the Mac engine: no patch in `engine/` reads EXL3 routed experts yet. TensorFold has a Metal EXL3
-   projection (`zig/kernels/metal/core/exl3_projection.metal`) for other models; Drama's expert path needs it
-   wired in and checked against exllamav3's own decode of the same trellis.
+1. Run `python3 results/exl3-build/assemble.py TRIM_BF16 ENCODED_LAYERS NEW_CHECKPOINT`. It requires every saved
+   layer/record pair, validates the EXL3 3.0 tensor geometry and mul1 marker, preserves dense tensors, codec and
+   pruning/head metadata, removes the old routed-expert tensors, and writes the new index last. Its printed GiB
+   is weights plus codec; the planned full-build size above is not a measurement.
+2. Build the Mac engine with `scripts/build-engine.sh --weights nvfp4`. Patch `0006-exl3-routed-experts.patch`
+   admits mul1 EXL3 3.0 expert groups, preserves compact router slots, and runs gate/up, SwiGLU and down through
+   core's indexed Metal projection. The full checkpoint still needs an end-to-end speech run after encoding.
 3. Speak and score the 24 texts, salts 0 and 1, both voices, with `../smaller-builds/measure.py`, add the build to
    `builds.json` and name the winner with `pick.py`; add it to the listening page next to int3 and `t5900`, with
    built-in `medium-05` (int3's runaway).
@@ -56,9 +62,13 @@ results/smaller-builds/gb10-start.sh <sha> results/exl3-build/gb10-exl3.sh   # /
 - All 123 local calibration files pass `rows.sha256`; they are not staged on BOTTOM.
 - CPU checkpoint smoke exercises reuse of a finished layer, completion of an interrupted layer, and rejection
   of a missing committed shard. Regression cases also reject changed shard bytes, changed expert sets and
-  missing projection records. These checks do not claim a CUDA encode or Metal decode.
-- The Mac runtime remains a required integration, not an available EXL3 engine. No `builds.json` entry,
-  winner, measured size or listening sample has been invented for the unbuilt model.
+  missing projection records. These checks do not claim a CUDA encode.
+- On the pinned Mac engine plus its patch series, `zig build drama3-metal-quant-check test-drama-metal-quant-host
+  native -Dcpu=apple_m1 -j4` passed (85 build steps, seven host tests). The actual `drama3-metal-quant-check`
+  executable passed NVFP4, int3 and EXL3 checks for decode and three-row prompt shapes. EXL3 checked 16,384
+  values each for gate, up and SwiGLU and 65,536 down values against scalar trellis decode; maximum absolute
+  difference was zero. This synthetic gate is not an exllamav3-produced full-model speech measurement.
+- No `builds.json` entry, winner, measured size or listening sample has been invented for the unbuilt model.
 - `nice -n 10 scripts/test.sh`: passed (91 recipe tests, two skipped; eight smaller-build tests; four LDLQ
-  tests; six full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
+  tests; nine full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
   Input-identity smoke rejects mismatched calibration/checkpoint config before creating output.

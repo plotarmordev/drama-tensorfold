@@ -5,31 +5,24 @@ experts ([`../exl3-ldlq`](../exl3-ldlq/README.md)). This build encodes every kep
 the same way, for `trim-bf16-exl3-3.0` (13.51 GiB planned, against int3's 14.50 GiB), to be measured next to int3
 with [`../smaller-builds`](../smaller-builds/README.md)' protocol and pick rule.
 
-**Status: BOTTOM-local preflight fails card 32's coverage gate; no EXL3 build or measurements yet.**
-On 12 November 2026, BOTTOM's existing `eq/runs/fp8-calib-rows` capture was exercised through
-[`rows_bottom.py`](rows_bottom.py), reusing card 32's selection (seed 0) and unchanged validation.
-The [observed report](bottom-rows-preflight.json) records 174,529 rows: selection is the identity, class shares
-match NVFP4 exactly, and the 1,208 checked tensors' err_h ratio is 0.99887–0.99999 (p05–p95).
-However, only **5,886/5,900** kept experts have rows. Layer 36 experts **188 and 243** are missing in addition
-to the twelve approved exceptions. Their best router ranks are 14 and 15, unlike the approved exceptions'
-182–219 here. No exception was added and the failed gate was not bypassed. This is the older CUDA capture,
-not a regeneration of card 32's 193-request Metal capture (seeds 1 and 2, Capri references).
+**Status: waiting for the v3 rows on BOTTOM; no EXL3 build or measurements yet.**
+The job's only input not yet on BOTTOM is the same-recipe Mac rows `exl3-calibration-rows-v3` (123 files, 19 GB,
+pinned by [`rows.sha256`](rows.sha256)). `bottom shell` refuses ~1 MB of stdin and BOTTOM cannot reach the Mac,
+so they wait on Net's staging door (`claude-requests/20261112-1000-mac-to-bottom-drama-rows.md`). Rechecked
+12 November 14:14 CST: `exl3-rows-v3` is absent from the pilot folder. The job needs no compiler (the exllamav3
+extension is prebuilt and hash-checked), so the gcc image request does not block it.
 
-The exact Capri source recording and transcript do exist in the pilot, with SHA-256 matching the Mac inputs
-(`2d7986b798aca51f695417e6fc51c03d87cfe1814ef9941d1d7e9b2b51a65bd9` and
-`28f5be03a3926c2483bbdb783395dbf37381963677da5ff0bb321b02d74a52a0`). The existing CUDA
-`tf-drama-probe` exposes salt-based requests, while card 32's `--calibration-rows` implementation is Metal-only;
-a same-seed CUDA capture is not implemented by this preflight. The next decision is whether the owner permits
-the older capture and two additional fallback experts, or requires a CUDA collector matching card 32 first.
-The GPU window was closed at 10:53; no GPU job was launched, DeepSeek was not paused, and no assets were uploaded.
+BOTTOM's older `eq/runs/fp8-calib-rows` capture is **not admitted** (Desk decision, 12 November). Card 32's
+unchanged gates over it ([saved report](bottom-rows-preflight.json), commit `63e671a`) found 5,886/5,900 kept
+experts with rows: layer 36 experts 188 and 243 (best router ranks 14 and 15) are missing beyond the twelve
+approved exceptions, which stay as written.
 
 ## The GPU job: ~3.5 hours on one GB10
 
 [`gb10-exl3.sh`](gb10-exl3.sh) runs [`encode.py`](encode.py) on BOTTOM: 5,900 experts × gate, up and down = 17,700
 projections at card 39's 0.6 s each (FP8 load and float64 scoring included) is 2.95 h, plus the 40 layers' rows
-(500 MB each for Mac rows, 715 MB for BOTTOM's capture) and their Hessians on the GPU; **ask the Desk for a
-3.5-hour window only after calibration passes**. BOTTOM CPU preflight took about one minute; allow 0.1 h for
-preflight and row hashing, then 3.5 GPU-hours for encoding. This is not a runtime estimate for a new capture.
+(500 MB each) and their Hessians on the GPU: **allow 0.1 h for row hashing, then a 3.5-hour GPU window**, opened
+by the Desk once the rows are staged.
 
 The local Metal operator check (synthetic routed projections, no model conversion) is budgeted at **0.02 GPU-hours**
 on the Mac before it starts. It does not request or open a Spark window and does not replace full-build measurement.
@@ -47,14 +40,10 @@ on the Mac before it starts. It does not request or open a Spark window and does
   `exl3-done/` before starting the next window. `recipe.json` binds every actual row file's bytes, checkpoint
   config/index, kept expert set, encoder, quantizer and hash-checking setup; a different recipe cannot reuse layers.
 - [`kept.json`](kept.json) lists the 5,900 kept experts (from the published quant's index, checked by
-  `test_encode.py` on the Mac); [`rows.sha256`](rows.sha256) pins only the staged Mac rows.
+  `test_encode.py` on the Mac); [`rows.sha256`](rows.sha256) pins the staged rows, which the launcher checks
+  before loading CUDA.
 
-The launcher checks staged Mac rows against `rows.sha256` when present. Otherwise it runs `rows_bottom.py`
-against the read-only pilot capture, writes `/work/out/rows-report.json`, and fails before loading CUDA if the
-unchanged card 32 gates fail. Its selection seed is 0; an identity selection reads the capture in place instead
-of copying 29 GB. The current BOTTOM capture is **not admitted**, for the coverage reason above.
-
-After the calibration prerequisite is resolved and the Desk opens the window:
+Once the rows are staged and the Desk opens the window:
 
 ```sh
 results/smaller-builds/gb10-start.sh <sha> results/exl3-build/gb10-exl3.sh   # /work/out/exl3/layer-LL.*
@@ -91,10 +80,8 @@ pairs into the new job, and the encoder validates the recipe and checksums befor
   difference was zero. This synthetic gate is not an exllamav3-produced full-model speech measurement.
 - No `builds.json` entry, winner, measured size or listening sample has been invented for the unbuilt model.
 - `nice -n 10 scripts/test.sh`: passed (91 recipe tests, two skipped; eight smaller-build tests; four LDLQ
-  tests; eleven full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
+  tests; full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
   Input-identity smoke rejects mismatched calibration/checkpoint config before creating output.
-- The BOTTOM CPU smoke ran the real `rows_bottom.prepare` over all 40 layers, saved the report, and rejected
-  exactly layer 36 experts 188 and 243. No coverage/statistics tolerance changed.
 - Changed-row resume regression failed before the fix (no rejection) and passes with actual-row hashing.
 - `talia health` after the CPU work reported gateway active, zero failed units and DeepSeek listed; its iMessage
   bridge separately reported down. No DeepSeek pause/resume or service change was made.

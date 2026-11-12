@@ -97,7 +97,7 @@ def main(checkpoint, rows, out):
     if manifest['identity']['config_sha256'] != ex.sha256(checkpoint / 'config.json'):
         raise ValueError('calibration rows and checkpoint config differ')
     out.mkdir(parents=True, exist_ok=True)
-    # Bind resumed layers to the actual row bytes, including BOTTOM-local captures, not a Mac-only checksum list.
+    # Bind resumed layers to the actual row bytes, so changed rows are rejected even under an unchanged checksum list.
     recipe = {'config': manifest['identity']['config_sha256'],
               'index': ex.sha256(checkpoint / 'model.safetensors.index.json'), 'kept': ex.sha256(KEPT),
               'rows': ex.rows_sha256(rows),

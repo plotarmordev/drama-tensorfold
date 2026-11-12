@@ -6,9 +6,8 @@
   `results/exl3-ldlq/exllamav3-env.sh` holds the exllamav3 setup both GB10 jobs share.
 - Finished layer records carry shard checksums; resuming rejects incomplete/corrupt pairs and changed recipes.
   Resumes hash the actual row bytes, rejecting changed input even when the rows manifest is unchanged.
-  The BOTTOM-local preflight reuses card 32's seed-0 selection and unchanged gates; its saved real-data report
-  matches NVFP4 class/statistics targets but rejects two unapproved missing experts (layer 36, 188 and 243).
-  No build, winner or audio is claimed, and no GPU window was opened for a known failing calibration.
+  The job takes only the staged v3 rows; BOTTOM's older capture is not admitted (its saved report misses
+  layer 36 experts 188 and 243 beyond the approved exceptions). No build, winner or audio is claimed yet.
 - `assemble.py` validates completed EXL3 layers before replacing routed tensors, preserving dense weights,
   codec and pruning/head metadata; the final index contains only the new EXL3 expert roles.
 - The Mac patch series now loads mul1 EXL3 3.0 routed experts and dispatches indexed Metal gate/up and down

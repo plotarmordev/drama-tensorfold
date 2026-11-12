@@ -5,7 +5,10 @@
   the FP8 originals and the NVFP4-mix rows, one layer file and record at a time, so a stopped job resumes.
   `results/exl3-ldlq/exllamav3-env.sh` holds the exllamav3 setup both GB10 jobs share.
 - Finished layer records carry shard checksums; resuming rejects incomplete/corrupt pairs and changed recipes.
-  The report records the closed GPU window and missing staged rows; no build, winner or audio is claimed yet.
+  Resumes hash the actual row bytes, rejecting changed input even when the rows manifest is unchanged.
+  The BOTTOM-local preflight reuses card 32's seed-0 selection and unchanged gates; its saved real-data report
+  matches NVFP4 class/statistics targets but rejects two unapproved missing experts (layer 36, 188 and 243).
+  No build, winner or audio is claimed, and no GPU window was opened for a known failing calibration.
 - `assemble.py` validates completed EXL3 layers before replacing routed tensors, preserving dense weights,
   codec and pruning/head metadata; the final index contains only the new EXL3 expert roles.
 - The Mac patch series now loads mul1 EXL3 3.0 routed experts and dispatches indexed Metal gate/up and down

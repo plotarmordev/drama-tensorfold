@@ -1,7 +1,9 @@
 import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -84,6 +86,28 @@ class EncodeTest(unittest.TestCase):
             path.write_text(json.dumps(record))
             with self.assertRaisesRegex(ValueError, 'incomplete or damaged'):
                 self.run_encode(out, {0: [5]})
+
+    def test_resume_rejects_changed_row_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint, rows, out = (root / name for name in ('checkpoint', 'rows', 'out'))
+            checkpoint.mkdir()
+            rows.mkdir()
+            (checkpoint / 'config.json').write_text('{}')
+            (checkpoint / 'model.safetensors.index.json').write_text('{"weight_map": {}}')
+            (rows / 'rows.json').write_text(json.dumps({
+                'identity': {'config_sha256': ex.sha256(checkpoint / 'config.json')}, 'rows': 1}))
+            data = rows / 'layer-00.x.bf16'
+            data.write_bytes(b'\x00\x00')
+            quantizer = types.SimpleNamespace(
+                __file__=str(Path(encode.__file__).parent.parent / 'exl3-ldlq/exllamav3_job.py'),
+                import_quantize=lambda: None)
+            with patch.dict('sys.modules', exllamav3_job=quantizer), patch.object(encode, 'kept_experts', return_value={}):
+                encode.main(checkpoint, rows, out)
+                encode.main(checkpoint, rows, out)
+                data.write_bytes(b'\x00\x01')
+                with self.assertRaisesRegex(ValueError, 'another encoder recipe'):
+                    encode.main(checkpoint, rows, out)
 
 
 class KeptTest(unittest.TestCase):

@@ -97,10 +97,10 @@ def main(checkpoint, rows, out):
     if manifest['identity']['config_sha256'] != ex.sha256(checkpoint / 'config.json'):
         raise ValueError('calibration rows and checkpoint config differ')
     out.mkdir(parents=True, exist_ok=True)
-    # The launcher verifies every row file; bind resumed layers to that manifest and this encoder recipe.
+    # Bind resumed layers to the actual row bytes, including BOTTOM-local captures, not a Mac-only checksum list.
     recipe = {'config': manifest['identity']['config_sha256'],
               'index': ex.sha256(checkpoint / 'model.safetensors.index.json'), 'kept': ex.sha256(KEPT),
-              'rows': ex.sha256(Path(__file__).with_name('rows.sha256')),
+              'rows': ex.rows_sha256(rows),
               'encoder': ex.sha256(Path(__file__)), 'quantizer': ex.sha256(Path(exllamav3_job.__file__)),
               'setup': ex.sha256(Path(exllamav3_job.__file__).with_name('exllamav3-env.sh'))}
     stamp = out / 'recipe.json'

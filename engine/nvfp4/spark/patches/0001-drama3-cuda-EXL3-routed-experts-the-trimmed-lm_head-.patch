@@ -19,13 +19,14 @@ complete, one of a kind per layer.
 ---
  zig/src/families/drama3/cuda/engine.zig       |  18 ++++
  zig/src/families/drama3/cuda/forward.zig      |  13 ++-
+ zig/src/families/drama3/cuda/owner_test.zig   |  80 ++++++++++++++
  zig/src/families/drama3/cuda/weights.zig      | 100 +++++++++++++++++-
  .../families/drama3/metal/quant_format.zig    |  82 +++++++++++++-
  zig/src/families/drama3/quant_test.zig        |   4 +-
- 5 files changed, 205 insertions(+), 12 deletions(-)
+ 6 files changed, 285 insertions(+), 12 deletions(-)
 
 diff --git a/zig/src/families/drama3/cuda/engine.zig b/zig/src/families/drama3/cuda/engine.zig
-index 1850c38a..12da1cf6 100644
+index 1850c38..12da1cf 100644
 --- a/zig/src/families/drama3/cuda/engine.zig
 +++ b/zig/src/families/drama3/cuda/engine.zig
 @@ -87,6 +87,8 @@ pub const Engine = struct {
@@ -96,7 +97,7 @@ index 1850c38a..12da1cf6 100644
          return .{ .d = undefined, .ptr = ptr, .len = std.math.maxInt(usize) / 2, .borrowed = true };
      }
 diff --git a/zig/src/families/drama3/cuda/forward.zig b/zig/src/families/drama3/cuda/forward.zig
-index 6a5550e3..16c76797 100644
+index 6a5550e..16c7679 100644
 --- a/zig/src/families/drama3/cuda/forward.zig
 +++ b/zig/src/families/drama3/cuda/forward.zig
 @@ -96,10 +96,19 @@ fn moe(e: *Engine, s: cuda.Stream, L: *const wts.Layer, t: usize) !void {
@@ -121,8 +122,124 @@ index 6a5550e3..16c76797 100644
          try k.nvfp4Experts(s, prompt, e.xn, cfg.top_k, L.experts, e.plan, e.gu, e.down, items);
      } else {
          // activations to FP8 per row and 128 inputs before each expert projection, as the reference serves them
+diff --git a/zig/src/families/drama3/cuda/owner_test.zig b/zig/src/families/drama3/cuda/owner_test.zig
+index 42516e0..de8ef92 100644
+--- a/zig/src/families/drama3/cuda/owner_test.zig
++++ b/zig/src/families/drama3/cuda/owner_test.zig
+@@ -5,6 +5,8 @@ const Tts = @import("tts.zig").Tts;
+ const Codec = @import("codec.zig").Codec;
+ const Engine = @import("engine.zig").Engine;
+ const a = std.testing.allocator;
++const cfg = @import("../config.zig");
++const wts = @import("weights.zig");
+ const Mock = struct {
+     var next: usize = 0;
+     var fail_next: bool = false;
+@@ -36,6 +38,16 @@ const Mock = struct {
+         unloads += 1;
+         return 0;
+     }
++    fn event(p: *cuda.abi.Event, _: c_uint) callconv(.c) c_int {
++        p.* = @ptrFromInt(0x50);
++        return 0;
++    }
++    fn unevent(_: cuda.abi.Event) callconv(.c) c_int {
++        return 0;
++    }
++    fn adopt(_: cuda.abi.Context) callconv(.c) c_int {
++        return 0;
++    }
+     fn stream(p: *cuda.abi.Stream, _: c_uint) callconv(.c) c_int {
+         p.* = @ptrFromInt(0x40);
+         return 0;
+@@ -78,6 +90,9 @@ const Mock = struct {
+         e.driver.api.cuStreamSynchronize = wait;
+         e.driver.api.cuMemsetD8_v2 = zero;
+         e.driver.api.cuMemsetD8Async = zeroAsync;
++        e.driver.api.cuEventCreate = event;
++        e.driver.api.cuEventDestroy_v2 = unevent;
++        e.driver.api.cuCtxSetCurrent = adopt;
+         e.stream = .{ .d = &e.driver, .handle = @ptrFromInt(1) };
+         e.stream2 = .{ .d = &e.driver, .handle = @ptrFromInt(2) };
+     }
+@@ -125,6 +140,28 @@ const Mock = struct {
+         try t.warm_zero.?.fill8(0, t.cs.handle);
+         return error.InjectedWarmFailure;
+     }
++
++    /// A bare engine on the mock driver — options, config and weights, layer 0's routed experts EXL3 with its
++    /// kernels loaded when asked — everything `fork`, `forkBackbone` and their teardown read; the caller frees `e.w`.
++    fn bare(e: *Engine, exl3: bool) !void {
++        Mock.init(e);
++        e.owns_model = true;
++        e.o = .{ .max_rows = 1, .max_ctx = 16, .max_frames = 2 };
++        e.c.full_attention = @splat(false);
++        e.exl3_experts = null;
++        e.exl3_grouped = null;
++        e.w = try a.create(wts.Weights);
++        e.w.* = undefined;
++        e.w.n_cand = 1;
++        e.ctx = .{ .d = &e.driver, .device = 0, .handle = @ptrFromInt(7) };
++        if (!exl3) return;
++        e.w.layers[0].experts = .{ .format = .exl3, .up = 0, .down = 0, .width = cfg.expert_width, .dims = cfg.hidden, .experts = 1, .exl3 = .{
++            .gate = 0,    .up = 0,     .down = 0,   .gate_k2 = 0, .up_k2 = 0, .down_k2 = 0,
++            .suh_g = 0,   .suh_u = 0,  .svh_g = 0,  .svh_u = 0,   .suh_d = 0, .svh_d = 0,
++            .experts = 1, .dims = cfg.hidden, .width = cfg.expert_width, .codebook = .mul1,
++        } };
++        e.exl3_experts = .{ .mod = .{ .d = &e.driver, .handle = @ptrFromInt(9) }, .group = undefined, .rot_in = undefined, .grouped = undefined, .gateup = undefined, .down_combine = undefined };
++    }
+ };
+ test "drama poison completes default-stream fills before reset can reuse buffers" {
+     const Fill = struct {
+@@ -229,3 +266,46 @@ test "drama owner: normal nested forks retain root after base release and unwind
+     try std.testing.expectEqual(@as(usize, 1), Mock.unloads);
+     try std.testing.expectEqual(@as(usize, 0), Mock.count());
+ }
++
++test "drama owner: a lane and a guide borrow their own EXL3 scratch and never unload the model's kernels" {
++    var e: Engine = undefined;
++    try Mock.bare(&e, true);
++    // what the base's own state would hold: its scratch over its own allocation, lending its kernels
++    var scratch = try cuda.DeviceBuffer.alloc(&e.driver, 256);
++    e.exl3_grouped = .{ .d = &e.driver, .kernels = &e.exl3_experts.?, .storage = .{ .d = &e.driver, .ptr = scratch.ptr, .len = scratch.len, .borrowed = true } };
++    const lane = try Engine.fork(&e);
++    const guide = try Engine.forkBackbone(&e);
++    const lane_g = &lane.exl3_grouped.?;
++    const guide_g = &guide.exl3_grouped.?;
++    // each fork's own borrowed scratch, never the base's or the other fork's: lanes and guides prefill concurrently
++    try std.testing.expect(lane_g.storage.?.borrowed and guide_g.storage.?.borrowed);
++    try std.testing.expect(lane_g.storage.?.ptr != e.exl3_grouped.?.storage.?.ptr);
++    try std.testing.expect(guide_g.storage.?.ptr != e.exl3_grouped.?.storage.?.ptr);
++    try std.testing.expect(lane_g.storage.?.ptr != guide_g.storage.?.ptr);
++    // the kernels belong to the fork's own copy: a fork outlives its base
++    try std.testing.expect(lane_g.kernels == &lane.exl3_experts.? and lane_g.kernels != &e.exl3_experts.?);
++    try std.testing.expect(guide_g.kernels == &guide.exl3_experts.? and guide_g.kernels != &e.exl3_experts.?);
++    lane.destroy();
++    guide.destroy();
++    try std.testing.expectEqual(@as(usize, 0), Mock.unloads); // a fork's teardown never unloads them
++    try std.testing.expectEqual(@as(usize, 1), Mock.count()); // the base's scratch alone is left
++    if (e.exl3_experts) |*x| x.unload(); // the owning engine's destroy line
++    try std.testing.expectEqual(@as(usize, 1), Mock.unloads);
++    scratch.free();
++    a.destroy(e.w);
++    try std.testing.expectEqual(@as(usize, 0), Mock.count());
++}
++
++test "drama owner: forks of an engine without EXL3 experts start with no EXL3 state and free what they allocate" {
++    var e: Engine = undefined;
++    try Mock.bare(&e, false);
++    const lane = try Engine.fork(&e);
++    const guide = try Engine.forkBackbone(&e);
++    try std.testing.expect(lane.exl3_experts == null and lane.exl3_grouped == null);
++    try std.testing.expect(guide.exl3_experts == null and guide.exl3_grouped == null);
++    lane.destroy();
++    guide.destroy();
++    try std.testing.expectEqual(@as(usize, 0), Mock.count()); // every allocation a fork made, freed
++    try std.testing.expectEqual(@as(usize, 0), Mock.unloads);
++    a.destroy(e.w);
++}
 diff --git a/zig/src/families/drama3/cuda/weights.zig b/zig/src/families/drama3/cuda/weights.zig
-index 1f2754b1..2642de17 100644
+index 1f2754b..2642de1 100644
 --- a/zig/src/families/drama3/cuda/weights.zig
 +++ b/zig/src/families/drama3/cuda/weights.zig
 @@ -53,6 +53,7 @@ pub const Weights = struct {
@@ -272,7 +389,7 @@ index 1f2754b1..2642de17 100644
 +pub const exl3_halves: u32 = 6;
 +const mul1_magic: u32 = 0x83DCD12D;
 diff --git a/zig/src/families/drama3/metal/quant_format.zig b/zig/src/families/drama3/metal/quant_format.zig
-index a8111499..f6408547 100644
+index a811149..f640854 100644
 --- a/zig/src/families/drama3/metal/quant_format.zig
 +++ b/zig/src/families/drama3/metal/quant_format.zig
 @@ -47,11 +47,24 @@ pub fn parseHeld(value: std.json.Value) !Held {
@@ -382,7 +499,7 @@ index a8111499..f6408547 100644
 +    try std.testing.expectError(error.UnlistedExpert, checkStored(&held, &names)); // expert 3 is stored but no longer held
 +}
 diff --git a/zig/src/families/drama3/quant_test.zig b/zig/src/families/drama3/quant_test.zig
-index dc23a155..10fc7c6b 100644
+index dc23a15..10fc7c6 100644
 --- a/zig/src/families/drama3/quant_test.zig
 +++ b/zig/src/families/drama3/quant_test.zig
 @@ -3,6 +3,7 @@ const std = @import("std");

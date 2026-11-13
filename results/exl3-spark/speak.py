@@ -29,13 +29,15 @@ ARMS = {
 SALTS = (0, 1)
 
 
-def wait_ready(timeout=900):
+def wait_ready(server, log, timeout=900):
     deadline = time.monotonic() + timeout
     while True:
         try:
             urllib.request.urlopen(f'http://127.0.0.1:{PORT}/health', timeout=2)
             return
         except OSError:
+            if server.poll() is not None:
+                raise RuntimeError(f'server exited during load: {log}')
             if time.monotonic() > deadline:
                 raise
             time.sleep(1)
@@ -53,7 +55,7 @@ def speak_arm(binary, checkpoint, arm, salt, voices, out):
             env={**os.environ, 'TENSORFOLD_SEED_SALT': str(salt), 'TENSORFOLD_NO_UPDATE_CHECK': '1'})
     started = time.monotonic()
     try:
-        wait_ready()
+        wait_ready(server, log)
         load_s = time.monotonic() - started
         takes = []
         for item in CORPUS:
@@ -99,8 +101,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     runs = [speak_arm(binary, checkpoint, arm, salt, voices, out / arm / f's{salt}')
             for arm in ARMS for salt in SALTS]
-    (out / 'summary.json').write_text(json.dumps({'runs': runs, 'report': summary(runs)}, indent=1) + '\n')
-    for row in summary(runs):
+    rows = summary(runs)
+    (out / 'summary.json').write_text(json.dumps({'runs': runs, 'report': rows}, indent=1) + '\n')
+    for row in rows:
         print(row, flush=True)
 
 

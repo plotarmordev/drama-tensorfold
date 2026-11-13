@@ -12,7 +12,7 @@ here=$PWD/results/exl3-spark
 ckpt=$pilot/drama3-exl3-5900
 engine=$pilot/drama3-exl3-engine
 for path in "$ckpt/config.json" "$ckpt/codec.pth" "$engine/tensorfold-native" "$engine/SHA256SUMS" \
-            "$pilot/voices-eq3ref/eq-3ref.json" "$pilot/drama3-exl3-5900.sha256"; do
+            "$pilot/voices-eq3ref-http/eq-3ref.json" "$pilot/drama3-exl3-5900.sha256"; do
     [ -e "$path" ] || { echo "missing $path; /assets holds:" >&2; find /assets -maxdepth 3 >&2; exit 1; }
 done
 (cd "$ckpt" && sha256sum --quiet -c "$pilot/drama3-exl3-5900.sha256")
@@ -22,4 +22,4 @@ echo "expected window: 41 min of speech + 4 loads (~2 min); 55 min if EXL3 decod
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 mkdir -p "$out"
-nice -n 10 python3 "$here/speak.py" "$engine/tensorfold-native" "$ckpt" "$pilot/voices-eq3ref" "$out" 2>&1 | tee -a "$out/speak.log"
+nice -n 10 python3 "$here/speak.py" "$engine/tensorfold-native" "$ckpt" "$pilot/voices-eq3ref-http" "$out" 2>&1 | tee -a "$out/speak.log"

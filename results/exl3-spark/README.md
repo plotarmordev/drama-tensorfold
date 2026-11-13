@@ -14,6 +14,9 @@ from the pilot's `drama-3-NVFP4-Pruned-5900` model and its `exl3-done` EXL3 laye
 | [`speak.py`](speak.py) | The client: a server per arm and salt, every take timed send-to-last-byte, WAVs kept for the listening page |
 
 The `eq-3ref` voice (sha256 `86ccbe54…`) went to BOTTOM through the `put` door; it is the only file from the Mac.
+It is the fork's `drama3-voice/2` file, which the pinned main engine refuses (`BadVoice`), so
+[`http_voice.py`](http_voice.py) rewrites it on BOTTOM, through `bottom shell`, as `voices-eq3ref-http/eq-3ref.json`
+in main's `drama3-http-voice/1` format: the same codes, checked against their sha256, frame-major.
 
 ## Expected window length, stated before it starts
 

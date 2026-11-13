@@ -9,3 +9,7 @@
 - [`engine/nvfp4/spark/`](engine/nvfp4/spark/): TensorFold main `132bd12383ba` pinned for the Spark, plus the
   patch that loads EXL3 3.0 mul1 routed experts, the compact `drama_head_rows` lm_head and the BF16 codec in the
   drama3 CUDA engine.
+- [`results/exl3-spark/summary.json`](results/exl3-spark/summary.json): the GB10 window's numbers. The winning
+  build loads in 10 s (`t5900-cover` 20.1 s) and peaks at 16.14 GiB (16.93 GiB); built-in speech runs RTF p50 0.84
+  (0.615), reference-voice speech 4.64 (0.828), a fixed 36 s per take. `http_voice.py` rewrites the fork's
+  `eq-3ref` voice in the `drama3-http-voice/1` format the pinned main engine loads.

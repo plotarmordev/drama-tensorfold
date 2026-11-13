@@ -29,15 +29,24 @@ one-hour window.**
 
 ## Result
 
-Filled in from `/work/out/exl3-spark/summary.json` when the window has run; `t5900-cover`'s columns are the same
-GB10's published numbers ([`quant-15gb`](../quant-15gb/compare.json), the fork engine) and the same engine base and
-weights ([`drama3-pruned-main`](https://github.com/plotarmordev/TensorFold/tree/main/docs/receipts/drama3-pruned-main),
+Window `bottom-b93e6c7a9390` (13 Nov 20:18–21:10, 52 min, inside the stated hour) at `f862a236`, engine
+`tensorfold-native` sha256 `ae5b3d58…`: all 96 takes spoken, numbers in [`summary.json`](summary.json). RTF is
+wall seconds over the WAV's length. `t5900-cover`'s rows are the same GB10's published numbers
+([`quant-15gb`](../quant-15gb/compare.json), the fork engine) and the same engine base and weights
+([`drama3-pruned-main`](https://github.com/plotarmordev/TensorFold/tree/main/docs/receipts/drama3-pruned-main),
 main `132bd1238`).
 
-| Build | Voice | Load (s) | Peak device (GiB) | Seconds per take mean / p50 | Capped of 48 |
-|---|---|---:|---:|---|---:|
-| `trim-bf16-exl3-3.0` | reference | pending | pending | pending | pending |
-| `trim-bf16-exl3-3.0` | built-in | pending | pending | pending | pending |
-| `t5900-cover` (quant-15gb) | reference | 20.1 | 16.93 | RTF p50 0.828 | 0 |
-| `t5900-cover` (quant-15gb) | built-in | 20.1 | 16.93 | RTF p50 0.615 | 0 |
-| `t5900-cover` (main `132bd1238`) | reference | 26.0 | 19.29 | RTF 2.233 | — |
+| Build | Voice | Load (s) | Peak device (GiB) | Seconds per take mean / p50 | RTF all / p50 | Capped of 48 |
+|---|---|---:|---:|---|---|---:|
+| `trim-bf16-exl3-3.0` | reference | 10.0 | 16.14 | 51.9 / 49.7 | 4.05 / 4.64 | 0 |
+| `trim-bf16-exl3-3.0` | built-in | 10.0 | 15.67 | 11.2 / 7.5 | 0.80 / 0.84 | 4 |
+| `t5900-cover` (quant-15gb) | reference | 20.1 | 16.93 | — / 8.45 | — / 0.828 | 0 |
+| `t5900-cover` (quant-15gb) | built-in | 20.1 | 16.93 | — / 5.03 | — / 0.615 | 0 |
+| `t5900-cover` (main `132bd1238`) | reference | 26.0 | 19.29 | — | 2.233 / — | — |
+
+The winning build loads in half `t5900-cover`'s time and peaks 0.8 GiB below the fork and 3.1 GiB below main.
+Built-in speech runs 1.36× the fork's NVFP4 RTF (p50). Every reference-voice take costs a fixed 36 s plus 1.25 s
+per second of speech (least squares over the 48), so guided speech is 5.6× the fork's p50 RTF and 1.8× main's. The
+fixed cost points at the ~1,300-token reference prompt each take prefills through the EXL3 experts (built-in takes
+carry none); the window did not time prefill apart from decode. The four capped built-in takes stopped at the 47.6 s
+cap.

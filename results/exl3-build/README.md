@@ -5,26 +5,21 @@ experts ([`../exl3-ldlq`](../exl3-ldlq/README.md)). This build encodes every kep
 the same way, as `trim-bf16-exl3-3.0`, and measures it next to int3 with
 [`../smaller-builds`](../smaller-builds/README.md)' protocol and pick rule.
 
-## Result: `trim-bf16-int3` stays the winner
+## Result: `trim-bf16-exl3-3.0` is the winner
 
-`trim-bf16-exl3-3.0` is **13.51 GiB** (weights + codec, 0.99 GiB under int3's 14.50) and fails all 96 takes:
-every one of the 24 texts, salts 0 and 1, in both voices runs to the 1024-frame cap, and Whisper hears filler
-("Thank you for watching", repeated clicks) instead of the text: mean WER 645 % reference, 397 % built-in, against
-int3's 1.78 % and 5.78 %. `pick.py` over [`builds.json`](../smaller-builds/builds.json) names `trim-bf16-int3`.
-The listening page (`/Users/Shared/agent-work/drama-assets/drama3-smaller-builds/listening.html`, on the Mac, not
-published) has the EXL3 build next to int3 and `t5900`, including built-in `medium-05`.
+`trim-bf16-exl3-3.0` is **13.51 GiB** (weights + codec), 0.99 GiB under int3's 14.50. Over the 24 texts, salts 0
+and 1, both voices, its mean WER is 1.61 % reference and 9.47 % built-in (int3: 1.78 % and 5.78 %; `t5900`:
+1.50 % and 6.91 %), with no failed reference take and 6 failed built-in takes, `t5900`'s count. `pick.py` over
+[`builds.json`](../smaller-builds/builds.json) names it; int3 also qualifies but is larger. It keeps int3's
+built-in `medium-05` runaway on both salts and adds `medium-02` s1
+([`../smaller-builds`](../smaller-builds/README.md#result-trim-bf16-exl3-30)). The listening page
+(`/Users/Shared/agent-work/drama-assets/drama3-smaller-builds/listening.html`, on the Mac, not published) has it
+next to int3 and `t5900`, including built-in `medium-05`.
 
-Why it fails is not settled. What was checked:
-
-- The encode matches card 39: its six probe experts' errors in the job's records are within 2 % of card 39's.
-- The stored tensors decode correctly: a numpy port of exllamav3's unpack, tile permutation, mul1 codebook and
-  Hadamard/`suh`/`svh` rebuilds real projections at cosine 0.97–0.99 against the originals (layers 5, 38, 39). A
-  read of patch 0006 against exllamav3's sources found the same conventions on every axis.
-- The error grows with depth. Per projection, `tr((W−Q)H(W−Q)ᵀ)/tr(WHWᵀ)` has median 0.015–0.02 in layers 1–17,
-  0.5 by layer 34 and above 1 in layers 38–39, where 107/162 and 114/225 projections are worse than zero weights;
-  outliers reach 729 (layer 8 expert 172) and 3.1×10⁵ (layer 39 expert 108). Int3 has no matching per-layer record
-  to compare. Whether the deep-layer error alone breaks the model, or the Metal kernel also differs on real data,
-  needs one check: Metal's projection of a real expert against the reference decode.
+A first measurement had every EXL3 take running to the 1024-frame cap. The cause was patch 0006, not the encode:
+its `forward.zig` hunk dropped the per-frame `rmsnorm` into `e.hlast`, so each decode frame's candidate head read
+the prompt-final state. With it restored, the int3 control (built-in, salt 0) on the fixed engine is byte-identical
+to the recorded int3 takes (24/24 WAVs), so the earlier builds' figures stand; the 96 EXL3 takes were spoken again.
 
 The v3 rows were staged on BOTTOM and passed `sha256sum -c` against [`rows.sha256`](rows.sha256). BOTTOM's older
 `eq/runs/fp8-calib-rows` capture is **not admitted** (Desk decision, 12 November; its
@@ -50,8 +45,9 @@ on the Mac before it starts. It does not request or open a Spark window and does
   The unfinished layer is recomputed, not the finished layers. Resume rejects missing/corrupt committed shards
   and mismatched expert/projection records rather than silently skipping them.
   Copy the stopped job's `recipe.json` and finished pairs from `/work/out/exl3` into the pilot folder's
-  `exl3-done/` before starting the next window. `recipe.json` binds every actual row file's bytes, checkpoint
-  config/index, kept expert set, encoder, quantizer and hash-checking setup; a different recipe cannot reuse layers.
+  `exl3-done/` before starting the next window. `recipe.json` binds every actual row file's bytes, the FP8 shard
+  bytes, checkpoint config/index, kept expert set, encoder, quantizer and hash-checking setup; a different recipe
+  cannot reuse layers. Job `bottom-ccd34101e181`'s recipe predates the shard binding, so a re-encode starts fresh.
 - [`kept.json`](kept.json) lists the 5,900 kept experts (from the published quant's index, checked by
   `test_encode.py` on the Mac); [`rows.sha256`](rows.sha256) pins the staged rows, which the launcher checks
   before loading CUDA.
@@ -85,18 +81,18 @@ checked against `exl3.sha256`.
 - CPU checkpoint smoke exercises reuse of a finished layer, completion of an interrupted layer, and rejection
   of a missing committed shard. Regression cases also reject changed shard bytes, changed expert sets and
   missing projection records. These checks do not claim a CUDA encode.
-- On the pinned Mac engine plus its patch series, `zig build drama3-metal-quant-check test-drama-metal-quant-host
-  native -Dcpu=apple_m1 -j4` passed (85 build steps, seven host tests). The actual `drama3-metal-quant-check`
-  executable passed NVFP4, int3 and EXL3 checks for decode and three-row prompt shapes. EXL3 checked 16,384
-  values each for gate, up and SwiGLU and 65,536 down values against scalar trellis decode; maximum absolute
-  difference was zero. This synthetic gate is not an exllamav3-produced full-model speech measurement.
-- The engine at `fb8fdf3` + 6 patches built (`tensorfold-native` `727b6a8a…`), served the assembled checkpoint and
-  spoke all 96 takes; `measure.py report` rewrote `builds.json` with the earlier builds' figures unchanged except
+- On the pinned Mac engine plus its patch series, `zig build test-drama-metal-quant-host` runs nine host tests,
+  including both EXL3 admission tests on scalar `mul1` markers (a `[1]` marker is refused); with the old `[1]`
+  fixture the admission test fails. `drama3-metal-quant-check` passed NVFP4, int3 and EXL3 checks for decode and
+  three-row prompt shapes, EXL3 at zero maximum difference against scalar trellis decode; it does not run the frame
+  loop, which the int3 control above covers.
+- The engine at `fb8fdf3` + 6 patches (`tensorfold-native` `e4b7f35a…`) served the assembled checkpoint and spoke
+  all 96 takes; `measure.py report` rewrote `builds.json` with the earlier builds' figures unchanged except
   `t5900`/`trim`/`trim-bf16` built-in WER mean 0.06911 → 0.0691 (rounding of the same scores).
 - `nice -n 10 scripts/test.sh`: passed (91 recipe tests, two skipped; nine smaller-build tests, one checking
   `builds.json`'s winner against `pick.py`; four LDLQ tests; ten full-build tests; streaming and GPU-harness
   self-tests). Job shell syntax checks passed.
   Input-identity smoke rejects mismatched calibration/checkpoint config before creating output.
-- Changed-row resume regression failed before the fix (no rejection) and passes with actual-row hashing.
+- Changed-row and changed-FP8-shard resume regressions each failed before their fix (no rejection) and pass now.
 - `talia health` after the CPU work reported gateway active, zero failed units and DeepSeek listed; its iMessage
   bridge separately reported down. No DeepSeek pause/resume or service change was made.

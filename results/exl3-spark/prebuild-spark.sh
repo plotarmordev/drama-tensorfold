@@ -28,7 +28,8 @@ pin=$work/drama/engine/nvfp4/spark
 
 git clone -q "$TENSORFOLD_REPOSITORY" "$work/tf"
 git -C "$work/tf" checkout -q "$TENSORFOLD_COMMIT"
-git -C "$work/tf" am -q --committer-date-is-author-date "$pin"/patches/*.patch
+GIT_COMMITTER_NAME=build-engine GIT_COMMITTER_EMAIL=build-engine@example.invalid \
+    git -C "$work/tf" am -q --committer-date-is-author-date "$pin"/patches/*.patch
 echo "engine: $TENSORFOLD_COMMIT + $(ls "$pin"/patches/*.patch | wc -l) patch(es) = $(git -C "$work/tf" rev-parse HEAD)"
 
 mkdir -p "$out"

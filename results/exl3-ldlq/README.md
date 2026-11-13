@@ -68,10 +68,11 @@ exllamav3 against int3 and NVFP4 on our bytes (its trellis and `su`/`sv` take th
 The job image has no C++ compiler, so exllamav3's CUDA extension is prebuilt for sm_121 by
 [`build-exllamav3-ext.sh`](build-exllamav3-ext.sh) in `python:3.12.12-bookworm` (the image's base, with g++ 12)
 against the pilot venv's torch, and the job loads it ([`exllamav3_ext-bd1f519-sm121.so.gz`](exllamav3_ext-bd1f519-sm121.so.gz),
-checked by sha256; a rebuild from the same commit gave different bytes, so a new build needs the script's hash
-updated). Job `bottom-f822a8a1d507` ran it from commit `a625218df` in the 12 Nov 05:47 window and exited 0
-after 22 s of encodes; [`exllamav3.log`](exllamav3.log), `exllamav3.json` and `parity.json` are its `/work/out`
-(the errors byte-identical to an earlier run on the host itself).
+checked by sha256 in [`exllamav3-env.sh`](exllamav3-env.sh), which both GB10 jobs source; a rebuild from the same
+commit gave different bytes, so a new build needs that hash updated). Job `bottom-f822a8a1d507` ran it from commit
+`a625218df` in the 12 Nov 05:47 window and exited 0 after 22 s of encodes; [`exllamav3.log`](exllamav3.log),
+`exllamav3.json` and `parity.json` are its `/work/out` (the errors byte-identical to an earlier run on the host
+itself).
 
 ```sh
 job start gpu middle plotarmordev/<repo> <sha> results/exl3-ldlq/gb10-exllamav3.sh   # /work/out/exl3-ref/parity.json

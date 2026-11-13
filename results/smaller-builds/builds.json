@@ -1,13 +1,13 @@
 {
  "base": "t5900",
- "winner": "trim-bf16-int3",
+ "winner": "trim-bf16-exl3-3.0",
  "builds": {
   "t5900": {
    "bytes": 19693405440,
    "voices": {
     "builtin": {
      "takes": 48,
-     "wer_mean": 0.06911,
+     "wer_mean": 0.0691,
      "wer_pooled": 0.06269,
      "failed": 6,
      "failed_items": [
@@ -33,7 +33,7 @@
    "voices": {
     "builtin": {
      "takes": 48,
-     "wer_mean": 0.06911,
+     "wer_mean": 0.0691,
      "wer_pooled": 0.06269,
      "failed": 6,
      "failed_items": [
@@ -59,7 +59,7 @@
    "voices": {
     "builtin": {
      "takes": 48,
-     "wer_mean": 0.06911,
+     "wer_mean": 0.0691,
      "wer_pooled": 0.06269,
      "failed": 6,
      "failed_items": [
@@ -75,6 +75,32 @@
      "takes": 48,
      "wer_mean": 0.01498,
      "wer_pooled": 0.00746,
+     "failed": 0,
+     "failed_items": []
+    }
+   }
+  },
+  "trim-bf16-exl3-3.0": {
+   "bytes": 14506878439,
+   "voices": {
+    "builtin": {
+     "takes": 48,
+     "wer_mean": 0.09471,
+     "wer_pooled": 0.07164,
+     "failed": 6,
+     "failed_items": [
+      "long-06 s1",
+      "medium-02 s1",
+      "medium-05 s0",
+      "medium-05 s1",
+      "short-01 s0",
+      "short-01 s1"
+     ]
+    },
+    "ref": {
+     "takes": 48,
+     "wer_mean": 0.01612,
+     "wer_pooled": 0.00896,
      "failed": 0,
      "failed_items": []
     }

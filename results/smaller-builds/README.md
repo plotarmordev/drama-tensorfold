@@ -1,9 +1,9 @@
 # The smaller builds of the 5,900-expert quant on the Mac
 
-Three cuts of `t5900-cover` (published as `plotarmordev/drama-3-NVFP4-Pruned-5900`), each on the one before, measured
-on the M5 Ultra with the Mac NVFP4 engine (`scripts/build-engine.sh --weights nvfp4`). The winner is the smallest
-build whose mean word error rate is at most twice `t5900`'s and whose failed takes are not more than `t5900`'s, in
-both voices ([`pick.py`](pick.py)).
+Four cuts of `t5900-cover` (published as `plotarmordev/drama-3-NVFP4-Pruned-5900`), the first three each on the one
+before, measured on the M5 Ultra with the Mac NVFP4 engine (`scripts/build-engine.sh --weights nvfp4`). The winner is
+the smallest build whose mean word error rate is at most twice `t5900`'s and whose failed takes are not more than
+`t5900`'s, in both voices ([`pick.py`](pick.py)).
 
 | Build | What changes | Weights + codec (GiB) |
 |---|---|---:|
@@ -11,8 +11,9 @@ both voices ([`pick.py`](pick.py)).
 | `trim` | lm_head trimmed to the rows Drama emits (`recipe/trim_head.py`) | 17.39 |
 | `trim-bf16` | and the codec in BF16 (`recipe/codec_bf16.py`) | 16.66 |
 | `trim-bf16-int3` | and the 5,900 routed experts in int3 (3.5 bits), GPTQ from the FP8 originals | 14.50 |
+| `trim-bf16-exl3-3.0` | `trim-bf16` with the 5,900 routed experts in exllamav3's EXL3 3.0 ([`../exl3-build`](../exl3-build/README.md)) | 13.51 |
 
-## Result: `trim-bf16-int3`
+## Result: `trim-bf16-exl3-3.0`
 
 The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 
@@ -22,16 +23,21 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | `trim` | 1.50 % / 0.75 % | 0/48 | 6.91 % / 6.27 % | 6/48 |
 | `trim-bf16` | 1.50 % / 0.75 % | 0/48 | 6.91 % / 6.27 % | 6/48 |
 | `trim-bf16-int3` | 1.78 % / 0.97 % | 0/48 | 5.78 % / 3.73 % | 4/48 |
+| `trim-bf16-exl3-3.0` | 1.61 % / 0.90 % | 0/48 | 9.47 % / 7.16 % | 6/48 |
 
-- `trim-bf16-int3` passes both bars in both voices: 1.19× the baseline's reference WER and 0.84× its built-in WER,
-  no failed reference take and 4 failed built-in takes against 6. It is 3.84 GiB (21 %) smaller than `t5900`.
+- `trim-bf16-exl3-3.0` passes both bars in both voices: 1.08× the baseline's reference WER and 1.37× its built-in
+  WER, no failed reference take and 6 failed built-in takes against 6. At 13.51 GiB it is 0.99 GiB under int3 and
+  4.83 GiB (26 %) under `t5900`.
+- `trim-bf16-int3` also passes (1.19× and 0.84×, 4 failed built-in takes); the rule takes the smaller build.
 - `trim` speaks the same audio as `t5900`, byte for byte; `trim-bf16`'s differs, with the same word errors on every
   take.
 - The three NVFP4 builds fail the same six built-in takes. `trim-bf16-int3` fails two of them (`short-01` s0,
   `long-01` s1) and one text of its own: built-in `medium-05` runs to the 1024-frame cap (47.55 s) on both salts,
-  speaking only its first sentence (WER 0.68), where the NVFP4 builds say it all in about 8 s. The rule counts
-  failed takes, not which ones; with two salts, half the four of [`quant-15gb`](../quant-15gb/README.md), that
-  runaway is the thing to hear before shipping.
+  speaking only its first sentence (WER 0.68), where the NVFP4 builds say it all in about 8 s.
+- `trim-bf16-exl3-3.0` keeps int3's `medium-05` runaway on both salts (same first sentence, WER 0.68) and adds
+  `medium-02` s1 to the cap; `short-01` fails on both salts, `long-06` s1 drops words. The rule counts failed
+  takes, not which ones; with two salts, half the four of [`quant-15gb`](../quant-15gb/README.md), those runaways
+  are the thing to hear before shipping.
 
 | File | What it holds |
 |---|---|

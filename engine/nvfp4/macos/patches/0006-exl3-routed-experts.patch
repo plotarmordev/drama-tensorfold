@@ -1,0 +1,882 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 09:47:05 +0800
+Subject: [PATCH] drama3 metal: EXL3 3.0 routed experts (mul1 trellis)
+
+A layer whose expert tensors carry exllamav3's trellis, suh, svh and mul1 is
+EXL3 3.0: gate/up, SwiGLU and down run through core's indexed Metal
+projection over the compact router slots. NVFP4 and int3 layers are unchanged.
+---
+ zig/build/drama3_host.zig                     |   5 +-
+ zig/build/drama3_metal.zig                    |  12 +-
+ zig/src/core/root.zig                         |   2 +
+ zig/src/families/drama3/metal/engine.zig      |   9 +-
+ zig/src/families/drama3/metal/exl3.zig        |  49 +++++
+ zig/src/families/drama3/metal/forward.zig     |  38 ++--
+ zig/src/families/drama3/metal/gpu.zig         |   9 +
+ zig/src/families/drama3/metal/guidance.zig    |   2 +-
+ zig/src/families/drama3/metal/quant_check.zig | 175 +++++++++++++++++-
+ .../families/drama3/metal/quant_format.zig    |  54 +++++-
+ .../drama3/metal/quant_format_test.zig        | 105 +++++++++++
+ zig/src/families/drama3/metal/weights.zig     |  92 ++++++++-
+ zig/src/tensorfold.zig                        |   1 +
+ 13 files changed, 525 insertions(+), 28 deletions(-)
+ create mode 100644 zig/src/families/drama3/metal/exl3.zig
+
+diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
+index 8fead83ad..52e892fb1 100644
+--- a/zig/build/drama3_host.zig
++++ b/zig/build/drama3_host.zig
+@@ -37,6 +37,9 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
+     runtime.linkFramework("Foundation", .{});
+     runtime.linkSystemLibrary("objc", .{});
+     const bytes = b.addWriteFiles().add("drama3_host_metallib.zig", "pub const bytes: []const u8 = &.{};\n");
++    const srcs = b.addWriteFiles().add("drama3_host_kernel_sources.zig", "pub const core_exl3_projection: []const u8 = &.{};\n");
++    core.addImport("metal", runtime);
++    core.addImport("kernel_sources", b.createModule(.{ .root_source_file = srcs }));
+     const family = b.createModule(.{
+         .root_source_file = b.path("zig/src/families/drama3/drama3_metal.zig"),
+         .target = b.graph.host,
+@@ -48,7 +51,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
+     native(b, step, family, core, api, null, "drama_metal_native_host");
+     const quant = b.addRunArtifact(b.addTest(.{
+         .root_module = family,
+-        .filters = &.{ "NVFP4", "expert metadata", "compact head", "independent scalar reference", "CFG" },
++        .filters = &.{ "NVFP4", "expert metadata", "compact head", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
+     }));
+     b.step("test-drama-metal-quant-host", "Packed expert formats, pruning and CFG state without GPU execution").dependOn(&quant.step);
+ }
+diff --git a/zig/build/drama3_metal.zig b/zig/build/drama3_metal.zig
+index a74e02701..26090aee5 100644
+--- a/zig/build/drama3_metal.zig
++++ b/zig/build/drama3_metal.zig
+@@ -4,6 +4,14 @@ const std = @import("std");
+ const dir = "zig/kernels/metal/drama3";
+ const sources = [_][]const u8{ "dense.metal", "gdn.metal", "attn.metal", "moe.metal", "nvfp4.metal", "guidance.metal", "sample.metal", "codec.metal" };
+ 
++/// The core Metal shader text embeds EXL3's projection needs (its Pipelines.load compiles from source at first use).
++fn kernelSources(b: *std.Build) *std.Build.Module {
++    const wf = b.addWriteFiles();
++    _ = wf.addCopyFile(b.path("zig/kernels/metal/core/exl3_projection.metal"), "exl3_projection.metal");
++    return b.createModule(.{ .root_source_file = wf.add("kernel_sources.zig", "pub const core_exl3_projection = @embedFile(\"exl3_projection.metal\");\n") });
++}
++
++
+ /// Drama in the Metal engines: its `core` is the engine's safetensors, the server's tokenizer and frame_rounds.
+ pub fn addNative(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, metal: *std.Build.Module, native: *std.Build.Module, metal_std: []const u8) void {
+     const tokenizer = native.import_table.get("tokenizer") orelse tok: {
+@@ -12,7 +20,7 @@ pub fn addNative(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
+         break :tok t;
+     };
+     const rounds = b.createModule(.{ .root_source_file = b.path("zig/src/core/frame_rounds.zig"), .target = target, .optimize = optimize });
+-    const shim = b.addWriteFiles().add("drama3_core.zig", "pub const safetensors = @import(\"tensorfold\").safetensors;\npub const tokenizer = @import(\"tokenizer\");\npub const frame_rounds = @import(\"frame_rounds\");\n");
++    const shim = b.addWriteFiles().add("drama3_core.zig", "pub const safetensors = @import(\"tensorfold\").safetensors;\npub const exl3_format = @import(\"tensorfold\").exl3_format;\npub const exl3_projection = @import(\"tensorfold\").exl3_projection;\npub const exl3_projection_decode = @import(\"tensorfold\").exl3_projection_decode;\npub const tokenizer = @import(\"tokenizer\");\npub const frame_rounds = @import(\"frame_rounds\");\n");
+     const core = b.createModule(.{ .root_source_file = shim, .target = target, .optimize = optimize, .imports = &.{
+         .{ .name = "tensorfold", .module = native.import_table.get("tensorfold").? },
+         .{ .name = "tokenizer", .module = tokenizer },
+@@ -58,6 +66,8 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
+     const tokenizer = b.createModule(.{ .root_source_file = b.path("zig/src/core/tokenizer/tokenizer.zig"), .target = target, .optimize = optimize, .link_libc = true });
+     const core = b.createModule(.{ .root_source_file = b.path("zig/src/core/root.zig"), .target = target, .optimize = optimize, .link_libc = true });
+     core.addImport("tokenizer", tokenizer);
++    core.addImport("metal", metal);
++    core.addImport("kernel_sources", kernelSources(b));
+     const family = b.createModule(.{
+         .root_source_file = b.path("zig/src/families/drama3/drama3_metal.zig"),
+         .target = target,
+diff --git a/zig/src/core/root.zig b/zig/src/core/root.zig
+index d7bb3bf02..dd88dae0f 100644
+--- a/zig/src/core/root.zig
++++ b/zig/src/core/root.zig
+@@ -142,6 +142,8 @@ pub const tree_slots = @import("tree_slots.zig");
+ pub const exl3_layout = @import("exl3_layout.zig");
+ 
+ pub const exl3_prepare = @import("exl3_prepare.zig");
++pub const exl3_projection = @import("exl3_projection.zig");
++pub const exl3_projection_decode = @import("exl3_projection_decode.zig");
+ 
+ pub const weight_only_contract = @import("contract/weight_only.zig");
+ pub const weight_only_cuda_adapter = @import("weight_only_cuda_impl.zig").Adapter;
+diff --git a/zig/src/families/drama3/metal/engine.zig b/zig/src/families/drama3/metal/engine.zig
+index 5ce06ebce..471015982 100644
+--- a/zig/src/families/drama3/metal/engine.zig
++++ b/zig/src/families/drama3/metal/engine.zig
+@@ -7,7 +7,7 @@ const gpu = @import("gpu.zig");
+ const wts = @import("weights.zig");
+ const k = @import("kernels.zig");
+ const fwd = @import("forward.zig");
+-
++const exl3 = @import("exl3.zig");
+ const H = cfg.hidden;
+ const W = cfg.frame_width;
+ 
+@@ -76,6 +76,7 @@ pub const Engine = struct {
+     gsc: u64,
+     counts: u64, // i32 [256]: the prompt plan
+     members: u64, // i32 [256, max_rows * 8]
++    exl3_scratch: u64, // rotated rows + FP32 sums, only when a layer's experts are trellis EXL3
+     hfin: u64,
+     th: [2]u64,
+     mix: u64,
+@@ -209,6 +210,10 @@ pub const Engine = struct {
+         e.xsc = try e.alloc(R * (H / 128) * 4);
+         e.gq = try e.alloc(R * 8 * cfg.expert_width * 2);
+         e.gsc = try e.alloc(R * 8 * (cfg.expert_width / 128) * 4);
++        const exl3_model = for (e.w.layers) |L| {
++            if (L.format == .exl3) break true;
++        } else false;
++        e.exl3_scratch = if (exl3_model) try e.alloc(try exl3.scratchBytes(R * cfg.top_k)) else 0;
+         e.counts = try e.alloc(cfg.experts * 4);
+         e.members = try e.alloc(cfg.experts * R * 8 * 4);
+         e.th = if (backbone_only) .{ 0, 0 } else .{ try e.alloc(R * H * 2), try e.alloc(R * H * 2) };
+@@ -281,7 +286,7 @@ pub const Engine = struct {
+         k.embedBackbone(g, e.pframes + c0 * W * 4, e.w.embed, e.w.cb_emb, e.x, t, H, e.c.ids.sem_begin, e.c.ids.sem_end, cfg.codebook_size);
+         if (probe) |p| try p.f(p.ctx, "backbone_input_embeds", e.x, t, H, false);
+         for (0..cfg.layers) |li| {
+-            fwd.backboneLayer(e, fwd.laneBB(e, e.pos), li, t);
++            try fwd.backboneLayer(e, fwd.laneBB(e, e.pos), li, t);
+             if (probe) |p| try p.f(p.ctx, std.fmt.bufPrint(&nb, "backbone_hidden.layer{d:0>2}", .{li}) catch unreachable, e.x, t, H, false);
+         }
+         k.rmsnorm(g, e.x, H, e.w.final_norm, e.hfin, H, t, H, cfg.eps, true);
+diff --git a/zig/src/families/drama3/metal/exl3.zig b/zig/src/families/drama3/metal/exl3.zig
+new file mode 100644
+index 000000000..59d2b6e79
+--- /dev/null
++++ b/zig/src/families/drama3/metal/exl3.zig
+@@ -0,0 +1,49 @@
++//! EXL3 routed experts over core's indexed trellis projection: gate/up rows repeat the pick's token row,
++//! the down projection reads SwiGLU pair rows one to one. Plain indexed routing only — no grouped members.
++const cfg = @import("../config.zig");
++const gpu = @import("gpu.zig");
++const k = @import("kernels.zig");
++const ex = @import("core").exl3_projection;
++
++const Gpu = gpu.Gpu;
++const I = cfg.expert_width;
++const H = cfg.hidden;
++
++pub fn view(g: *const Gpu, addr: u64) ex.View {
++    const r = g.ref(addr);
++    return .{ .buffer = r.buf, .offset = r.off };
++}
++
++/// Scratch bytes one chain of dispatches needs for `rows` routed rows; the down projection dominates.
++pub fn scratchBytes(rows: usize) !usize {
++    return @max(try ex.scratchBytes(H, I, rows), try ex.scratchBytes(I, H, rows));
++}
++
++fn encode(g: *Gpu, pipes: *const ex.Pipelines, table: u64, expert_count: usize, x: ex.View, y: ex.View, scratch: u64, r: ex.Rows, kd: usize, n: usize) !void {
++    try ex.encodeIndexed(pipes, g.encoder(), .{ .descriptors = view(g, table), .count = expert_count, .k = kd, .n = n }, x, y, view(g, scratch), r);
++}
++
++/// The routed chain: BF16 gate and up staged in `down_buf`'s first `pairs` rows of 2*I (gate | up halves so
++/// d3_swiglu reads one strided tensor), SwiGLU into `act`, then the FP32 down projection over the pair rows.
++/// `picks` holds the router's u32 slot IDs, one per row, matching the layer's held-ascending descriptor order.
++pub fn run(g: *Gpu, L: anytype, t: usize, x: u64, picks: u64, act: u64, down_buf: u64, scratch: u64) !void {
++    const pipes = try g.exl3Pipes();
++    const pairs = t * cfg.top_k;
++    const staged = view(g, down_buf);
++    const route: ex.Rows = .{
++        .count = pairs,
++        .x_stride = H,
++        .y_stride = I,
++        .routes = .{ .ids = view(g, picks), .repeat = cfg.top_k },
++    };
++    try encode(g, pipes, L.exl3_tables[0], L.expert_count, view(g, x), staged, scratch, route, H, I);
++    try encode(g, pipes, L.exl3_tables[1], L.expert_count, view(g, x), .{ .buffer = staged.buffer, .offset = staged.offset + pairs * I * 2 }, scratch, route, H, I);
++    k.swiglu(g, down_buf, I, 0, pairs * I, I, act, pairs);
++    try encode(g, pipes, L.exl3_tables[2], L.expert_count, view(g, act), staged, scratch, .{
++        .count = pairs,
++        .x_stride = I,
++        .y_stride = H,
++        .output = .f32,
++        .routes = .{ .ids = view(g, picks), .repeat = 1 },
++    }, I, H);
++}
+diff --git a/zig/src/families/drama3/metal/forward.zig b/zig/src/families/drama3/metal/forward.zig
+index 089d61e3c..cbecdd10e 100644
+--- a/zig/src/families/drama3/metal/forward.zig
++++ b/zig/src/families/drama3/metal/forward.zig
+@@ -5,6 +5,7 @@ const common = @import("../common.zig");
+ const wts = @import("weights.zig");
+ const k = @import("kernels.zig");
+ const eng = @import("engine.zig");
++const exl3 = @import("exl3.zig");
+ 
+ const Engine = eng.Engine;
+ const Sampling = common.Sampling;
+@@ -34,7 +35,7 @@ pub fn laneTW(e: *Engine) Lane {
+ }
+ 
+ /// One backbone layer over t rows, e.x (the residual stream) in and out.
+-pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize) void {
++pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize) !void {
+     const g = e.g;
+     const L = &e.w.layers[li];
+     k.rmsnorm(g, e.x, H, L.in_norm, e.xn, H, t, H, cfg.eps, true);
+@@ -51,11 +52,11 @@ pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize) void {
+         k.linear(g, L.gdn.out, e.y, 4096, 4096, H, e.tmp, H, t, false);
+     }
+     k.addRmsnorm(g, e.x, e.tmp, H, L.post_norm, e.xn, t, H, cfg.eps);
+-    moe(e, L, t);
++    try moe(e, L, t);
+ }
+ 
+-/// The MoE block: original-ID router, gated shared expert and packed FP8/NVFP4 experts, added to the residual.
+-fn moe(e: *Engine, L: *const wts.Layer, t: usize) void {
++/// The MoE block: original-ID router, gated shared expert and packed FP8/NVFP4/int3 or trellis EXL3 experts.
++fn moe(e: *Engine, L: *const wts.Layer, t: usize) !void {
+     const g = e.g;
+     const mp = cfg.moe_proj;
+     k.linear(g, L.moe_in, e.xn, H, H, mp, e.sp, mp, t, false);
+@@ -66,18 +67,23 @@ fn moe(e: *Engine, L: *const wts.Layer, t: usize) void {
+     k.swiglu(g, e.sp, mp, 0, cfg.shared_width, cfg.shared_width, e.sact, t);
+     k.linear(g, L.shared_down, e.sact, cfg.shared_width, cfg.shared_width, H, e.shout, H, t, false);
+     const pairs = t * cfg.top_k;
+-    const prompt = t > 1;
+-    if (prompt) k.plan(g, e.picks, pairs, e.counts, e.members, e.o.max_rows * cfg.top_k);
+-    const r: k.Route = .{ .table = L.experts, .picks = e.picks, .counts = e.counts, .members = e.members, .cap = e.o.max_rows * cfg.top_k, .pairs = pairs, .prompt = prompt, .experts = L.expert_count };
+-    if (L.format != .fp8) {
+-        k.expertsNvfp4(g, true, e.xn, r, H, cfg.expert_width, e.gu, L.format == .int3);
+-        k.expertsNvfp4(g, false, e.gu, r, cfg.expert_width, H, e.down, L.format == .int3);
++    if (L.format == .exl3) {
++        // Compact-ID router picks index the layer's descriptor tables; no prompt plan or grouped members.
++        try exl3.run(g, L, t, e.xn, e.picks, e.gu, e.down, e.exl3_scratch);
+     } else {
+-        // The legacy FP8 path retains its activation quantization and reduction arithmetic.
+-        k.actQuant(g, e.xn, H, e.xq, H, e.xsc, t, H);
+-        k.experts(g, true, e.xq, e.xsc, r, H, cfg.expert_width, e.gu);
+-        k.actQuant(g, e.gu, cfg.expert_width, e.gq, cfg.expert_width, e.gsc, pairs, cfg.expert_width);
+-        k.experts(g, false, e.gq, e.gsc, r, cfg.expert_width, H, e.down);
++        const prompt = t > 1;
++        if (prompt) k.plan(g, e.picks, pairs, e.counts, e.members, e.o.max_rows * cfg.top_k);
++        const r: k.Route = .{ .table = L.experts, .picks = e.picks, .counts = e.counts, .members = e.members, .cap = e.o.max_rows * cfg.top_k, .pairs = pairs, .prompt = prompt, .experts = L.expert_count };
++        if (L.format != .fp8) {
++            k.expertsNvfp4(g, true, e.xn, r, H, cfg.expert_width, e.gu, L.format == .int3);
++            k.expertsNvfp4(g, false, e.gu, r, cfg.expert_width, H, e.down, L.format == .int3);
++        } else {
++            // The legacy FP8 path retains its activation quantization and reduction arithmetic.
++            k.actQuant(g, e.xn, H, e.xq, H, e.xsc, t, H);
++            k.experts(g, true, e.xq, e.xsc, r, H, cfg.expert_width, e.gu);
++            k.actQuant(g, e.gu, cfg.expert_width, e.gq, cfg.expert_width, e.gsc, pairs, cfg.expert_width);
++            k.experts(g, false, e.gq, e.gsc, r, cfg.expert_width, H, e.down);
++        }
+     }
+     if (L.format != .fp8)
+         k.moeCombineNvfp4(g, e.x, e.down, e.rw, e.shout, e.xn, L.moe_in + (2 * cfg.shared_width + cfg.experts) * H * 2, H, t)
+@@ -156,7 +162,7 @@ pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engi
+     }
+     // the backbone row of the new frame at pos + 1
+     k.embedBackbone(g, e.bb_input, e.w.embed, e.w.cb_emb, e.x, 1, H, sem_begin, e.c.ids.sem_end, cfg.codebook_size);
+-    for (0..cfg.layers) |li| backboneLayer(e, laneBB(e, e.pos_bb), li, 1);
++    for (0..cfg.layers) |li| try backboneLayer(e, laneBB(e, e.pos_bb), li, 1);
+     k.rmsnorm(g, e.x, H, e.w.final_norm, e.hlast, H, 1, H, cfg.eps, true);
+     k.finishFrame(g, e.frame, e.frames_out, e.cur_input, e.window, e.pos, e.step, e.count);
+ }
+diff --git a/zig/src/families/drama3/metal/gpu.zig b/zig/src/families/drama3/metal/gpu.zig
+index fefffdba0..e4266cc5a 100644
+--- a/zig/src/families/drama3/metal/gpu.zig
++++ b/zig/src/families/drama3/metal/gpu.zig
+@@ -1,6 +1,7 @@
+ //! Drama 3's Metal device: one queue, the drama3 metallib, and buffers addressed as u64 (slot << 40 | byte offset).
+ const std = @import("std");
+ const mtl = @import("metal");
++const ex = @import("core").exl3_projection;
+ 
+ /// Every pipeline of drama3.metallib, by its kernel name.
+ pub const P = enum {
+@@ -68,6 +69,7 @@ pub const Gpu = struct {
+     cb: ?mtl.CommandBuffer = null,
+     enc: ?mtl.ComputeEncoder = null,
+     pending: ?mtl.CommandBuffer = null, // committed, not yet waited for
++    exl3_pipes: ?ex.Pipelines = null, // the trellis projections' library, built the first time an EXL3 layer runs
+     peak: u64 = 0,
+ 
+     pub fn open(gpa: std.mem.Allocator, metallib: []const u8) !*Gpu {
+@@ -121,6 +123,7 @@ pub const Gpu = struct {
+         g.bufs.deinit(g.gpa);
+         g.owned.deinit(g.gpa);
+         g.indirect.deinit(g.gpa);
++        if (g.exl3_pipes) |*p| p.deinit();
+         for (&g.pipes) |*p| p.deinit();
+         g.lib.deinit();
+         g.queue.deinit();
+@@ -128,6 +131,12 @@ pub const Gpu = struct {
+         g.gpa.destroy(g);
+     }
+ 
++    /// The shared EXL3 projection pipelines, compiled on first use so packed-only models pay nothing.
++    pub fn exl3Pipes(g: *Gpu) !*const ex.Pipelines {
++        if (g.exl3_pipes == null) g.exl3_pipes = try ex.Pipelines.load(g.device);
++        return &g.exl3_pipes.?;
++    }
++
+     /// A new zeroed shared buffer of `bytes`, by address.
+     pub fn alloc(g: *Gpu, bytes: usize) !u64 {
+         if (bytes > std.math.maxInt(usize) - 255) return error.OutOfMemory;
+diff --git a/zig/src/families/drama3/metal/guidance.zig b/zig/src/families/drama3/metal/guidance.zig
+index 516ec30f0..5e31bdab3 100644
+--- a/zig/src/families/drama3/metal/guidance.zig
++++ b/zig/src/families/drama3/metal/guidance.zig
+@@ -82,7 +82,7 @@ pub const Guide = struct {
+         // Feed the actual sampled conditional frame to the unconditional backbone, never its codec tower.
+         k.nextInput(u.g, conditional.frame, u.bb_input, u.pos, u.pos_bb);
+         k.embedBackbone(u.g, u.bb_input, u.w.embed, u.w.cb_emb, u.x, 1, H, u.c.ids.sem_begin, u.c.ids.sem_end, cfg.codebook_size);
+-        for (0..cfg.layers) |li| fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1);
++        for (0..cfg.layers) |li| try fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1);
+         k.rmsnorm(u.g, u.x, H, u.w.final_norm, u.hlast, H, 1, H, cfg.eps, true);
+         k.copyI32(u.g, u.pos_bb, u.pos, 1);
+         try u.g.commit();
+diff --git a/zig/src/families/drama3/metal/quant_check.zig b/zig/src/families/drama3/metal/quant_check.zig
+index 71b651a10..01355b960 100644
+--- a/zig/src/families/drama3/metal/quant_check.zig
++++ b/zig/src/families/drama3/metal/quant_check.zig
+@@ -1,10 +1,15 @@
+ //! Deterministic device gate: packed NVFP4/int3 projections, SwiGLU, pruning and mixed FP8/NVFP4 vs independent FP64.
++//! The EXL3 leg routes mul1 3.0 trellis experts through exl3.run and checks every stage against the scalar decoder.
+ const std = @import("std");
+ const Gpu = @import("gpu.zig").Gpu;
+ const k = @import("kernels.zig");
+ const q = @import("quant_format.zig");
+ const ref = @import("quant_reference.zig");
+-
++const exl3 = @import("exl3.zig");
++const core = @import("core");
++const projection = core.exl3_projection;
++const decode = core.exl3_projection_decode;
++const format = core.exl3_format;
+ const H = 2048;
+ const I = 512;
+ const E = 8;
+@@ -76,6 +81,7 @@ const Projection = struct {
+ pub fn run(g: *Gpu) !void {
+     try formatCheck(g, false);
+     try formatCheck(g, true);
++    try exl3Check(g);
+ }
+ 
+ fn formatCheck(g: *Gpu, int3: bool) !void {
+@@ -247,3 +253,170 @@ fn fp8Layer(g: *Gpu, original_route: k.Route, x: u64, gu: u64, output: u64, rows
+     };
+     score.report("drama3 mixed-layer legacy FP8 down");
+ }
++
++// Synthetic mul1 3.0 trellis experts: an LCG bitstream is a valid circular stream, so every state decodes.
++const Trellis = struct {
++    matrix: projection.Matrix,
++    storage: [4]u64,
++    k: usize,
++    n: usize,
++
++    fn init(g: *Gpu, kd: usize, n: usize, seed: u64) !Trellis {
++        var t: Trellis = .{ .matrix = undefined, .storage = @splat(0), .k = kd, .n = n };
++        const words = (kd / 16) * (n / 16) * 48; // 6 halves of 8 int16 words per 16x16 tile
++        const trellis = try g.alloc(words * 2);
++        const suh = try g.alloc(kd * 2);
++        const svh = try g.alloc(n * 2);
++        t.storage = .{ trellis, suh, svh, 0 };
++        var state = seed;
++        for (std.mem.bytesAsSlice(u16, g.host(trellis, words * 2))) |*v| {
++            state ^= state << 13;
++            state ^= state >> 7;
++            state ^= state << 17;
++            v.* = @truncate(state);
++        }
++        for (std.mem.bytesAsSlice(u16, g.host(suh, kd * 2)), 0..) |*v, i| v.* = @bitCast(@as(f16, if (i % 3 == 0) -0.75 else 1.125));
++        for (std.mem.bytesAsSlice(u16, g.host(svh, n * 2)), 0..) |*v, i| v.* = @bitCast(@as(f16, if (i % 5 == 0) -0.25 else 0.875));
++        for (t.storage[0..3]) |a| try g.indirect.append(g.gpa, g.ref(a).buf);
++        t.matrix = .{
++            .trellis = exl3.view(g, trellis),
++            .suh = exl3.view(g, suh),
++            .svh = exl3.view(g, svh),
++            .k = kd,
++            .n = n,
++            .width = .{ .halves = 6 },
++            .codebook = .mul1,
++        };
++        try t.matrix.validate();
++        return t;
++    }
++
++    /// y[n] = rotated dot of the BF16 row against this matrix's unpacked trellis, then unrotate and scale.
++    fn project(t: *const Trellis, g: *Gpu, x: []align(1) const u16, arena: std.mem.Allocator, out: []f32) !void {
++        const suh = std.mem.bytesAsSlice(f16, @as([]align(1) u8, g.host(t.storage[1], t.k * 2)));
++        const rotated = try arena.alloc(f16, t.k);
++        const unpacked = try arena.alloc(f16, t.k * t.n);
++        const words = std.mem.bytesAsSlice(i16, @as([]align(1) u8, g.host(t.storage[0], (t.k / 16) * (t.n / 16) * 48 * 2)));
++        format.unpack(t.matrix.width, t.matrix.codebook, @alignCast(words), t.k / 16, t.n / 16, unpacked);
++        for (0..t.k / 128) |b| {
++            var block: [128]f32 = undefined;
++            for (&block, 0..) |*v, i| v.* = @as(f32, @bitCast(@as(u32, x[b * 128 + i]) << 16)) * @as(f32, suh[b * 128 + i]);
++            decode.hadamard(&block);
++            for (block, 0..) |v, i| rotated[b * 128 + i] = @floatCast(v);
++        }
++        for (out, 0..) |*v, col| {
++            var sum: f64 = 0;
++            for (0..t.k) |j| sum += @as(f64, rotated[j]) * @as(f64, unpacked[j * t.n + col]);
++            v.* = @floatCast(sum);
++        }
++        for (0..t.n / 128) |b| decode.hadamard(out[b * 128 ..][0..128]);
++        const svh = std.mem.bytesAsSlice(f16, @as([]align(1) u8, g.host(t.storage[2], t.n * 2)));
++        for (out[0..t.n], svh) |*v, s| v.* *= @floatCast(s);
++    }
++};
++
++/// The production exl3.run chain — gate/up BF16, SwiGLU, down FP32 — over eight held mul1 3.0 experts
++/// pruned from a 256-ID router, checked stage by stage against the scalar trellis decoder.
++fn exl3Check(g: *Gpu) !void {
++    try g.flush();
++    const first = g.bufs.items.len;
++    const indirect_first = g.indirect.items.len;
++    defer {
++        g.flush() catch {};
++        g.indirect.shrinkRetainingCapacity(indirect_first);
++        g.releaseFrom(first);
++    }
++    var arena = std.heap.ArenaAllocator.init(g.gpa);
++    defer arena.deinit();
++    const held = [_]u8{ 1, 7, 19, 32, 65, 127, 200, 255 };
++    var layer: LayerStub = .{ .expert_count = held.len };
++    const kd = [_]usize{ H, H, I };
++    const nd = [_]usize{ I, I, H };
++    var mats: [3][E]Trellis = undefined;
++    for (0..3) |j| {
++        layer.exl3_tables[j] = try g.alloc(held.len * @sizeOf(projection.ExpertDescriptor));
++        const table = std.mem.bytesAsSlice(projection.ExpertDescriptor, g.host(layer.exl3_tables[j], held.len * @sizeOf(projection.ExpertDescriptor)));
++        for (held, 0..) |id, slot| {
++            mats[j][slot] = try Trellis.init(g, kd[j], nd[j], @intCast(0x9e37 + j * 257 + id));
++            table[slot] = try projection.descriptor(mats[j][slot].matrix);
++        }
++    }
++
++    const x = try g.alloc(max_rows * H * 2);
++    for (bfRows(g, x, max_rows * H), 0..) |*b, j| b.* = q.bf16(@as(f32, @floatFromInt(@as(i32, @intCast((j * 13) % 29)) - 14)) / 512);
++    const logits = try g.alloc(max_rows * 256 * 2);
++    var slot_map: [256]i32 = @splat(-1);
++    for (held, 0..) |id, slot| slot_map[id] = @intCast(slot);
++    const slots = try put(g, std.mem.sliceAsBytes(&slot_map), false);
++    for (bfRows(g, logits, max_rows * 256), 0..) |*b, j| b.* = q.bf16(if (slot_map[j % 256] >= 0) -2 else 100);
++    const picks = try g.alloc(pairs * 4);
++    const rw = try g.alloc(pairs * 4);
++    const act = try g.alloc(pairs * I * 2);
++    const down = try g.alloc(pairs * H * 4);
++    const gu = try g.alloc(pairs * 2 * I * 2); // gate | up halves, checked before down reuses the staging layout
++    const scratch = try g.alloc(try exl3.scratchBytes(pairs));
++    const pipes = try g.exl3Pipes();
++
++    var gate_score: Score = .{};
++    var up_score: Score = .{};
++    var act_score: Score = .{};
++    var down_score: Score = .{};
++    for ([_]usize{ 1, max_rows }) |rows| {
++        k.routerCompact(g, logits, 256, 0, picks, rw, slots, rows);
++        const count = rows * E;
++        // Gate/up land in `gu` untouched by the down overwrite; the same route drives a direct indexed encode.
++        const route: projection.Rows = .{
++            .count = count,
++            .x_stride = H,
++            .y_stride = I,
++            .routes = .{ .ids = exl3.view(g, picks), .repeat = E },
++        };
++        for ([_]u64{ layer.exl3_tables[0], layer.exl3_tables[1] }, 0..) |table, j| {
++            try projection.encodeIndexed(pipes, g.encoder(), .{
++                .descriptors = exl3.view(g, table),
++                .count = layer.expert_count,
++                .k = H,
++                .n = I,
++            }, exl3.view(g, x), .{ .buffer = exl3.view(g, gu).buffer, .offset = exl3.view(g, gu).offset + j * count * I * 2 }, exl3.view(g, scratch), route);
++        }
++        // The production chain then fills act and down itself.
++        try exl3.run(g, layer, rows, x, picks, act, down, scratch);
++        try g.flush();
++        const pick_ids = std.mem.bytesAsSlice(u32, @as([]align(1) u8, g.host(picks, count * 4)));
++        for (0..count) |pair| {
++            const slot = pick_ids[pair];
++            if (slot != pair % E) return error.PrunedRoutingMismatch;
++            const xr = bfRows(g, x + (pair / E) * H * 2, H);
++            const gw = try arena.allocator().alloc(f32, I);
++            const uw = try arena.allocator().alloc(f32, I);
++            const dw = try arena.allocator().alloc(f32, H);
++            try mats[0][slot].project(g, xr, arena.allocator(), gw);
++            try mats[1][slot].project(g, xr, arena.allocator(), uw);
++            const gr = bfRows(g, gu + pair * I * 2, I);
++            const ur = bfRows(g, gu + (count + pair) * I * 2, I);
++            const ar = bfRows(g, act + pair * I * 2, I);
++            for (0..I) |col| {
++                try gate_score.add(ref.fromBf16(gr[col]), ref.fromBf16(q.bf16(gw[col])), 0.0005 + @abs(gw[col]) * 0.002, col);
++                try up_score.add(ref.fromBf16(ur[col]), ref.fromBf16(q.bf16(uw[col])), 0.0005 + @abs(uw[col]) * 0.002, col);
++                const gate = ref.fromBf16(gr[col]);
++                const silu = ref.fromBf16(q.bf16(@floatCast(gate / (1 + @exp(-gate)))));
++                const want = ref.fromBf16(q.bf16(@floatCast(silu * ref.fromBf16(ur[col]))));
++                try act_score.add(ref.fromBf16(ar[col]), want, 0.0005 + @abs(want) * 0.002, col);
++            }
++            try mats[2][slot].project(g, ar, arena.allocator(), dw);
++            const dr = std.mem.bytesAsSlice(f32, @as([]align(1) u8, g.host(down + pair * H * 4, H * 4)));
++            for (0..H) |col| try down_score.add(dr[col], dw[col], 0.001 + @abs(dw[col]) * 0.002, col);
++            _ = arena.reset(.retain_capacity);
++        }
++    }
++    gate_score.report("drama3 EXL3 mul1 3.0 gate BF16 pruned decode+prompt");
++    up_score.report("drama3 EXL3 mul1 3.0 up BF16 pruned decode+prompt");
++    act_score.report("drama3 EXL3 SwiGLU pair rows");
++    down_score.report("drama3 EXL3 down FP32 decode+prompt");
++}
++
++/// Just the layer fields exl3.run reads, so the gate needs no loader.
++const LayerStub = struct {
++    exl3_tables: [3]u64 = .{ 0, 0, 0 },
++    expert_count: usize,
++};
+diff --git a/zig/src/families/drama3/metal/quant_format.zig b/zig/src/families/drama3/metal/quant_format.zig
+index 951d74e1a..39ca6ac2d 100644
+--- a/zig/src/families/drama3/metal/quant_format.zig
++++ b/zig/src/families/drama3/metal/quant_format.zig
+@@ -4,6 +4,10 @@ const core = @import("core");
+ const cfg = @import("../config.zig");
+ const Tensor = core.safetensors.Tensor;
+ 
++fn fmt(buf: []u8, comptime f: []const u8, args: anytype) []const u8 {
++    return std.fmt.bufPrint(buf, f, args) catch unreachable;
++}
++
+ pub const Held = struct {
+     counts: [cfg.layers]u16 = @splat(cfg.experts),
+     ids: [cfg.layers][cfg.experts]u8 = @splat(identity),
+@@ -68,11 +72,57 @@ pub fn checkNames(h: *const Held, names: anytype) !void {
+     }
+ }
+ 
+-pub const Format = enum { fp8, nvfp4, int3 };
++pub const Format = enum { fp8, nvfp4, int3, exl3 };
++
++/// The only EXL3 layout the Metal runtime decodes: the mul1 codebook at 3.0 bpw (6 halves), fp16 scales.
++pub const exl3_halves: u16 = 6;
++const exl3_marker_names = [_][]const u8{ "mcg", "mul1" };
++
++fn exl3Trellis(e: anytype) ?struct { k: usize, n: usize } {
++    if (e.dtype != .i16 or e.rank != 3 or e.dim(2) != exl3_halves * 8) return null;
++    if (e.dim(0) == 0 or e.dim(1) == 0 or e.dim(0) > std.math.maxInt(usize) / 16 or e.dim(1) > std.math.maxInt(usize) / 16) return null;
++    const k = e.dim(0) * 16;
++    const n = e.dim(1) * 16;
++    if (k % 128 != 0 or n % 128 != 0) return null;
++    return .{ .k = k, .n = n };
++}
++
++fn mul1Marker(t: Tensor) bool {
++    return t.dtype == .i32 and t.rank == 0 and t.numel() == 1 and t.bytes.len == 4 and
++        std.mem.readInt(u32, t.bytes[0..4], .little) == core.exl3_format.Mul1Mul;
++}
++
++/// One expert `{prefix}` group's admission over the shard header (`ctx.has`/`entry`/`tensor` on part names):
++/// only the mul1 3.0 fp16-scales layout the runtime decodes; a bad group fails the layer, never falls back.
++pub fn exl3Group(prefix: []const u8, ctx: anytype) !struct { k: usize, n: usize } {
++    var nb: [4][192]u8 = undefined;
++    const e = ctx.entry(fmt(&nb[0], "{s}.trellis", .{prefix})) orelse return error.MissingExl3Part;
++    const g = exl3Trellis(e) orelse return error.BadExl3Shape;
++    var marker: ?[]const u8 = null;
++    for (exl3_marker_names) |name| {
++        if (!ctx.has(fmt(&nb[1], "{s}.{s}", .{ prefix, name }))) continue;
++        if (marker != null) return error.MixedExl3Markers;
++        marker = name;
++    }
++    const name = marker orelse return error.MissingExl3Marker;
++    if (!std.mem.eql(u8, name, "mul1") or !mul1Marker(try ctx.tensor(fmt(&nb[1], "{s}.{s}", .{ prefix, name })))) return error.BadExl3Marker;
++    if (ctx.has(fmt(&nb[2], "{s}.su", .{prefix})) or ctx.has(fmt(&nb[2], "{s}.sv", .{prefix})))
++        return error.PackedExl3Scales;
++    if (ctx.has(fmt(&nb[2], "{s}.bias", .{prefix}))) return error.BadExl3Bias;
++    const suh = try ctx.tensor(fmt(&nb[2], "{s}.suh", .{prefix}));
++    const svh = try ctx.tensor(fmt(&nb[3], "{s}.svh", .{prefix}));
++    if (!suh.is(.f16, &.{g.k}) or !svh.is(.f16, &.{g.n})) return error.BadExl3Scales;
++    return .{ .k = g.k, .n = g.n };
++}
+ 
+ /// A row's code bytes for k inputs: NVFP4 nibbles, or int3's three 16-bit planes (sign, hi, lo) a 16-input block.
++/// `.exl3` experts carry no packed rows — their bytes live behind the trellis descriptors and never reach `codeBytes`.
+ pub fn codeBytes(f: Format, k: usize) usize {
+-    return if (f == .int3) k / 16 * 6 else k / 2;
++    return switch (f) {
++        .int3 => k / 16 * 6,
++        .fp8, .nvfp4 => k / 2,
++        .exl3 => unreachable,
++    };
+ }
+ 
+ /// NVFP4 and int3 share E4M3 block16 scales and an FP32 global; only the code row width differs.
+diff --git a/zig/src/families/drama3/metal/quant_format_test.zig b/zig/src/families/drama3/metal/quant_format_test.zig
+index f764d7e63..d2892af20 100644
+--- a/zig/src/families/drama3/metal/quant_format_test.zig
++++ b/zig/src/families/drama3/metal/quant_format_test.zig
+@@ -112,6 +112,111 @@ test "a compact head is accepted only when its row list is exactly the candidate
+     try std.testing.expectEqual(false, q.compactHead(null, &ids));
+ }
+ 
++// A shard header in memory: names to entries, and bytes for the tensors the admission reads.
++const FakeHeader = struct {
++    map: std.StringHashMapUnmanaged(struct { e: st.Entry, bytes: []const u8 }) = .empty,
++
++    fn deinit(h: *FakeHeader, a: std.mem.Allocator) void {
++        var it = h.map.keyIterator();
++        while (it.next()) |k| a.free(k.*);
++        h.map.deinit(a);
++    }
++    fn put(h: *FakeHeader, a: std.mem.Allocator, name: []const u8, dtype: st.DType, shape: []const usize, bytes: []const u8) !void {
++        var e: st.Entry = .{ .dtype = dtype, .rank = @intCast(shape.len), .shape = @splat(1), .begin = 0, .end = bytes.len };
++        @memcpy(e.shape[0..shape.len], shape);
++        const owned = try a.dupe(u8, name);
++        const gop = try h.map.getOrPut(a, owned);
++        if (gop.found_existing) {
++            a.free(owned); // a re-put keeps the first key's bytes
++        } else gop.key_ptr.* = owned;
++        gop.value_ptr.* = .{ .e = e, .bytes = bytes };
++    }
++    pub fn has(h: FakeHeader, name: []const u8) bool {
++        return h.map.contains(name);
++    }
++    pub fn entry(h: FakeHeader, name: []const u8) ?st.Entry {
++        const v = h.map.get(name) orelse return null;
++        return v.e;
++    }
++    pub fn tensor(h: FakeHeader, name: []const u8) !st.Tensor {
++        const v = h.map.get(name) orelse return error.MissingTensor;
++        return .{ .dtype = v.e.dtype, .rank = v.e.rank, .shape = v.e.shape, .bytes = v.bytes };
++    }
++};
++
++const exl3_bytes: [512 * 1024]u8 = @splat(0); // any part's backing bytes; admission reads only the marker's
++const mul1_magic: [4]u8 = .{ 0x2D, 0xD1, 0xDC, 0x83 }; // 0x83DCD12D little-endian, the mul1 codebook
++const mcg_magic: [4]u8 = .{ 0xED, 0x1F, 0xAC, 0xCB }; // 0xCBAC1FED, the mcg codebook the runtime refuses
++
++fn partName(buf: *[192]u8, prefix: []const u8, part: []const u8) []const u8 {
++    return std.fmt.bufPrint(buf, "{s}.{s}", .{ prefix, part }) catch unreachable;
++}
++
++/// The canonical assembler group at prefix: trellis [128, 32, 48] (k 2048, n 512), fp16 scales and one marker.
++fn putGroup(h: *FakeHeader, a: std.mem.Allocator, p: []const u8, marker: []const u8, magic: *const [4]u8) !void {
++    var name: [192]u8 = undefined;
++    try h.put(a, partName(&name, p, "trellis"), .i16, &.{ 128, 32, 48 }, exl3_bytes[0 .. 128 * 32 * 48 * 2]);
++    try h.put(a, partName(&name, p, "suh"), .f16, &.{2048}, exl3_bytes[0..4096]);
++    try h.put(a, partName(&name, p, "svh"), .f16, &.{512}, exl3_bytes[0..1024]);
++    if (marker.len != 0) try h.put(a, partName(&name, p, marker), .i32, &.{}, magic);
++}
++
++test "EXL3 admission takes only the mul1 3.0 fp16-scale group and names every refusal" {
++    const a = std.testing.allocator;
++    var h: FakeHeader = .{};
++    defer h.deinit(a);
++    try putGroup(&h, a, "e.gate_proj", "mul1", &mul1_magic);
++    const g = try q.exl3Group("e.gate_proj", h);
++    try std.testing.expectEqual(@as(usize, 2048), g.k);
++    try std.testing.expectEqual(@as(usize, 512), g.n);
++    try putGroup(&h, a, "biased.gate_proj", "mul1", &mul1_magic);
++    try h.put(a, "biased.gate_proj.bias", .f16, &.{512}, exl3_bytes[0..1024]);
++    try std.testing.expectError(error.BadExl3Bias, q.exl3Group("biased.gate_proj", h));
++    try putGroup(&h, a, "no_marker", "", &mul1_magic);
++    try std.testing.expectError(error.MissingExl3Marker, q.exl3Group("no_marker", h));
++    try putGroup(&h, a, "mcg_marker", "mcg", &mcg_magic);
++    try std.testing.expectError(error.BadExl3Marker, q.exl3Group("mcg_marker", h));
++    var name: [192]u8 = undefined;
++    try putGroup(&h, a, "vector_marker.gate_proj", "", &mul1_magic);
++    try h.put(a, partName(&name, "vector_marker.gate_proj", "mul1"), .i32, &.{1}, &mul1_magic); // [1], not a scalar
++    try std.testing.expectError(error.BadExl3Marker, q.exl3Group("vector_marker.gate_proj", h));
++    try h.put(a, partName(&name, "half.gate_proj", "trellis"), .i16, &.{ 128, 32, 40 }, exl3_bytes[0..1280]); // a 2.5 bpw trellis
++    try std.testing.expectError(error.BadExl3Shape, q.exl3Group("half.gate_proj", h));
++    try putGroup(&h, a, "packed.gate_proj", "mul1", &mul1_magic);
++    try h.put(a, partName(&name, "packed.gate_proj", "su"), .i16, &.{128}, exl3_bytes[0..256]);
++    try std.testing.expectError(error.PackedExl3Scales, q.exl3Group("packed.gate_proj", h));
++    try putGroup(&h, a, "halfscale.gate_proj", "mul1", &mul1_magic);
++    try h.put(a, partName(&name, "halfscale.gate_proj", "suh"), .f16, &.{2047}, exl3_bytes[0..4094]);
++    try std.testing.expectError(error.BadExl3Scales, q.exl3Group("halfscale.gate_proj", h));
++    try std.testing.expectError(error.MissingExl3Part, q.exl3Group("gone.gate_proj", h));
++
++    var names = std.StringHashMapUnmanaged(void).empty;
++    defer {
++        var it = names.keyIterator();
++        while (it.next()) |k| a.free(k.*);
++        names.deinit(a);
++    }
++    for ([_][]const u8{ "trellis", "suh", "svh", "mul1" }) |part|
++        try names.put(a, try std.fmt.allocPrint(a, "model.language_model.layers.0.mlp.experts.255.gate_proj.{s}", .{part}), {});
++    var held: q.Held = .{};
++    try q.checkNames(&held, names.keyIterator());
++    held.counts[0] = 8; // pruned: expert 255's original ID is no longer held, whatever part name it has
++    try std.testing.expectError(error.UnlistedExpert, q.checkNames(&held, names.keyIterator()));
++}
++
++test "a second codebook marker beside mul1's refuses the group" {
++    const a = std.testing.allocator;
++    var h: FakeHeader = .{};
++    defer h.deinit(a);
++    try putGroup(&h, a, "e.gate_proj", "mul1", &mul1_magic);
++    var name: [192]u8 = undefined;
++    try h.put(a, partName(&name, "e.gate_proj", "mul1"), .i32, &.{}, &mcg_magic); // an mcg magic under the mul1 name
++    try std.testing.expectError(error.BadExl3Marker, q.exl3Group("e.gate_proj", h));
++    try h.put(a, partName(&name, "e.gate_proj", "mul1"), .i32, &.{}, &mul1_magic);
++    try h.put(a, partName(&name, "e.gate_proj", "mcg"), .i32, &.{}, &mcg_magic);
++    try std.testing.expectError(error.MixedExl3Markers, q.exl3Group("e.gate_proj", h));
++}
++
+ test "independent scalar reference covers E2M1 signs and E4M3 boundary scales" {
+     const values = [_]f64{ 0, 0.5, 1, 1.5, 2, 3, 4, 6 };
+     for (values, 0..) |v, i| {
+diff --git a/zig/src/families/drama3/metal/weights.zig b/zig/src/families/drama3/metal/weights.zig
+index f06c08b65..14d83ec99 100644
+--- a/zig/src/families/drama3/metal/weights.zig
++++ b/zig/src/families/drama3/metal/weights.zig
+@@ -6,6 +6,7 @@ const cfg = @import("../config.zig");
+ const shards = @import("../shards.zig");
+ const gpu = @import("gpu.zig");
+ const quant = @import("quant_format.zig");
++const projection = core.exl3_projection;
+ 
+ const Gpu = gpu.Gpu;
+ const Shards = shards.Shards;
+@@ -21,7 +22,8 @@ pub const Layer = struct {
+     attn: Attn = undefined,
+     moe_in: u64, // [1288, 2048]
+     shared_down: u64, // [2048, 512]
+-    experts: u64, // Compact slot table: 6 FP8 pointers or 9 NVFP4/int3 pointers per held expert.
++    experts: u64, // Compact slot table: 6 FP8 pointers or 9 NVFP4/int3 pointers per held expert; 0 under EXL3.
++    exl3_tables: [3]u64 = .{ 0, 0, 0 }, // gate/up/down ExpertDescriptor arrays, held ascending IDs (slot index).
+     expert_slots: u64,
+     expert_count: usize,
+     format: quant.Format,
+@@ -122,19 +124,34 @@ fn mapShards(g: *Gpu, sh: *const Shards) ![]u64 {
+     return out;
+ }
+ 
+-/// Compact slots preserve ascending original IDs; each layer has one expert format, selected from tensor headers
+-/// (u8 codes [n, k/2] are NVFP4, [n, 3k/8] int3).
++/// Compact slots preserve ascending original IDs; each layer has one expert format, selected from tensor headers.
++/// Trellis experts are mul1 3.0 EXL3; u8 codes [n, k/2] are NVFP4, [n, 3k/8] int3. A layer mixing
++/// formats — or an expert missing both `.weight` and `.trellis` — is refused, never partially admitted.
+ fn expertTable(l: *Loader, li: usize, maps: []const u64, held: *const quant.Held) !void {
+     const layer = &l.w.layers[li];
+     const ids = held.ids[li][0..held.counts[li]];
+     layer.expert_count = ids.len;
+     layer.expert_slots = 0;
++    layer.exl3_tables = .{ 0, 0, 0 };
+     if (ids.len != cfg.experts) {
+         const slots = held.slots(li);
+         layer.expert_slots = try l.g.alloc(@sizeOf(@TypeOf(slots)));
+         @memcpy(l.g.host(layer.expert_slots, @sizeOf(@TypeOf(slots))), std.mem.asBytes(&slots));
+         l.w.bytes += @sizeOf(@TypeOf(slots));
+     }
++    var nb: [2][192]u8 = undefined;
++    const first_w = fmt(&nb[0], "model.language_model.layers.{d}.mlp.experts.{d}.gate_proj.weight", .{ li, ids[0] });
++    const first_t = fmt(&nb[1], "model.language_model.layers.{d}.mlp.experts.{d}.gate_proj.trellis", .{ li, ids[0] });
++    const packed_w = l.sh.map.contains(first_w);
++    const trellis = l.sh.map.contains(first_t);
++    if (packed_w and trellis) return error.MixedExpertFormat;
++    if (trellis) return exl3Table(l, li, maps, ids);
++    if (!packed_w) return error.MissingTensor;
++    return packedExperts(l, li, maps, ids);
++}
++
++fn packedExperts(l: *Loader, li: usize, maps: []const u64, ids: []const u8) !void {
++    const layer = &l.w.layers[li];
+     const n = cfg.expert_width;
+     const k = cfg.hidden;
+     const parts = [_]struct { []const u8, [2]usize }{ .{ "gate_proj", .{ n, k } }, .{ "up_proj", .{ n, k } }, .{ "down_proj", .{ k, n } } };
+@@ -152,6 +169,8 @@ fn expertTable(l: *Loader, li: usize, maps: []const u64, held: *const quant.Held
+     for (ids, 0..) |e, slot| {
+         for (parts, 0..) |p, j| {
+             const wname = fmt(&nb[0], "model.language_model.layers.{d}.mlp.experts.{d}.{s}.weight", .{ li, e, p[0] });
++            if (l.sh.map.contains(fmt(&nb[1], "model.language_model.layers.{d}.mlp.experts.{d}.{s}.trellis", .{ li, e, p[0] })))
++                return error.MixedExpertFormat;
+             const sname = fmt(&nb[1], "{s}{s}", .{ wname, if (packed16) "_scale" else "_scale_inv" });
+             const wt = try l.sh.get(wname);
+             const sc = try l.sh.get(sname);
+@@ -180,6 +199,71 @@ fn expertTable(l: *Loader, li: usize, maps: []const u64, held: *const quant.Held
+     l.w.bytes += ids.len * stride * 8;
+ }
+ 
++/// The shard-header queries quant.exl3Group needs, backed by this model's open shards.
++const Header = struct {
++    sh: *const Shards,
++    pub fn has(h: Header, name: []const u8) bool {
++        return h.sh.map.contains(name);
++    }
++    pub fn entry(h: Header, name: []const u8) ?core.safetensors.Entry {
++        const i = h.sh.map.get(name) orelse return null;
++        return h.sh.files[i].names.get(name);
++    }
++    pub fn tensor(h: Header, name: []const u8) !core.safetensors.Tensor {
++        return h.sh.get(name);
++    }
++};
++
++/// A part's mapped bytes as a descriptor view; every EXL3 part is int16 data, so an odd offset never describes one.
++fn exl3View(l: *Loader, maps: []const u64, name: []const u8, bytes: usize) !projection.View {
++    const loc = try l.sh.locate(name);
++    if (loc.offset % 2 != 0) return error.MisalignedExpert;
++    const addr = maps[loc.file] + loc.offset;
++    l.w.mapped += bytes;
++    return .{ .buffer = l.g.ref(addr).buf, .offset = loc.offset };
++}
++
++/// One group's no-copy views as a projection Matrix. `g` comes from quant.exl3Group's admission.
++fn exl3Matrix(l: *Loader, maps: []const u64, prefix: []const u8, g: anytype) !projection.Matrix {
++    var nb: [3][192]u8 = undefined;
++    const t = try l.sh.get(fmt(&nb[0], "{s}.trellis", .{prefix}));
++    return .{
++        .trellis = try exl3View(l, maps, fmt(&nb[0], "{s}.trellis", .{prefix}), t.bytes.len),
++        .suh = try exl3View(l, maps, fmt(&nb[1], "{s}.suh", .{prefix}), g.k * 2),
++        .svh = try exl3View(l, maps, fmt(&nb[2], "{s}.svh", .{prefix}), g.n * 2),
++        .k = g.k,
++        .n = g.n,
++        .width = .{ .halves = quant.exl3_halves },
++        .codebook = .mul1,
++    };
++}
++
++/// EXL3 experts: three per-part descriptor arrays in held ascending-ID order, slot == router's compact ID.
++fn exl3Table(l: *Loader, li: usize, maps: []const u64, ids: []const u8) !void {
++    const layer = &l.w.layers[li];
++    layer.format = .exl3;
++    layer.experts = 0;
++    const n = cfg.expert_width;
++    const k = cfg.hidden;
++    const parts = [_]struct { []const u8, usize, usize }{ .{ "gate_proj", k, n }, .{ "up_proj", k, n }, .{ "down_proj", n, k } };
++    var nb: [2][192]u8 = undefined;
++    const bytes = ids.len * @sizeOf(projection.ExpertDescriptor);
++    for (&layer.exl3_tables) |*t| t.* = try l.g.alloc(bytes);
++    const header: Header = .{ .sh = l.sh };
++    for (ids, 0..) |e, slot| {
++        for (parts, 0..) |p, j| {
++            const prefix = fmt(&nb[0], "model.language_model.layers.{d}.mlp.experts.{d}.{s}", .{ li, e, p[0] });
++            if (l.sh.map.contains(fmt(&nb[1], "{s}.weight", .{prefix}))) return error.MixedExpertFormat;
++            const g = try quant.exl3Group(prefix, header);
++            if (g.k != p[1] or g.n != p[2]) return error.BadExl3Shape;
++            const m = try exl3Matrix(l, maps, prefix, g);
++            const table = std.mem.bytesAsSlice(projection.ExpertDescriptor, l.g.host(layer.exl3_tables[j], bytes));
++            table[slot] = try projection.descriptor(m);
++        }
++    }
++    l.w.bytes += 3 * bytes;
++}
++
+ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
+     const w = try g.gpa.create(Weights);
+     errdefer g.gpa.destroy(w);
+@@ -271,6 +355,6 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
+         T.final_norm = try l.one(tn(&nb[0], p, idx, "final_layernorm.weight"), &.{H});
+     }
+     for (0..cfg.codebooks - 1) |hi| w.heads[hi] = try l.one(fmt(&nb[0], "audio_decoder_mtp.heads.{d}.weight", .{hi}), &.{ cfg.codebook_size, H });
+-    std.log.info("drama3: {d:.2} GB of BF16/copied weights, {d:.2} GB of packed FP8/NVFP4/int3 experts read in place", .{ @as(f64, @floatFromInt(w.bytes)) / 1e9, @as(f64, @floatFromInt(w.mapped)) / 1e9 });
++    std.log.info("drama3: {d:.2} GB of BF16/copied weights, {d:.2} GB of packed FP8/NVFP4/int3/EXL3 experts read in place", .{ @as(f64, @floatFromInt(w.bytes)) / 1e9, @as(f64, @floatFromInt(w.mapped)) / 1e9 });
+     return w;
+ }
+diff --git a/zig/src/tensorfold.zig b/zig/src/tensorfold.zig
+index 2f09d772e..4d10d471a 100644
+--- a/zig/src/tensorfold.zig
++++ b/zig/src/tensorfold.zig
+@@ -31,6 +31,7 @@ pub const affine_mm = @import("core/affine_mm.zig");
+ pub const quant = @import("core/quant/quant.zig");
+ pub const exl3_format = @import("core/exl3_format.zig");
+ pub const exl3_projection = @import("core/exl3_projection.zig");
++pub const exl3_projection_decode = @import("core/exl3_projection_decode.zig");
+ pub const exlr8 = @import("core/exlr8.zig");
+ pub const exlr8_projection = @import("core/exlr8_projection.zig");
+ pub const exlr8_dense_gpu = @import("core/exlr8_dense_gpu.zig");
+-- 
+2.54.0 (Apple Git-157)
+

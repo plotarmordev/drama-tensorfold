@@ -64,7 +64,7 @@ The launcher verifies the directory against the manifest of the selected quant:
 ### The 14.5 GB int3 build
 
 `--weights int3-5900` serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its codec in BF16
-and its routed experts in int3, the winner of [`results/smaller-builds`](../results/smaller-builds/README.md). It is
+and its routed experts in int3, the int3 build of [`results/smaller-builds`](../results/smaller-builds/README.md). It is
 not published, so nothing is downloaded: build it with
 [`splice_int3.py`](../results/smaller-builds/splice_int3.py) into `drama-3-trim-bf16-int3` (or pass
 `--checkpoint`). It is checked against `checksums/trim-bf16-int3.sha256` (`drama3-trim-bf16-int3-v1`) and served

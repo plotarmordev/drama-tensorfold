@@ -1,0 +1,6 @@
+# The Spark (GB10) engine base for the EXL3 speak job's prebuild, followed by patches/.
+# Commit 132bd123 on main of plotarmordev/TensorFold: the drama3 CUDA family whose serve path
+# docs/receipts/drama3-pruned-main proved on the Spark (job bottom-49eafd253777), complete with
+# the CUDA EXL3 grouped kernels in zig/src/cuda/exl3_*.
+TENSORFOLD_REPOSITORY=https://github.com/plotarmordev/TensorFold.git
+TENSORFOLD_COMMIT=132bd12383bab407e602253794e293666b66a996

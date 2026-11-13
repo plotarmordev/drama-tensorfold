@@ -1,5 +1,4 @@
 import importlib.util
-import sys
 import unittest
 from pathlib import Path
 
@@ -9,34 +8,31 @@ spec.loader.exec_module(speak)
 
 
 def take(seconds, finish='stop'):
-    return {'arm': 'ref', 'salt': 0, 'item': 'short-01', 'seed': 0, 'seconds': seconds,
-            'bytes': 1, 'finish': finish}
+    return {'arm': 'ref', 'salt': 0, 'item': 'short-01', 'seconds': seconds, 'bytes': 1, 'finish': finish}
 
 
 class Summary(unittest.TestCase):
-    def test_rows_aggregate_load_peak_and_seconds(self):
+    def test_rows_aggregate_both_salts_of_an_arm(self):
         rows = speak.summary([
-            {'arm': 'ref', 'load_s': 30.0, 'peak_bytes': 15 * 2**30,
-             'takes': [take(10.0), take(20.0), take(30.0), take(40.0), take(50.0, 'length')]}])
+            {'arm': 'ref', 'salt': 0, 'load_s': 20.0, 'peak_bytes': 15 * 2**30,
+             'takes': [take(10.0), take(20.0), take(30.0), take(50.0, 'length')]},
+            {'arm': 'ref', 'salt': 1, 'load_s': 30.0, 'peak_bytes': 16 * 2**30,
+             'takes': [take(40.0), take(60.0), take(70.0), take(80.0)]}])
         self.assertEqual(1, len(rows))
         row = rows[0]
-        self.assertEqual(30.0, row['load_s'])
-        self.assertEqual(15.0, row['peak_gib'])
-        self.assertEqual(5, row['takes'])
-        self.assertEqual(30.0, row['seconds_mean'])
-        self.assertEqual(30.0, row['seconds_p50'])
-        self.assertEqual(150.0, row['seconds_total'])
+        self.assertEqual(25.0, row['load_s'])
+        self.assertEqual(16.0, row['peak_gib'])
+        self.assertEqual(8, row['takes'])
+        self.assertEqual(45.0, row['seconds_mean'])
+        self.assertEqual(50.0, row['seconds_p50'])
+        self.assertEqual(360.0, row['seconds_total'])
         self.assertEqual(1, row['capped'])
 
     def test_seconds_are_sorted_before_the_median(self):
-        row = speak.summary([{'arm': 'builtin', 'load_s': 1.0, 'peak_bytes': 0,
+        row = speak.summary([{'arm': 'builtin', 'salt': 0, 'load_s': 1.0, 'peak_bytes': 0,
                               'takes': [take(9.0), take(1.0), take(5.0)]}])[0]
         self.assertEqual(5.0, row['seconds_p50'])
         self.assertEqual(3, row['takes'])
-
-    def test_estimate_window_scales_each_arm_by_its_rtf(self):
-        self.assertEqual(2 * 60 + 100 * 2.0 + 50 * 1.0,
-                         speak.estimate_window_seconds(100, 50, 2.0, 1.0))
 
 
 class Corpus(unittest.TestCase):

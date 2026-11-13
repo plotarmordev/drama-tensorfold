@@ -18,6 +18,7 @@ done
 (cd "$ckpt" && sha256sum --quiet -c "$pilot/drama3-exl3-5900.sha256")
 (cd "$engine" && sha256sum --quiet -c SHA256SUMS)
 echo "engine $(sha256sum < "$engine/SHA256SUMS" | cut -d' ' -f1)"
+echo "expected window: 41 min of speech + 4 loads (~2 min); 55 min if EXL3 decodes 1.3x slower than NVFP4 experts"
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 mkdir -p "$out"

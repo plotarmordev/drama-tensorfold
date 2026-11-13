@@ -63,8 +63,8 @@ index 1850c38a..26ceb0f8 100644
          e.stream.synchronize() catch {};
          e.stream2.synchronize() catch {};
          e.freeState();
-+        if (e.exl3_grouped != null) e.freeExl3();
          if (e.owns_model) {
++            if (e.exl3_grouped != null) e.freeExl3();
              e.w.deinit();
              e.gpa.destroy(e.w);
 @@ -187,11 +205,17 @@ pub const Engine = struct {

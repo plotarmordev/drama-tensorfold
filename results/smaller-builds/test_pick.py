@@ -1,4 +1,6 @@
+import json
 import unittest
+from pathlib import Path
 
 from pick import winner
 
@@ -27,6 +29,11 @@ class WinnerTests(unittest.TestCase):
     def test_one_more_failed_take_in_one_voice_disqualifies(self):
         builds = {'base': BASE, 'small': build(80, (0.02, 1), (0.05, 2))}
         self.assertEqual(winner(builds, 'base'), 'base')
+
+    def test_recorded_winner_follows_the_rule_over_every_measured_build(self):
+        recorded = json.loads((Path(__file__).parent / 'builds.json').read_text())
+        self.assertIn('trim-bf16-exl3-3.0', recorded['builds'])
+        self.assertEqual(recorded['winner'], winner(recorded['builds'], recorded['base']))
 
 
 if __name__ == '__main__':

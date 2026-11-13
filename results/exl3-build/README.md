@@ -5,12 +5,11 @@ experts ([`../exl3-ldlq`](../exl3-ldlq/README.md)). This build encodes every kep
 the same way, for `trim-bf16-exl3-3.0` (13.51 GiB planned, against int3's 14.50 GiB), to be measured next to int3
 with [`../smaller-builds`](../smaller-builds/README.md)' protocol and pick rule.
 
-**Status: waiting for the v3 rows on BOTTOM; no EXL3 build or measurements yet.**
-The job's only input not yet on BOTTOM is the same-recipe Mac rows `exl3-calibration-rows-v3` (123 files, 19 GB,
-pinned by [`rows.sha256`](rows.sha256)). `bottom shell` refuses ~1 MB of stdin and BOTTOM cannot reach the Mac,
-so they wait on Net's staging door (`claude-requests/20261112-1000-mac-to-bottom-drama-rows.md`). Rechecked
-12 November 14:14 CST: `exl3-rows-v3` is absent from the pilot folder. The job needs no compiler (the exllamav3
-extension is prebuilt and hash-checked), so the gcc image request does not block it.
+**Status: GPU job running; no EXL3 build or measurements yet.**
+The v3 rows are staged on BOTTOM at the pilot folder's `exl3-rows-v3/` and passed `sha256sum -c` against
+[`rows.sha256`](rows.sha256) (Desk, 12 November 18:20 HKT). Job `bottom-ccd34101e181` runs `gb10-exl3.sh` at
+`398b1a0`, started 13 November 08:37 HKT in the 08:34–12:34 window, expected ~3.6 h (done ~12:15). If the window
+closes first, copy its `recipe.json` and finished pairs into the pilot folder's `exl3-done/` before the next one.
 
 BOTTOM's older `eq/runs/fp8-calib-rows` capture is **not admitted** (Desk decision, 12 November). Card 32's
 unchanged gates over it ([saved report](bottom-rows-preflight.json), commit `63e671a`) found 5,886/5,900 kept
@@ -69,7 +68,7 @@ pairs into the new job, and the encoder validates the recipe and checksums befor
 ## Verification before scheduling
 
 - Card 39's vendored source and extension match the SHA-256 values in `exllamav3-env.sh`.
-- All 123 local calibration files pass `rows.sha256`; they are not staged on BOTTOM.
+- All 123 local calibration files pass `rows.sha256`; the staged copy on BOTTOM passed the same check.
 - CPU checkpoint smoke exercises reuse of a finished layer, completion of an interrupted layer, and rejection
   of a missing committed shard. Regression cases also reject changed shard bytes, changed expert sets and
   missing projection records. These checks do not claim a CUDA encode.

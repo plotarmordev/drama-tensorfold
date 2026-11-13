@@ -3,4 +3,4 @@
 adf9d93c0d68958a8860b72aac6056097de65c9bd023531f3b95ec2897b12ed8  0003-drama3-compact-lm-head.patch
 fc67a51edb3a92a1e1fa696f8336e3f9bbf9b472ff69488e8229e4bbb5ce055c  0004-drama-read-BF16-codec-checkpoints.patch
 e3d099698a1a909f68715e0d8fe67de2b18f2c336518eab88d8faa12645bd5ab  0005-int3-routed-experts.patch
-c997c27ba628f859a3dac64706645ac1919e573eba540516fe23396353701a73  0006-exl3-routed-experts.patch
+e2655568e75e667c0a175a06953db1c8f0c94e616abc868dc6eb498a988c8de1  0006-exl3-routed-experts.patch

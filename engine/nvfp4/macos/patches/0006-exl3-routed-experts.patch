@@ -1,3 +1,12 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 09:47:05 +0800
+Subject: [PATCH] drama3 metal: EXL3 3.0 routed experts (mul1 trellis)
+
+A layer whose expert tensors carry exllamav3's trellis, suh, svh and mul1 is
+EXL3 3.0: gate/up, SwiGLU and down run through core's indexed Metal
+projection over the compact router slots. NVFP4 and int3 layers are unchanged.
+---
 diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
 index 8fead83ad..72bf03cd1 100644
 --- a/zig/build/drama3_host.zig

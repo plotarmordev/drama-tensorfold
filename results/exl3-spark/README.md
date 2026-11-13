@@ -30,8 +30,12 @@ one-hour window.**
 ## Result
 
 Window `bottom-b93e6c7a9390` (13 Nov 20:18–21:10, 52 min, inside the stated hour) at `f862a236`, engine
-`tensorfold-native` sha256 `ae5b3d58…`: all 96 takes spoken, numbers in [`summary.json`](summary.json). RTF is
-wall seconds over the WAV's length. `t5900-cover`'s rows are the same GB10's published numbers
+`tensorfold-native` sha256 `ae5b3d58…` built from patch 0001 sha256 `2c76ebce…` (`f862a236`'s series): all 96 takes
+spoken, numbers in [`summary.json`](summary.json). That series shared one EXL3 scratch between the conditional
+stream and the CFG guide, which prefill concurrently; the current 0001 gives every engine its own and starts FP8 and
+NVFP4 engines with no EXL3 state, so the reference-voice audio here may carry that race. The engine staged for the
+next window is that series' build, `1fd72f18…`; the measured one stays beside it as `drama3-exl3-engine.ae5b3d58`.
+RTF is wall seconds over the WAV's length. `t5900-cover`'s rows are the same GB10's published numbers
 ([`quant-15gb`](../quant-15gb/compare.json), the fork engine) and the same engine base and weights
 ([`drama3-pruned-main`](https://github.com/plotarmordev/TensorFold/tree/main/docs/receipts/drama3-pruned-main),
 main `132bd1238`).

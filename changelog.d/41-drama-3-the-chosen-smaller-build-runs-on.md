@@ -13,3 +13,9 @@
   build loads in 10 s (`t5900-cover` 20.1 s) and peaks at 16.14 GiB (16.93 GiB); built-in speech runs RTF p50 0.84
   (0.615), reference-voice speech 4.64 (0.828), a fixed 36 s per take. `http_voice.py` rewrites the fork's
   `eq-3ref` voice in the `drama3-http-voice/1` format the pinned main engine loads.
+
+### Fixed
+
+- [`engine/nvfp4/spark/`](engine/nvfp4/spark/) patch 0001: every engine (lane, CFG guide) owns its EXL3 scratch
+  instead of sharing the first engine's across concurrent prefills, FP8 and NVFP4 engines start with no EXL3 state
+  (teardown read uninitialised fields), and a failed load frees the EXL3 kernels and host arrays it made.

@@ -17,74 +17,83 @@ the full vocabulary; anything else the metadata names is refused. The
 expert map check now demands an EXL3 layer's trellis/suh/svh/mul1 set
 complete, one of a kind per layer.
 ---
- zig/src/families/drama3/cuda/engine.zig       |  26 ++++-
+ zig/src/families/drama3/cuda/engine.zig       |  18 ++++
  zig/src/families/drama3/cuda/forward.zig      |  13 ++-
  zig/src/families/drama3/cuda/weights.zig      | 100 +++++++++++++++++-
  .../families/drama3/metal/quant_format.zig    |  82 +++++++++++++-
  zig/src/families/drama3/quant_test.zig        |   4 +-
- 5 files changed, 212 insertions(+), 13 deletions(-)
+ 5 files changed, 205 insertions(+), 12 deletions(-)
 
 diff --git a/zig/src/families/drama3/cuda/engine.zig b/zig/src/families/drama3/cuda/engine.zig
-index 1850c38a..26ceb0f8 100644
+index 1850c38a..12da1cf6 100644
 --- a/zig/src/families/drama3/cuda/engine.zig
 +++ b/zig/src/families/drama3/cuda/engine.zig
 @@ -87,6 +87,8 @@ pub const Engine = struct {
      gq: u64, // [R * 8, 512]
      gsc: u64, // [R * 8, 4]
      plan: cuda.grouped.Plan,
-+    exl3_experts: ?cuda.exl3_experts.Experts = null,
-+    exl3_grouped: ?cuda.exl3_grouped.Grouped = null,
++    exl3_experts: ?cuda.exl3_experts.Experts, // the model's grouped EXL3 kernels, unloaded by the owning engine
++    exl3_grouped: ?cuda.exl3_grouped.Grouped, // this engine's own EXL3 scratch: lanes and guides prefill concurrently
      hfin: u64, // [R, H] final-norm hidden
      th: [2]u64, // tower hidden ping-pong [R, H]
      mix: u64, // [R, 2H]
-@@ -143,6 +145,21 @@ pub const Engine = struct {
+@@ -113,6 +115,8 @@ pub const Engine = struct {
+         e.owner = null;
+         e.o = o;
+         e.graph = null;
++        e.exl3_experts = null;
++        e.exl3_grouped = null;
+         e.sampling = .{};
+         e.graph_sampling = .{};
+         e.rows_done = 0;
+@@ -143,6 +147,8 @@ pub const Engine = struct {
              gpa.destroy(e.w);
          }
          if (e.w.nvfp4_layers > 0) try e.k.loadNvfp4();
-+        if (e.w.exl3_layers > 0) {
-+            // the grouped EXL3 kernels and their scratch, sized for the widest call, before any graph capture
-+            e.exl3_experts = try cuda.exl3_experts.Experts.load(&e.driver);
-+            errdefer {
-+                e.exl3_experts.?.unload();
-+                e.exl3_experts = null;
-+            }
-+            const l = e.w.layers[0].experts.exl3 orelse return error.BadExperts;
-+            const pairs = e.o.max_rows * cfg.top_k;
-+            const items = cuda.grouped.maxItems(pairs, cfg.experts, 16);
-+            const up = try cuda.exl3_grouped.Grouped.bytes(l.dims, l.width, items, try cuda.exl3_experts.plan(l.dims, l.width, true), 2);
-+            const down = try cuda.exl3_grouped.Grouped.bytes(l.width, l.dims, items, try cuda.exl3_experts.plan(l.width, l.dims, false), 1);
-+            e.exl3_grouped = .{ .d = &e.driver, .kernels = &e.exl3_experts.?, .storage = try cuda.DeviceBuffer.alloc(&e.driver, @max(up, down)) };
-+            errdefer e.freeExl3();
-+        }
++        if (e.w.exl3_layers > 0) e.exl3_experts = try cuda.exl3_experts.Experts.load(&e.driver);
++        errdefer if (e.exl3_experts) |*x| x.unload();
          errdefer e.freeState();
          try e.allocState(false);
          errdefer {
-@@ -171,6 +188,7 @@ pub const Engine = struct {
-         e.stream.synchronize() catch {};
+@@ -172,6 +178,7 @@ pub const Engine = struct {
          e.stream2.synchronize() catch {};
          e.freeState();
          if (e.owns_model) {
-+            if (e.exl3_grouped != null) e.freeExl3();
++            if (e.exl3_experts) |*x| x.unload();
              e.w.deinit();
              e.gpa.destroy(e.w);
-@@ -187,11 +205,17 @@ pub const Engine = struct {
-         e.gpa.destroy(e);
+             e.k.unload();
+@@ -210,6 +217,7 @@ pub const Engine = struct {
+         if (backbone_only) e.o.max_rows = 1;
+         e.bufs = .empty;
+         e.graph = null;
++        e.exl3_grouped = null;
+         e.stream = try cuda.Stream.init(&e.driver, true);
+         errdefer e.stream.deinit();
+         e.stream2 = try cuda.Stream.init(&e.driver, true);
+@@ -317,6 +325,7 @@ pub const Engine = struct {
+         const items = cuda.grouped.maxItems(pairs, cfg.experts, 16);
+         const nblk = (pairs + 1023) / 1024;
+         e.plan = .{ .members = try e.alloc(pairs * 4), .items = try e.alloc(items * 3 * 4), .counts = try e.alloc(16), .rank = try e.alloc(pairs * 4), .hist = try e.alloc(nblk * cfg.experts * 4) };
++        if (e.exl3_experts) |*x| e.exl3_grouped = try e.exl3Scratch(x, items);
+         e.hfin = try e.alloc(R * H * 2);
+         e.th = if (backbone_only) .{ 0, 0 } else .{ try e.alloc(R * H * 2), try e.alloc(R * H * 2) };
+         e.mix = if (backbone_only) 0 else try e.alloc(R * 2 * H * 2);
+@@ -327,6 +336,15 @@ pub const Engine = struct {
+         e.code_logits = if (backbone_only) 0 else try e.alloc(cfg.codebook_size * 4);
      }
  
-+    fn freeExl3(e: *Engine) void {
-+        if (e.exl3_grouped) |*g| g.deinit();
-+        e.exl3_grouped = null;
-+        if (e.exl3_experts) |*x| x.unload();
-+        e.exl3_experts = null;
++    /// Grouped EXL3 scratch sized for the widest call, so `run` never reallocates it; `bufs` owns the bytes.
++    fn exl3Scratch(e: *Engine, kernels: *const cuda.exl3_experts.Experts, items: usize) !cuda.exl3_grouped.Grouped {
++        const l = e.w.layers[0].experts.exl3 orelse return error.BadExperts;
++        const up = try cuda.exl3_grouped.Grouped.bytes(l.dims, l.width, items, try cuda.exl3_experts.plan(l.dims, l.width, true), 2);
++        const down = try cuda.exl3_grouped.Grouped.bytes(l.width, l.dims, items, try cuda.exl3_experts.plan(l.width, l.dims, false), 1);
++        const bytes = @max(up, down);
++        return .{ .d = &e.driver, .kernels = kernels, .storage = .{ .d = &e.driver, .ptr = try e.alloc(bytes), .len = bytes, .borrowed = true } };
 +    }
 +
-     fn freeState(e: *Engine) void {
-         for (e.bufs.items) |*b| b.free();
-         e.bufs.deinit(e.gpa);
-     }
--
-     pub fn fork(base: *Engine) !*Engine {
-         return base.forkState(false);
+     pub fn buf(ptr: u64) Buf {
+         return .{ .d = undefined, .ptr = ptr, .len = std.math.maxInt(usize) / 2, .borrowed = true };
      }
 diff --git a/zig/src/families/drama3/cuda/forward.zig b/zig/src/families/drama3/cuda/forward.zig
 index 6a5550e3..16c76797 100644
@@ -113,7 +122,7 @@ index 6a5550e3..16c76797 100644
      } else {
          // activations to FP8 per row and 128 inputs before each expert projection, as the reference serves them
 diff --git a/zig/src/families/drama3/cuda/weights.zig b/zig/src/families/drama3/cuda/weights.zig
-index 1f2754b1..8e502aad 100644
+index 1f2754b1..2642de17 100644
 --- a/zig/src/families/drama3/cuda/weights.zig
 +++ b/zig/src/families/drama3/cuda/weights.zig
 @@ -53,6 +53,7 @@ pub const Weights = struct {
@@ -134,10 +143,16 @@ index 1f2754b1..8e502aad 100644
 +    fn exl3Experts(l: *Loader, li: usize, held: *const quant.Held) !void {
 +        const ids = held.ids[li][0..held.counts[li]];
 +        const gpa = l.gpa;
-+        var trellis: [3][]u64 = undefined;
-+        var k2: [3][]i32 = undefined;
-+        var suh: [3][]u8 = undefined;
-+        var svh: [3][]u8 = undefined;
++        var trellis: [3][]u64 = @splat(&.{});
++        var k2: [3][]i32 = @splat(&.{});
++        var suh: [3][]u8 = @splat(&.{});
++        var svh: [3][]u8 = @splat(&.{});
++        defer for (0..3) |m| {
++            gpa.free(trellis[m]);
++            gpa.free(k2[m]);
++            gpa.free(suh[m]);
++            gpa.free(svh[m]);
++        };
 +        // gate and up: [I, H]; down: [H, I]
 +        const shapes = [3][2]usize{ .{ cfg.expert_width, cfg.hidden }, .{ cfg.expert_width, cfg.hidden }, .{ cfg.hidden, cfg.expert_width } };
 +        for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }, 0..) |proj, m| {
@@ -166,12 +181,6 @@ index 1f2754b1..8e502aad 100644
 +                for ([_][]const u8{ "trellis", "mul1", "suh", "svh" }) |s| l.sh.release(fmt(&nb[1], "{s}.{s}", .{ base, s }));
 +            }
 +        }
-+        defer for (0..3) |m| {
-+            gpa.free(trellis[m]);
-+            gpa.free(k2[m]);
-+            gpa.free(suh[m]);
-+            gpa.free(svh[m]);
-+        };
 +        const lay: cuda.exl3_experts.Layer = .{
 +            .gate = try l.upload(u64, trellis[0]),
 +            .up = try l.upload(u64, trellis[1]),

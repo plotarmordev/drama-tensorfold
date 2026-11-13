@@ -7,8 +7,24 @@ A layer whose expert tensors carry exllamav3's trellis, suh, svh and mul1 is
 EXL3 3.0: gate/up, SwiGLU and down run through core's indexed Metal
 projection over the compact router slots. NVFP4 and int3 layers are unchanged.
 ---
+ zig/build/drama3_host.zig                     |   5 +-
+ zig/build/drama3_metal.zig                    |  12 +-
+ zig/src/core/root.zig                         |   2 +
+ zig/src/families/drama3/metal/engine.zig      |   9 +-
+ zig/src/families/drama3/metal/exl3.zig        |  49 +++++
+ zig/src/families/drama3/metal/forward.zig     |  38 ++--
+ zig/src/families/drama3/metal/gpu.zig         |   9 +
+ zig/src/families/drama3/metal/guidance.zig    |   2 +-
+ zig/src/families/drama3/metal/quant_check.zig | 175 +++++++++++++++++-
+ .../families/drama3/metal/quant_format.zig    |  54 +++++-
+ .../drama3/metal/quant_format_test.zig        | 105 +++++++++++
+ zig/src/families/drama3/metal/weights.zig     |  92 ++++++++-
+ zig/src/tensorfold.zig                        |   1 +
+ 13 files changed, 525 insertions(+), 28 deletions(-)
+ create mode 100644 zig/src/families/drama3/metal/exl3.zig
+
 diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
-index 8fead83ad..72bf03cd1 100644
+index 8fead83ad..52e892fb1 100644
 --- a/zig/build/drama3_host.zig
 +++ b/zig/build/drama3_host.zig
 @@ -37,6 +37,9 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
@@ -21,6 +37,15 @@ index 8fead83ad..72bf03cd1 100644
      const family = b.createModule(.{
          .root_source_file = b.path("zig/src/families/drama3/drama3_metal.zig"),
          .target = b.graph.host,
+@@ -48,7 +51,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
+     native(b, step, family, core, api, null, "drama_metal_native_host");
+     const quant = b.addRunArtifact(b.addTest(.{
+         .root_module = family,
+-        .filters = &.{ "NVFP4", "expert metadata", "compact head", "independent scalar reference", "CFG" },
++        .filters = &.{ "NVFP4", "expert metadata", "compact head", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
+     }));
+     b.step("test-drama-metal-quant-host", "Packed expert formats, pruning and CFG state without GPU execution").dependOn(&quant.step);
+ }
 diff --git a/zig/build/drama3_metal.zig b/zig/build/drama3_metal.zig
 index a74e02701..26090aee5 100644
 --- a/zig/build/drama3_metal.zig
@@ -168,7 +193,7 @@ index 000000000..59d2b6e79
 +    }, I, H);
 +}
 diff --git a/zig/src/families/drama3/metal/forward.zig b/zig/src/families/drama3/metal/forward.zig
-index 089d61e3c..47e15e26d 100644
+index 089d61e3c..cbecdd10e 100644
 --- a/zig/src/families/drama3/metal/forward.zig
 +++ b/zig/src/families/drama3/metal/forward.zig
 @@ -5,6 +5,7 @@ const common = @import("../common.zig");
@@ -238,13 +263,13 @@ index 089d61e3c..47e15e26d 100644
      }
      if (L.format != .fp8)
          k.moeCombineNvfp4(g, e.x, e.down, e.rw, e.shout, e.xn, L.moe_in + (2 * cfg.shared_width + cfg.experts) * H * 2, H, t)
-@@ -156,7 +162,6 @@ pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engi
+@@ -156,7 +162,7 @@ pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engi
      }
      // the backbone row of the new frame at pos + 1
      k.embedBackbone(g, e.bb_input, e.w.embed, e.w.cb_emb, e.x, 1, H, sem_begin, e.c.ids.sem_end, cfg.codebook_size);
 -    for (0..cfg.layers) |li| backboneLayer(e, laneBB(e, e.pos_bb), li, 1);
--    k.rmsnorm(g, e.x, H, e.w.final_norm, e.hlast, H, 1, H, cfg.eps, true);
 +    for (0..cfg.layers) |li| try backboneLayer(e, laneBB(e, e.pos_bb), li, 1);
+     k.rmsnorm(g, e.x, H, e.w.final_norm, e.hlast, H, 1, H, cfg.eps, true);
      k.finishFrame(g, e.frame, e.frames_out, e.cur_input, e.window, e.pos, e.step, e.count);
  }
 diff --git a/zig/src/families/drama3/metal/gpu.zig b/zig/src/families/drama3/metal/gpu.zig
@@ -577,10 +602,10 @@ index 951d74e1a..39ca6ac2d 100644
  
  /// NVFP4 and int3 share E4M3 block16 scales and an FP32 global; only the code row width differs.
 diff --git a/zig/src/families/drama3/metal/quant_format_test.zig b/zig/src/families/drama3/metal/quant_format_test.zig
-index f764d7e63..3e347f36e 100644
+index f764d7e63..d2892af20 100644
 --- a/zig/src/families/drama3/metal/quant_format_test.zig
 +++ b/zig/src/families/drama3/metal/quant_format_test.zig
-@@ -112,6 +112,108 @@ test "a compact head is accepted only when its row list is exactly the candidate
+@@ -112,6 +112,111 @@ test "a compact head is accepted only when its row list is exactly the candidate
      try std.testing.expectEqual(false, q.compactHead(null, &ids));
  }
  
@@ -630,7 +655,7 @@ index f764d7e63..3e347f36e 100644
 +    try h.put(a, partName(&name, p, "trellis"), .i16, &.{ 128, 32, 48 }, exl3_bytes[0 .. 128 * 32 * 48 * 2]);
 +    try h.put(a, partName(&name, p, "suh"), .f16, &.{2048}, exl3_bytes[0..4096]);
 +    try h.put(a, partName(&name, p, "svh"), .f16, &.{512}, exl3_bytes[0..1024]);
-+    if (marker.len != 0) try h.put(a, partName(&name, p, marker), .i32, &.{1}, magic);
++    if (marker.len != 0) try h.put(a, partName(&name, p, marker), .i32, &.{}, magic);
 +}
 +
 +test "EXL3 admission takes only the mul1 3.0 fp16-scale group and names every refusal" {
@@ -649,6 +674,9 @@ index f764d7e63..3e347f36e 100644
 +    try putGroup(&h, a, "mcg_marker", "mcg", &mcg_magic);
 +    try std.testing.expectError(error.BadExl3Marker, q.exl3Group("mcg_marker", h));
 +    var name: [192]u8 = undefined;
++    try putGroup(&h, a, "vector_marker.gate_proj", "", &mul1_magic);
++    try h.put(a, partName(&name, "vector_marker.gate_proj", "mul1"), .i32, &.{1}, &mul1_magic); // [1], not a scalar
++    try std.testing.expectError(error.BadExl3Marker, q.exl3Group("vector_marker.gate_proj", h));
 +    try h.put(a, partName(&name, "half.gate_proj", "trellis"), .i16, &.{ 128, 32, 40 }, exl3_bytes[0..1280]); // a 2.5 bpw trellis
 +    try std.testing.expectError(error.BadExl3Shape, q.exl3Group("half.gate_proj", h));
 +    try putGroup(&h, a, "packed.gate_proj", "mul1", &mul1_magic);
@@ -679,10 +707,10 @@ index f764d7e63..3e347f36e 100644
 +    defer h.deinit(a);
 +    try putGroup(&h, a, "e.gate_proj", "mul1", &mul1_magic);
 +    var name: [192]u8 = undefined;
-+    try h.put(a, partName(&name, "e.gate_proj", "mul1"), .i32, &.{1}, &mcg_magic); // an mcg magic under the mul1 name
++    try h.put(a, partName(&name, "e.gate_proj", "mul1"), .i32, &.{}, &mcg_magic); // an mcg magic under the mul1 name
 +    try std.testing.expectError(error.BadExl3Marker, q.exl3Group("e.gate_proj", h));
-+    try h.put(a, partName(&name, "e.gate_proj", "mul1"), .i32, &.{1}, &mul1_magic);
-+    try h.put(a, partName(&name, "e.gate_proj", "mcg"), .i32, &.{1}, &mcg_magic);
++    try h.put(a, partName(&name, "e.gate_proj", "mul1"), .i32, &.{}, &mul1_magic);
++    try h.put(a, partName(&name, "e.gate_proj", "mcg"), .i32, &.{}, &mcg_magic);
 +    try std.testing.expectError(error.MixedExl3Markers, q.exl3Group("e.gate_proj", h));
 +}
 +
@@ -849,3 +877,6 @@ index 2f09d772e..4d10d471a 100644
  pub const exlr8 = @import("core/exlr8.zig");
  pub const exlr8_projection = @import("core/exlr8_projection.zig");
  pub const exlr8_dense_gpu = @import("core/exlr8_dense_gpu.zig");
+-- 
+2.54.0 (Apple Git-157)
+

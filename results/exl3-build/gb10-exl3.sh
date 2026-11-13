@@ -15,7 +15,7 @@ rows=$pilot/exl3-rows-v3
 . results/exl3-ldlq/exllamav3-env.sh
 mkdir -p "$out"
 if [ -d "$pilot/exl3-done" ]; then
-  cp "$pilot"/exl3-done/recipe.json "$out"/
+  [ ! -f "$pilot/exl3-done/recipe.json" ] || cp "$pilot/exl3-done/recipe.json" "$out"/
   shopt -s nullglob
   for record in "$pilot"/exl3-done/layer-*.json; do
     cp "${record%.json}.safetensors" "$out"/

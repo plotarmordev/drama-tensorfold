@@ -97,9 +97,12 @@ def main(checkpoint, rows, out):
     if manifest['identity']['config_sha256'] != ex.sha256(checkpoint / 'config.json'):
         raise ValueError('calibration rows and checkpoint config differ')
     out.mkdir(parents=True, exist_ok=True)
-    # Bind resumed layers to the actual row bytes, so changed rows are rejected even under an unchanged checksum list.
+    # Bind resumed layers to the actual row and FP8 shard bytes: changed inputs are rejected even when the rows
+    # manifest and checkpoint index are unchanged.
+    index = checkpoint / 'model.safetensors.index.json'
+    shards = sorted({checkpoint / f for f in json.loads(index.read_text())['weight_map'].values()})
     recipe = {'config': manifest['identity']['config_sha256'],
-              'index': ex.sha256(checkpoint / 'model.safetensors.index.json'), 'kept': ex.sha256(KEPT),
+              'index': ex.sha256(index), 'shards': ex.files_sha256(shards), 'kept': ex.sha256(KEPT),
               'rows': ex.rows_sha256(rows),
               'encoder': ex.sha256(Path(__file__)), 'quantizer': ex.sha256(Path(exllamav3_job.__file__)),
               'setup': ex.sha256(Path(exllamav3_job.__file__).with_name('exllamav3-env.sh'))}

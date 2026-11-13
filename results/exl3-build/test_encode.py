@@ -87,27 +87,31 @@ class EncodeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'incomplete or damaged'):
                 self.run_encode(out, {0: [5]})
 
-    def test_resume_rejects_changed_row_bytes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            checkpoint, rows, out = (root / name for name in ('checkpoint', 'rows', 'out'))
-            checkpoint.mkdir()
-            rows.mkdir()
-            (checkpoint / 'config.json').write_text('{}')
-            (checkpoint / 'model.safetensors.index.json').write_text('{"weight_map": {}}')
-            (rows / 'rows.json').write_text(json.dumps({
-                'identity': {'config_sha256': ex.sha256(checkpoint / 'config.json')}, 'rows': 1}))
-            data = rows / 'layer-00.x.bf16'
-            data.write_bytes(b'\x00\x00')
-            quantizer = types.SimpleNamespace(
-                __file__=str(Path(encode.__file__).parent.parent / 'exl3-ldlq/exllamav3_job.py'),
-                import_quantize=lambda: None)
-            with patch.dict('sys.modules', exllamav3_job=quantizer), patch.object(encode, 'kept_experts', return_value={}):
-                encode.main(checkpoint, rows, out)
-                encode.main(checkpoint, rows, out)
-                data.write_bytes(b'\x00\x01')
-                with self.assertRaisesRegex(ValueError, 'another encoder recipe'):
+    def test_resume_rejects_changed_row_or_shard_bytes(self):
+        for changed in ('rows/layer-00.x.bf16', 'checkpoint/model.safetensors'):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                checkpoint, rows, out = (root / name for name in ('checkpoint', 'rows', 'out'))
+                checkpoint.mkdir()
+                rows.mkdir()
+                (checkpoint / 'config.json').write_text('{}')
+                expert = 'model.language_model.layers.0.mlp.experts.5.gate_proj.weight'
+                (checkpoint / 'model.safetensors.index.json').write_text(
+                    json.dumps({'weight_map': {expert: 'model.safetensors'}}))
+                (checkpoint / 'model.safetensors').write_bytes(b'\x00\x00')
+                (rows / 'rows.json').write_text(json.dumps({
+                    'identity': {'config_sha256': ex.sha256(checkpoint / 'config.json')}, 'rows': 1}))
+                (rows / 'layer-00.x.bf16').write_bytes(b'\x00\x00')
+                quantizer = types.SimpleNamespace(
+                    __file__=str(Path(encode.__file__).parent.parent / 'exl3-ldlq/exllamav3_job.py'),
+                    import_quantize=lambda: None)
+                with patch.dict('sys.modules', exllamav3_job=quantizer), \
+                        patch.object(encode, 'kept_experts', return_value={}):
                     encode.main(checkpoint, rows, out)
+                    encode.main(checkpoint, rows, out)
+                    (root / changed).write_bytes(b'\x00\x01')
+                    with self.assertRaisesRegex(ValueError, 'another encoder recipe'):
+                        encode.main(checkpoint, rows, out)
 
 
 class KeptTest(unittest.TestCase):

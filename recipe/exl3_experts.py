@@ -155,15 +155,20 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def rows_sha256(rows):
-    """One hash over every file of the rows directory but its report: the Hessians depend on all of their bytes."""
+def files_sha256(paths):
+    """One hash over these files' names and bytes, read in blocks: rows and checkpoints run to tens of GB."""
     digest = hashlib.sha256()
-    for path in sorted(p for p in rows.iterdir() if p.name != 'report.json'):
+    for path in paths:
         digest.update(path.name.encode())
         with path.open('rb') as f:
             while block := f.read(1 << 24):
                 digest.update(block)
     return digest.hexdigest()
+
+
+def rows_sha256(rows):
+    """Every file of the rows directory but its report: the Hessians depend on all of their bytes."""
+    return files_sha256(sorted(p for p in rows.iterdir() if p.name != 'report.json'))
 
 
 def nvfp4_bytes(nvfp4, layer, experts):

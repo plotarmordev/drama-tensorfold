@@ -28,6 +28,7 @@ published; the JSON files retain the measured results and synthetic-input hashes
 | [`quant-15gb/`](quant-15gb/README.md) | The published 5,900-expert NVFP4 quant against the 20.8 GB quant and the full model: size, memory, speed, word error rate, failed takes, speaker similarity, and the salt null control |
 | [`smaller-builds/`](smaller-builds/README.md) | The 5,900-expert quant on the Mac with its head trimmed, its codec in BF16 and its experts in int3: size, word error rate, failed takes, and the build to ship |
 | [`exl3-ldlq/`](exl3-ldlq/README.md) | EXL3 routed experts with exllamav3's LDLQ rounding against NVFP4 and int3 on six experts, the encoder patch, and the 13.51 GiB build plan |
+| [`exl3-build/`](exl3-build/README.md) | All 5,900 routed experts in exllamav3's EXL3 3.0: the resumable GB10 encode job, the assembled build and its measurement against int3 |
 
 ## Speed stages
 

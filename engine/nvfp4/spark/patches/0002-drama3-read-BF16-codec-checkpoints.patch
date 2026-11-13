@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: build-engine <build-engine@example.invalid>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 2/2] drama3: read BF16 codec checkpoints
+
+codec.pth may store its weights in bfloat16 (the 16.66 GiB trim-bf16
+build): readF32 widens BF16 storage exactly to FP32 - each bfloat16
+value is its top 16 bits - after checking the member's byte count
+against the storage's element size.
+---
+ zig/src/families/drama3/codec_pth.zig | 28 +++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/zig/src/families/drama3/codec_pth.zig b/zig/src/families/drama3/codec_pth.zig
+index 98850ed8..65cf6cf3 100644
+--- a/zig/src/families/drama3/codec_pth.zig
++++ b/zig/src/families/drama3/codec_pth.zig
+@@ -91,11 +91,11 @@ pub const Archive = struct {
+         };
+     }
+ 
+-    /// name's float32 elements row-major (caller frees), its shape and its storage member's CRC-32 checked.
++    /// name's float32 or bfloat16 elements as float32 row-major (caller frees), with storage CRC-32 checked.
+     pub fn readF32(self: *const Archive, gpa: Allocator, name: []const u8, shape: []const u64) ![]f32 {
+         const t = try self.tensor(name);
+-        if (t.dtype != .f32) {
+-            std.log.err("codec.pth tensor {s} is {s}, not float32", .{ name, @tagName(t.dtype) });
++        if (t.dtype != .f32 and t.dtype != .bf16) {
++            std.log.err("codec.pth tensor {s} is {s}, not float32 or bfloat16", .{ name, @tagName(t.dtype) });
+             return error.UnexpectedDType;
+         }
+         if (!std.mem.eql(u64, t.shape, shape)) {
+@@ -113,7 +113,15 @@ pub const Archive = struct {
+         const key = try std.fmt.allocPrint(gpa, "{s}data/{s}", .{ self.prefix, t.storage });
+         defer gpa.free(key);
+         const m = self.members.get(key) orelse return error.MissingStorage;
+-        if (m.size != std.math.mul(u64, t.storage_numel, 4) catch return error.BadArchive) return error.BadArchive;
++        if (m.size != std.math.mul(u64, t.storage_numel, elementBytes(t.dtype)) catch return error.BadArchive) return error.BadArchive;
++        if (t.dtype == .bf16) {
++            const all = try gpa.alloc(u16, @intCast(t.storage_numel));
++            defer gpa.free(all);
++            try readMember(self.io, self.file, m, std.mem.sliceAsBytes(all));
++            const out = try gpa.alloc(f32, @intCast(numel));
++            widenBf16(out, all[@intCast(t.offset)..][0..@intCast(numel)]);
++            return out;
++        }
+         const all = try gpa.alloc(f32, @intCast(t.storage_numel));
+         errdefer gpa.free(all);
+         try readMember(self.io, self.file, m, std.mem.sliceAsBytes(all));
+@@ -124,6 +132,11 @@ pub const Archive = struct {
+     }
+ };
+ 
++fn widenBf16(out: []f32, in: []const u16) void {
++    std.debug.assert(out.len == in.len);
++    for (out, in) |*o, v| o.* = @bitCast(@as(u32, v) << 16);
++}
++
+ fn readU16(b: []const u8, at: usize) u16 {
+     return std.mem.readInt(u16, b[at..][0..2], .little);
+ }
+@@ -541,6 +554,13 @@ test "the state-dict VM reads torch.save's tensor records and their views" {
+     try std.testing.expectEqualSlices(u64, &.{300}, c.shape);
+ }
+ 
++test "BF16 codec storage widens exactly to FP32" {
++    const in = [_]u16{ 0x0000, 0x8000, 0x3f80, 0xc049, 0x7f80, 0x7fc1 };
++    var out: [in.len]f32 = undefined;
++    widenBf16(&out, &in);
++    for (out, [_]u32{ 0x00000000, 0x80000000, 0x3f800000, 0xc0490000, 0x7f800000, 0x7fc10000 }) |v, bits|
++        try std.testing.expectEqual(bits, @as(u32, @bitCast(v)));
++}
+ test "the state-dict VM refuses globals outside the allow-list" {
+     const log_level = std.testing.log_level;
+     std.testing.log_level = .err;
+-- 
+2.54.0 (Apple Git-157)
+

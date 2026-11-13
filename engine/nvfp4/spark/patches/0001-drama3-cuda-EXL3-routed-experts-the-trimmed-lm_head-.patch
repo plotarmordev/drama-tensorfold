@@ -1,0 +1,523 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: build-engine <build-engine@example.invalid>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 1/2] drama3 cuda: EXL3 routed experts, the trimmed lm_head and
+ head-row metadata
+
+The EXL3 build the pilot serves (card 40, 13.51 GiB): every layer that
+stores a trellis per expert loads as mul1 3.0-bit EXL3 through the
+grouped kernels - trellis bytes as stored, per-expert pointer tables,
+stacked fp16 input/output scales, fp32 silu(gate)*up - and the routed
+MoE launches gate/up then down through the shared grouped plan, leaving
+fp32 sums for the combine, exactly as the FP8 and NVFP4 layers do.
+
+A trimmed lm_head (drama_head_rows naming exactly the sampler's
+candidate ids) uploads its rows as stored instead of gathering them from
+the full vocabulary; anything else the metadata names is refused. The
+expert map check now demands an EXL3 layer's trellis/suh/svh/mul1 set
+complete, one of a kind per layer.
+---
+ zig/src/families/drama3/cuda/engine.zig       |  18 ++++
+ zig/src/families/drama3/cuda/forward.zig      |  13 ++-
+ zig/src/families/drama3/cuda/owner_test.zig   |  80 ++++++++++++++
+ zig/src/families/drama3/cuda/weights.zig      | 100 +++++++++++++++++-
+ .../families/drama3/metal/quant_format.zig    |  82 +++++++++++++-
+ zig/src/families/drama3/quant_test.zig        |   4 +-
+ 6 files changed, 285 insertions(+), 12 deletions(-)
+
+diff --git a/zig/src/families/drama3/cuda/engine.zig b/zig/src/families/drama3/cuda/engine.zig
+index 1850c38..12da1cf 100644
+--- a/zig/src/families/drama3/cuda/engine.zig
++++ b/zig/src/families/drama3/cuda/engine.zig
+@@ -87,6 +87,8 @@ pub const Engine = struct {
+     gq: u64, // [R * 8, 512]
+     gsc: u64, // [R * 8, 4]
+     plan: cuda.grouped.Plan,
++    exl3_experts: ?cuda.exl3_experts.Experts, // the model's grouped EXL3 kernels, unloaded by the owning engine
++    exl3_grouped: ?cuda.exl3_grouped.Grouped, // this engine's own EXL3 scratch: lanes and guides prefill concurrently
+     hfin: u64, // [R, H] final-norm hidden
+     th: [2]u64, // tower hidden ping-pong [R, H]
+     mix: u64, // [R, 2H]
+@@ -113,6 +115,8 @@ pub const Engine = struct {
+         e.owner = null;
+         e.o = o;
+         e.graph = null;
++        e.exl3_experts = null;
++        e.exl3_grouped = null;
+         e.sampling = .{};
+         e.graph_sampling = .{};
+         e.rows_done = 0;
+@@ -143,6 +147,8 @@ pub const Engine = struct {
+             gpa.destroy(e.w);
+         }
+         if (e.w.nvfp4_layers > 0) try e.k.loadNvfp4();
++        if (e.w.exl3_layers > 0) e.exl3_experts = try cuda.exl3_experts.Experts.load(&e.driver);
++        errdefer if (e.exl3_experts) |*x| x.unload();
+         errdefer e.freeState();
+         try e.allocState(false);
+         errdefer {
+@@ -172,6 +178,7 @@ pub const Engine = struct {
+         e.stream2.synchronize() catch {};
+         e.freeState();
+         if (e.owns_model) {
++            if (e.exl3_experts) |*x| x.unload();
+             e.w.deinit();
+             e.gpa.destroy(e.w);
+             e.k.unload();
+@@ -210,6 +217,7 @@ pub const Engine = struct {
+         if (backbone_only) e.o.max_rows = 1;
+         e.bufs = .empty;
+         e.graph = null;
++        e.exl3_grouped = null;
+         e.stream = try cuda.Stream.init(&e.driver, true);
+         errdefer e.stream.deinit();
+         e.stream2 = try cuda.Stream.init(&e.driver, true);
+@@ -317,6 +325,7 @@ pub const Engine = struct {
+         const items = cuda.grouped.maxItems(pairs, cfg.experts, 16);
+         const nblk = (pairs + 1023) / 1024;
+         e.plan = .{ .members = try e.alloc(pairs * 4), .items = try e.alloc(items * 3 * 4), .counts = try e.alloc(16), .rank = try e.alloc(pairs * 4), .hist = try e.alloc(nblk * cfg.experts * 4) };
++        if (e.exl3_experts) |*x| e.exl3_grouped = try e.exl3Scratch(x, items);
+         e.hfin = try e.alloc(R * H * 2);
+         e.th = if (backbone_only) .{ 0, 0 } else .{ try e.alloc(R * H * 2), try e.alloc(R * H * 2) };
+         e.mix = if (backbone_only) 0 else try e.alloc(R * 2 * H * 2);
+@@ -327,6 +336,15 @@ pub const Engine = struct {
+         e.code_logits = if (backbone_only) 0 else try e.alloc(cfg.codebook_size * 4);
+     }
+ 
++    /// Grouped EXL3 scratch sized for the widest call, so `run` never reallocates it; `bufs` owns the bytes.
++    fn exl3Scratch(e: *Engine, kernels: *const cuda.exl3_experts.Experts, items: usize) !cuda.exl3_grouped.Grouped {
++        const l = e.w.layers[0].experts.exl3 orelse return error.BadExperts;
++        const up = try cuda.exl3_grouped.Grouped.bytes(l.dims, l.width, items, try cuda.exl3_experts.plan(l.dims, l.width, true), 2);
++        const down = try cuda.exl3_grouped.Grouped.bytes(l.width, l.dims, items, try cuda.exl3_experts.plan(l.width, l.dims, false), 1);
++        const bytes = @max(up, down);
++        return .{ .d = &e.driver, .kernels = kernels, .storage = .{ .d = &e.driver, .ptr = try e.alloc(bytes), .len = bytes, .borrowed = true } };
++    }
++
+     pub fn buf(ptr: u64) Buf {
+         return .{ .d = undefined, .ptr = ptr, .len = std.math.maxInt(usize) / 2, .borrowed = true };
+     }
+diff --git a/zig/src/families/drama3/cuda/forward.zig b/zig/src/families/drama3/cuda/forward.zig
+index 6a5550e..16c7679 100644
+--- a/zig/src/families/drama3/cuda/forward.zig
++++ b/zig/src/families/drama3/cuda/forward.zig
+@@ -96,10 +96,19 @@ fn moe(e: *Engine, s: cuda.Stream, L: *const wts.Layer, t: usize) !void {
+     try k.linear(s, L.shared_down, e.sact, cfg.shared_width, cfg.shared_width, H, e.shout, H, t);
+     const pairs = t * cfg.top_k;
+     const prompt = t > 2;
+-    const tile: usize = if (prompt) cuda.experts.promptTile(.fp8g) else 16;
++    const tile: usize = if (prompt) cuda.experts.promptTile(L.experts.format) else 16;
+     try k.plan.route(s, e.picks, pairs, cfg.experts, tile, e.plan);
+     const items = cuda.grouped.maxItems(pairs, cfg.experts, tile);
+-    if (L.experts.format == .nvfp4) {
++    if (L.experts.format == .exl3) {
++        // the grouped EXL3 kernels take bf16 rows, fuse the SwiGLU into the down launch and leave fp32 sums
++        const g = &(e.exl3_grouped orelse return error.FormatNotLoaded);
++        const grouped: cuda.experts.Grouped = .{ .exl3 = g };
++        const rows_in: cuda.experts.Rows = .{ .x = e.xn, .stride = H, .slots = cfg.top_k };
++        const act_in: cuda.experts.Rows = .{ .x = e.gu, .stride = cfg.expert_width };
++        const launch: *const fn (cuda.experts.Grouped, cuda.Stream, cuda.experts.Epi, cuda.experts.Rows, cuda.experts.Layer, cuda.grouped.Plan, u64, usize, i32) anyerror!void = if (prompt) cuda.experts.Grouped.prompt else cuda.experts.Grouped.decode;
++        try launch(grouped, s, .up, rows_in, L.experts, e.plan, e.gu, items, -1);
++        try launch(grouped, s, .down_f32, act_in, L.experts, e.plan, e.down, items, -1);
++    } else if (L.experts.format == .nvfp4) {
+         try k.nvfp4Experts(s, prompt, e.xn, cfg.top_k, L.experts, e.plan, e.gu, e.down, items);
+     } else {
+         // activations to FP8 per row and 128 inputs before each expert projection, as the reference serves them
+diff --git a/zig/src/families/drama3/cuda/owner_test.zig b/zig/src/families/drama3/cuda/owner_test.zig
+index 42516e0..de8ef92 100644
+--- a/zig/src/families/drama3/cuda/owner_test.zig
++++ b/zig/src/families/drama3/cuda/owner_test.zig
+@@ -5,6 +5,8 @@ const Tts = @import("tts.zig").Tts;
+ const Codec = @import("codec.zig").Codec;
+ const Engine = @import("engine.zig").Engine;
+ const a = std.testing.allocator;
++const cfg = @import("../config.zig");
++const wts = @import("weights.zig");
+ const Mock = struct {
+     var next: usize = 0;
+     var fail_next: bool = false;
+@@ -36,6 +38,16 @@ const Mock = struct {
+         unloads += 1;
+         return 0;
+     }
++    fn event(p: *cuda.abi.Event, _: c_uint) callconv(.c) c_int {
++        p.* = @ptrFromInt(0x50);
++        return 0;
++    }
++    fn unevent(_: cuda.abi.Event) callconv(.c) c_int {
++        return 0;
++    }
++    fn adopt(_: cuda.abi.Context) callconv(.c) c_int {
++        return 0;
++    }
+     fn stream(p: *cuda.abi.Stream, _: c_uint) callconv(.c) c_int {
+         p.* = @ptrFromInt(0x40);
+         return 0;
+@@ -78,6 +90,9 @@ const Mock = struct {
+         e.driver.api.cuStreamSynchronize = wait;
+         e.driver.api.cuMemsetD8_v2 = zero;
+         e.driver.api.cuMemsetD8Async = zeroAsync;
++        e.driver.api.cuEventCreate = event;
++        e.driver.api.cuEventDestroy_v2 = unevent;
++        e.driver.api.cuCtxSetCurrent = adopt;
+         e.stream = .{ .d = &e.driver, .handle = @ptrFromInt(1) };
+         e.stream2 = .{ .d = &e.driver, .handle = @ptrFromInt(2) };
+     }
+@@ -125,6 +140,28 @@ const Mock = struct {
+         try t.warm_zero.?.fill8(0, t.cs.handle);
+         return error.InjectedWarmFailure;
+     }
++
++    /// A bare engine on the mock driver — options, config and weights, layer 0's routed experts EXL3 with its
++    /// kernels loaded when asked — everything `fork`, `forkBackbone` and their teardown read; the caller frees `e.w`.
++    fn bare(e: *Engine, exl3: bool) !void {
++        Mock.init(e);
++        e.owns_model = true;
++        e.o = .{ .max_rows = 1, .max_ctx = 16, .max_frames = 2 };
++        e.c.full_attention = @splat(false);
++        e.exl3_experts = null;
++        e.exl3_grouped = null;
++        e.w = try a.create(wts.Weights);
++        e.w.* = undefined;
++        e.w.n_cand = 1;
++        e.ctx = .{ .d = &e.driver, .device = 0, .handle = @ptrFromInt(7) };
++        if (!exl3) return;
++        e.w.layers[0].experts = .{ .format = .exl3, .up = 0, .down = 0, .width = cfg.expert_width, .dims = cfg.hidden, .experts = 1, .exl3 = .{
++            .gate = 0,    .up = 0,     .down = 0,   .gate_k2 = 0, .up_k2 = 0, .down_k2 = 0,
++            .suh_g = 0,   .suh_u = 0,  .svh_g = 0,  .svh_u = 0,   .suh_d = 0, .svh_d = 0,
++            .experts = 1, .dims = cfg.hidden, .width = cfg.expert_width, .codebook = .mul1,
++        } };
++        e.exl3_experts = .{ .mod = .{ .d = &e.driver, .handle = @ptrFromInt(9) }, .group = undefined, .rot_in = undefined, .grouped = undefined, .gateup = undefined, .down_combine = undefined };
++    }
+ };
+ test "drama poison completes default-stream fills before reset can reuse buffers" {
+     const Fill = struct {
+@@ -229,3 +266,46 @@ test "drama owner: normal nested forks retain root after base release and unwind
+     try std.testing.expectEqual(@as(usize, 1), Mock.unloads);
+     try std.testing.expectEqual(@as(usize, 0), Mock.count());
+ }
++
++test "drama owner: a lane and a guide borrow their own EXL3 scratch and never unload the model's kernels" {
++    var e: Engine = undefined;
++    try Mock.bare(&e, true);
++    // what the base's own state would hold: its scratch over its own allocation, lending its kernels
++    var scratch = try cuda.DeviceBuffer.alloc(&e.driver, 256);
++    e.exl3_grouped = .{ .d = &e.driver, .kernels = &e.exl3_experts.?, .storage = .{ .d = &e.driver, .ptr = scratch.ptr, .len = scratch.len, .borrowed = true } };
++    const lane = try Engine.fork(&e);
++    const guide = try Engine.forkBackbone(&e);
++    const lane_g = &lane.exl3_grouped.?;
++    const guide_g = &guide.exl3_grouped.?;
++    // each fork's own borrowed scratch, never the base's or the other fork's: lanes and guides prefill concurrently
++    try std.testing.expect(lane_g.storage.?.borrowed and guide_g.storage.?.borrowed);
++    try std.testing.expect(lane_g.storage.?.ptr != e.exl3_grouped.?.storage.?.ptr);
++    try std.testing.expect(guide_g.storage.?.ptr != e.exl3_grouped.?.storage.?.ptr);
++    try std.testing.expect(lane_g.storage.?.ptr != guide_g.storage.?.ptr);
++    // the kernels belong to the fork's own copy: a fork outlives its base
++    try std.testing.expect(lane_g.kernels == &lane.exl3_experts.? and lane_g.kernels != &e.exl3_experts.?);
++    try std.testing.expect(guide_g.kernels == &guide.exl3_experts.? and guide_g.kernels != &e.exl3_experts.?);
++    lane.destroy();
++    guide.destroy();
++    try std.testing.expectEqual(@as(usize, 0), Mock.unloads); // a fork's teardown never unloads them
++    try std.testing.expectEqual(@as(usize, 1), Mock.count()); // the base's scratch alone is left
++    if (e.exl3_experts) |*x| x.unload(); // the owning engine's destroy line
++    try std.testing.expectEqual(@as(usize, 1), Mock.unloads);
++    scratch.free();
++    a.destroy(e.w);
++    try std.testing.expectEqual(@as(usize, 0), Mock.count());
++}
++
++test "drama owner: forks of an engine without EXL3 experts start with no EXL3 state and free what they allocate" {
++    var e: Engine = undefined;
++    try Mock.bare(&e, false);
++    const lane = try Engine.fork(&e);
++    const guide = try Engine.forkBackbone(&e);
++    try std.testing.expect(lane.exl3_experts == null and lane.exl3_grouped == null);
++    try std.testing.expect(guide.exl3_experts == null and guide.exl3_grouped == null);
++    lane.destroy();
++    guide.destroy();
++    try std.testing.expectEqual(@as(usize, 0), Mock.count()); // every allocation a fork made, freed
++    try std.testing.expectEqual(@as(usize, 0), Mock.unloads);
++    a.destroy(e.w);
++}
+diff --git a/zig/src/families/drama3/cuda/weights.zig b/zig/src/families/drama3/cuda/weights.zig
+index 1f2754b..2642de1 100644
+--- a/zig/src/families/drama3/cuda/weights.zig
++++ b/zig/src/families/drama3/cuda/weights.zig
+@@ -53,6 +53,7 @@ pub const Weights = struct {
+     tower: [cfg.tower_layers]TowerLayer,
+     heads: [cfg.codebooks - 1]u64, // [4096, 2048]
+     nvfp4_layers: usize, // layers whose routed experts are NVFP4 (the engine loads their kernels)
++    exl3_layers: usize, // layers whose routed experts are EXL3 (the engine loads the grouped kernels)
+     compact_layers: usize, // layers whose router masks to held experts (a pruned checkpoint)
+     bytes: usize,
+ 
+@@ -125,6 +126,75 @@ const Loader = struct {
+         L.slots = if (compactSlots(held, li)) |slots| try l.upload(i32, &slots) else 0;
+         if (L.slots != 0) l.w.compact_layers += 1;
+     }
++
++    /// A layer's held EXL3 experts (mul1, 3.0 bits) in slot order: per-expert trellis pointers, widths and stacked
++    /// scales, exactly as the trellis stores them — the grouped kernels unpack on the device.
++    fn exl3Experts(l: *Loader, li: usize, held: *const quant.Held) !void {
++        const ids = held.ids[li][0..held.counts[li]];
++        const gpa = l.gpa;
++        var trellis: [3][]u64 = @splat(&.{});
++        var k2: [3][]i32 = @splat(&.{});
++        var suh: [3][]u8 = @splat(&.{});
++        var svh: [3][]u8 = @splat(&.{});
++        defer for (0..3) |m| {
++            gpa.free(trellis[m]);
++            gpa.free(k2[m]);
++            gpa.free(suh[m]);
++            gpa.free(svh[m]);
++        };
++        // gate and up: [I, H]; down: [H, I]
++        const shapes = [3][2]usize{ .{ cfg.expert_width, cfg.hidden }, .{ cfg.expert_width, cfg.hidden }, .{ cfg.hidden, cfg.expert_width } };
++        for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }, 0..) |proj, m| {
++            const n = shapes[m][0];
++            const k = shapes[m][1];
++            trellis[m] = try gpa.alloc(u64, ids.len);
++            k2[m] = try gpa.alloc(i32, ids.len);
++            suh[m] = try gpa.alloc(u8, ids.len * k * 2);
++            svh[m] = try gpa.alloc(u8, ids.len * n * 2);
++            for (ids, 0..) |e, slot| {
++                var nb: [2][192]u8 = undefined;
++                const base = fmt(&nb[0], "model.language_model.layers.{d}.mlp.experts.{d}.{s}", .{ li, e, proj });
++                const t = try l.sh.get(fmt(&nb[1], "{s}.trellis", .{base}));
++                if (!t.is(.i16, &.{ k / 16, n / 16, exl3_halves * 8 })) return error.BadExl3Expert;
++                const mk = try l.sh.get(fmt(&nb[1], "{s}.mul1", .{base}));
++                if (mk.numel() != 1 or mk.bytes.len != 4 or std.mem.readInt(u32, mk.bytes[0..4], .little) != mul1_magic) return error.BadExl3Expert;
++                const sh_in = try l.sh.get(fmt(&nb[1], "{s}.suh", .{base}));
++                const sv_in = try l.sh.get(fmt(&nb[1], "{s}.svh", .{base}));
++                if (!sh_in.is(.f16, &.{k}) or !sv_in.is(.f16, &.{n})) return error.BadExl3Expert;
++                const b = try l.alloc(t.bytes.len);
++                try l.stager.put(b.ptr, t.bytes);
++                trellis[m][slot] = b.ptr;
++                k2[m][slot] = exl3_halves;
++                @memcpy(suh[m][slot * k * 2 ..][0 .. k * 2], sh_in.bytes);
++                @memcpy(svh[m][slot * n * 2 ..][0 .. n * 2], sv_in.bytes);
++                for ([_][]const u8{ "trellis", "mul1", "suh", "svh" }) |s| l.sh.release(fmt(&nb[1], "{s}.{s}", .{ base, s }));
++            }
++        }
++        const lay: cuda.exl3_experts.Layer = .{
++            .gate = try l.upload(u64, trellis[0]),
++            .up = try l.upload(u64, trellis[1]),
++            .down = try l.upload(u64, trellis[2]),
++            .gate_k2 = try l.upload(i32, k2[0]),
++            .up_k2 = try l.upload(i32, k2[1]),
++            .down_k2 = try l.upload(i32, k2[2]),
++            .suh_g = try l.upload(u8, suh[0]),
++            .suh_u = try l.upload(u8, suh[1]),
++            .svh_g = try l.upload(u8, svh[0]),
++            .svh_u = try l.upload(u8, svh[1]),
++            .suh_d = try l.upload(u8, suh[2]),
++            .svh_d = try l.upload(u8, svh[2]),
++            .experts = ids.len,
++            .dims = cfg.hidden,
++            .width = cfg.expert_width,
++            .codebook = .mul1,
++            .uniform_k2 = exl3_halves,
++            .act_mode = 1, // fp32 silu(gate) * up, the reference SwiGLU
++        };
++        const L = &l.w.layers[li];
++        L.experts = .{ .format = .exl3, .exl3 = lay, .up = 0, .down = 0, .width = cfg.expert_width, .dims = cfg.hidden, .experts = ids.len, .swiglu = true };
++        L.slots = if (compactSlots(held, li)) |slots| try l.upload(i32, &slots) else 0;
++        if (L.slots != 0) l.w.compact_layers += 1;
++    }
+ };
+ 
+ /// A pruned layer's router slot table; null when every expert is held and the original router serves it.
+@@ -321,6 +391,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
+     w.bufs = .empty;
+     w.bytes = 0;
+     w.nvfp4_layers = 0;
++    w.exl3_layers = 0;
+     w.compact_layers = 0;
+     errdefer w.deinit();
+     errdefer stream.synchronize() catch {};
+@@ -334,14 +405,24 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
+     // lm_head's candidate rows: eos, then the semantic band (sorted ids, as the sampler's candidate list)
+     {
+         const t = try sh.get("lm_head.weight");
+-        try Loader.expect(t, .bf16, &.{ cfg.vocab, H }, "lm_head.weight");
+         const ids = try shards.candidateIds(gpa, c);
+         defer gpa.free(ids);
+         const n = ids.len;
+         w.n_cand = n;
+-        const rows = try gpa.alloc(u8, n * H * 2);
+-        defer gpa.free(rows);
+-        for (ids, 0..) |id, r| @memcpy(rows[r * H * 2 ..][0 .. H * 2], t.bytes[@as(usize, @intCast(id)) * H * 2 ..][0 .. H * 2]);
++        var rows: []const u8 = undefined;
++        var gathered: ?[]u8 = null;
++        defer if (gathered) |p| gpa.free(p);
++        if (try quant.compactHead(sh.metadata, ids)) {
++            // a trimmed lm_head keeps exactly the candidate rows, in candidate order
++            try Loader.expect(t, .bf16, &.{ n, H }, "lm_head.weight");
++            rows = t.bytes;
++        } else {
++            try Loader.expect(t, .bf16, &.{ cfg.vocab, H }, "lm_head.weight");
++            gathered = try gpa.alloc(u8, n * H * 2);
++            const dst = gathered.?;
++            for (ids, 0..) |id, r| @memcpy(dst[r * H * 2 ..][0 .. H * 2], t.bytes[@as(usize, @intCast(id)) * H * 2 ..][0 .. H * 2]);
++            rows = dst;
++        }
+         const hb = try l.alloc(rows.len);
+         try hb.upload(0, rows);
+         w.cand_head = hb.ptr;
+@@ -396,6 +477,11 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
+         L.moe_in = try l.stack(&.{ fmt(&nb[0], pre ++ "mlp.shared_expert.gate_proj.weight", .{li}), fmt(&nb[1], pre ++ "mlp.shared_expert.up_proj.weight", .{li}), fmt(&nb[2], pre ++ "mlp.gate.weight", .{li}), fmt(&nb[3], pre ++ "mlp.shared_expert_gate.weight", .{li}) }, &.{ cfg.shared_width, cfg.shared_width, cfg.experts, 1 }, H, cfg.moe_proj);
+         L.shared_down = try l.one(fmt(&nb[0], pre ++ "mlp.shared_expert.down_proj.weight", .{li}), &.{ H, cfg.shared_width });
+         L.slots = 0;
++        if (quant.exl3Stored(sh.map, li, held.ids[li][0])) {
++            try l.exl3Experts(li, &held);
++            w.exl3_layers += 1;
++            continue;
++        }
+         if (try nvfp4Layer(&sh, li, &held)) {
+             try l.nvfp4Experts(li, &held, opt.threads);
+             w.nvfp4_layers += 1;
+@@ -448,7 +534,11 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
+     try stager.finish();
+     if (opt.log) {
+         std.log.info("drama3: weights on the device: {d:.2} GB", .{@as(f64, @floatFromInt(w.bytes)) / 1e9});
+-        std.log.info("drama3: routed experts held {d} of {d}; routed experts NVFP4 in {d} of {d} layers; compact routers in {d} of {d} layers", .{ held.total(), cfg.layers * cfg.experts, w.nvfp4_layers, cfg.layers, w.compact_layers, cfg.layers });
++        std.log.info("drama3: routed experts held {d} of {d}; routed experts NVFP4 in {d}, EXL3 in {d} of {d} layers; compact routers in {d} of {d} layers", .{ held.total(), cfg.layers * cfg.experts, w.nvfp4_layers, w.exl3_layers, cfg.layers, w.compact_layers, cfg.layers });
+     }
+     return w;
+ }
++
++/// The EXL3 build the pilot serves: mul1 codebook, 3.0 bits (six half-quant weights a value).
++pub const exl3_halves: u32 = 6;
++const mul1_magic: u32 = 0x83DCD12D;
+diff --git a/zig/src/families/drama3/metal/quant_format.zig b/zig/src/families/drama3/metal/quant_format.zig
+index a811149..f640854 100644
+--- a/zig/src/families/drama3/metal/quant_format.zig
++++ b/zig/src/families/drama3/metal/quant_format.zig
+@@ -47,11 +47,24 @@ pub fn parseHeld(value: std.json.Value) !Held {
+ pub fn heldMetadata(metadata: ?std.json.Value) !Held {
+     const meta = metadata orelse return .{};
+     if (meta != .object) return error.BadExpertMap;
+-    if (meta.object.get("drama_head_rows") != null) return error.UnsupportedCompactHead;
+     return if (meta.object.get(experts_key)) |v| try parseHeld(v) else .{};
+ }
+ 
+-/// The stored experts are exactly the map's: none unlisted, and every listed one's three projections present.
++/// True when the metadata's `drama_head_rows` is exactly `ids` (a trimmed lm_head in candidate order);
++/// absent is a full head, anything else is a cut the sampler's candidate list cannot name.
++pub fn compactHead(metadata: ?std.json.Value, ids: []const i32) !bool {
++    const meta = metadata orelse return false;
++    if (meta != .object) return error.BadExpertMap;
++    const rows = meta.object.get("drama_head_rows") orelse return false;
++    if (rows != .array or rows.array.items.len != ids.len) return error.HeadRowsMismatch;
++    for (rows.array.items, ids) |row, id| {
++        if (row != .integer or row.integer != id) return error.HeadRowsMismatch;
++    }
++    return true;
++}
++
++/// The stored experts are exactly the map's: none unlisted, and every listed one's three projections present —
++/// one `.weight` matrix each, or (EXL3) one trellis/suh/svh set and its mul1 marker, all of a kind per layer.
+ pub fn checkStored(h: *const Held, names: anytype) !void {
+     var it = names.keyIterator();
+     const pre = "model.language_model.layers.";
+@@ -68,11 +81,25 @@ pub fn checkStored(h: *const Held, names: anytype) !void {
+     }
+     var buf: [96]u8 = undefined;
+     for (0..cfg.layers) |l| for (h.ids[l][0..h.counts[l]]) |e| for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }) |p| {
+-        const name = std.fmt.bufPrint(&buf, pre ++ "{d}.mlp.experts.{d}.{s}.weight", .{ l, e, p }) catch unreachable;
+-        if (!names.contains(name)) return error.MissingExpert;
++        if (exl3Stored(names, l, h.ids[l][0])) {
++            for ([_][]const u8{ "trellis", "suh", "svh", "mul1" }) |s| {
++                const name = std.fmt.bufPrint(&buf, pre ++ "{d}.mlp.experts.{d}.{s}.{s}", .{ l, e, p, s }) catch unreachable;
++                if (!names.contains(name)) return error.MissingExpert;
++            }
++        } else {
++            const name = std.fmt.bufPrint(&buf, pre ++ "{d}.mlp.experts.{d}.{s}.weight", .{ l, e, p }) catch unreachable;
++            if (!names.contains(name)) return error.MissingExpert;
++        }
+     };
+ }
+ 
++/// A layer's first held expert carries a trellis: the layer's experts are EXL3, not one packed `.weight` matrix.
++pub fn exl3Stored(names: anytype, layer: usize, first: u8) bool {
++    var buf: [96]u8 = undefined;
++    const name = std.fmt.bufPrint(&buf, "model.language_model.layers.{d}.mlp.experts.{d}.gate_proj.trellis", .{ layer, first }) catch unreachable;
++    return names.contains(name);
++}
++
+ pub fn nvfp4(w: Tensor, s: Tensor, g: Tensor, n: usize, k: usize) !void {
+     if (k % 16 != 0 or !w.is(.u8, &.{ n, k / 2 }) or !s.is(.f8_e4m3, &.{ n, k / 16 }) or !g.is(.f32, &.{})) return error.BadNvfp4Shape;
+     if (w.bytes.len != n * k / 2 or s.bytes.len != n * k / 16 or g.bytes.len != 4) return error.BadNvfp4Shape;
+@@ -85,3 +112,50 @@ pub fn bf16(x: f32) u16 {
+     const bits: u32 = @bitCast(x);
+     return @truncate((bits +% (0x7fff + ((bits >> 16) & 1))) >> 16);
+ }
++
++test "a trimmed head's rows must name exactly the sampler's candidates" {
++    const none = try compactHead(null, &[_]i32{ 0, 5 });
++    try std.testing.expect(!none);
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"drama_head_rows\": [0, 5, 9]}", .{});
++    try std.testing.expect(try compactHead(parsed, &[_]i32{ 0, 5, 9 }));
++    try std.testing.expectError(error.HeadRowsMismatch, compactHead(parsed, &[_]i32{ 0, 5, 8 }));
++    try std.testing.expectError(error.HeadRowsMismatch, compactHead(parsed, &[_]i32{0}));
++}
++
++test "an EXL3 layer's stored set is the trellis, its scales and the marker; every layer stays complete" {
++    var names = std.StringHashMap(void).init(std.testing.allocator);
++    defer {
++        var it = names.keyIterator();
++        while (it.next()) |k| std.testing.allocator.free(k.*);
++        names.deinit();
++    }
++    var held: Held = .{};
++    held.counts[0] = 1;
++    held.ids[0][0] = 3; // layer 0 holds one expert, stored as EXL3
++    for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }) |p| {
++        for ([_][]const u8{ "trellis", "suh", "svh", "mul1" }) |s| {
++            var buf: [96]u8 = undefined;
++            const name = try std.fmt.bufPrint(&buf, "model.language_model.layers.0.mlp.experts.3.{s}.{s}", .{ p, s });
++            try names.put(try std.testing.allocator.dupe(u8, name), {});
++        }
++    }
++    for (1..cfg.layers) |l| for (0..cfg.experts) |e| for ([_][]const u8{ "gate_proj", "up_proj", "down_proj" }) |p| {
++        var buf: [112]u8 = undefined;
++        const name = try std.fmt.bufPrint(&buf, "model.language_model.layers.{d}.mlp.experts.{d}.{s}.weight", .{ l, e, p });
++        try names.put(try std.testing.allocator.dupe(u8, name), {});
++    };
++    try std.testing.expect(exl3Stored(&names, 0, 3));
++    try std.testing.expect(!exl3Stored(&names, 1, 0));
++    try checkStored(&held, &names); // the exl3 set is complete, the packed layers stay complete
++    {
++        var buf: [96]u8 = undefined;
++        const gone = try std.fmt.bufPrint(&buf, "model.language_model.layers.0.mlp.experts.3.gate_proj.mul1", .{});
++        const had = names.fetchRemove(gone).?;
++        try std.testing.expectError(error.MissingExpert, checkStored(&held, &names)); // the marker is part of the set
++        try names.put(had.key, {}); // its ownership stays with the map
++    }
++    held.ids[0][0] = 4;
++    try std.testing.expectError(error.UnlistedExpert, checkStored(&held, &names)); // expert 3 is stored but no longer held
++}
+diff --git a/zig/src/families/drama3/quant_test.zig b/zig/src/families/drama3/quant_test.zig
+index dc23a15..10fc7c6 100644
+--- a/zig/src/families/drama3/quant_test.zig
++++ b/zig/src/families/drama3/quant_test.zig
+@@ -3,6 +3,7 @@ const std = @import("std");
+ const core = @import("core");
+ const quant = @import("quant.zig");
+ const format = @import("metal/quant_format.zig");
++const cfg = @import("config.zig");
+ 
+ const st = core.safetensors;
+ const shard_edit = core.shard_edit;
+@@ -341,5 +342,6 @@ test "SRC's index and shards must agree, and its metadata comes through" {
+     try f.tmp.dir.writeFile(io, .{ .sub_path = "src/" ++ quant.index_name, .data = try std.mem.replaceOwned(u8, arena, index, "\"total_size\": 1", "\"total_size\": 1, \"drama_head_rows\": [0]") });
+     _ = try f.convert("dst", .{});
+     const meta = (try f.json("dst/" ++ quant.index_name)).object.get("metadata").?;
+-    try testing.expectError(error.UnsupportedCompactHead, format.heldMetadata(meta)); // as the loader refuses SRC
++    try testing.expect(try format.compactHead(meta, &[_]i32{0})); // the cut names its rows: eos alone
++    try testing.expectEqual(@as(u16, cfg.experts), (try format.heldMetadata(meta)).counts[0]); // head rows no longer stop the map
+ }
+-- 
+2.54.0 (Apple Git-157)
+

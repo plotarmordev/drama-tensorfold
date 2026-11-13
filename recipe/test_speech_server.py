@@ -155,8 +155,14 @@ class ServerTests(unittest.TestCase):
             external = speech_server.pilot_command(speech_server.read_config(config))
             config.write_text(base + 'weights = nvfp4\n')
             released = speech_server.pilot_command(speech_server.read_config(config))
+            config.write_text(base.replace('checkpoint = model\n', 'weights = int3-5900\n'))
+            int3 = speech_server.pilot_command(speech_server.read_config(config))
         self.assertEqual(default[default.index('--weights') + 1], 'nvfp4-5900')
+        self.assertEqual(default[default.index('--checkpoint') + 1], str(Path('model').resolve()))
         self.assertEqual(released[released.index('--weights') + 1], 'nvfp4')
+        # without a checkpoint, the launcher serves the build's own folder
+        self.assertEqual(int3[int3.index('--weights') + 1], 'int3-5900')
+        self.assertNotIn('--checkpoint', int3)
         self.assertNotIn('--external-admission', default)
         # a launcher flag, before the serve flags
         self.assertEqual(external, default[:default.index('--')] + ['--external-admission']

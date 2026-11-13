@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pilot
 import pilot_macos
+import speech_server
 import weight_selection as selection
 
 GIB = 1024**3
@@ -67,7 +69,7 @@ class WeightSelectionTests(unittest.TestCase):
         for mode in ('full', None):
             with self.subTest(mode=mode):
                 self.assertEqual(selection.native_environment(mode), ['TF_DRAMA_PREFILL_ROWS=128'])
-        for mode in ('nvfp4', 'nvfp4-5900'):
+        for mode in ('nvfp4', 'nvfp4-5900', 'int3-5900'):
             with self.subTest(mode=mode):
                 self.assertEqual(selection.native_environment(mode), [])
                 self.assertEqual(selection.serve_arguments(mode, []), ['--cfg-gamma', '1.5', '--cfg-batched'])
@@ -115,6 +117,19 @@ class WeightSelectionTests(unittest.TestCase):
             repository = self.sources[selection.WEIGHTS[mode]['source']]['repository']
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, f'hf download {repository} '):
                 selection.prepare_checkpoint(mode, selection.checkpoint_path(other, None))
+        self.download.assert_not_called()
+
+    def test_int3_is_never_downloaded_and_names_its_build_tool(self):
+        target = selection.checkpoint_path('int3-5900', None)
+        provenance = selection.prepare_checkpoint('int3-5900', None)
+        self.assertTrue(provenance['checkpoint_verified'])
+        self.assertIsNone(provenance['checkpoint_source'])
+        for checkpoint in (selection.checkpoint_path('nvfp4-5900', None), None):
+            if checkpoint is None:
+                target.rename(self.root / 'moved-int3')
+            with self.subTest(checkpoint=checkpoint), self.assertRaisesRegex(ValueError, 'splice_int3.py'):
+                selection.prepare_checkpoint('int3-5900', checkpoint)
+        self.assertFalse(target.exists())
         self.download.assert_not_called()
 
     def test_existing_missing_or_corrupt_input_is_not_repaired(self):
@@ -173,19 +188,21 @@ class WeightSelectionTests(unittest.TestCase):
 
     def test_both_launchers_refuse_wrong_selected_override_before_spawn(self):
         for launcher in (pilot, pilot_macos):
-            with self.subTest(launcher=launcher.__name__):
-                arguments = self.launcher_arguments('nvfp4', selection.checkpoint_path('full', None))
-                with patch.object(sys, 'argv', arguments), \
-                        patch.object(launcher, 'memory_available', return_value=100 * GIB), \
-                        patch.object(launcher.subprocess, 'Popen') as spawn:
-                    if launcher is pilot:
-                        with self.assertRaises(SystemExit):
-                            launcher.main()
-                    else:
-                        self.assertEqual(launcher.main(), 1)
-                        completion = json.loads((self.root / 'evidence/completion.json').read_text())
-                        self.assertTrue(completion['group_settled'])
-                    spawn.assert_not_called()
+            for mode, other in (('nvfp4', 'full'), ('int3-5900', 'nvfp4-5900')):
+                with self.subTest(launcher=launcher.__name__, mode=mode):
+                    arguments = self.launcher_arguments(mode, selection.checkpoint_path(other, None))
+                    with patch.object(sys, 'argv', arguments), \
+                            patch.object(launcher, 'memory_available', return_value=100 * GIB), \
+                            patch.object(launcher.subprocess, 'Popen') as spawn:
+                        if launcher is pilot:
+                            with self.assertRaises(SystemExit):
+                                launcher.main()
+                        else:
+                            self.assertEqual(launcher.main(), 1)
+                            completion = json.loads((self.root / 'evidence/completion.json').read_text())
+                            self.assertTrue(completion['group_settled'])
+                            shutil.rmtree(self.root / 'evidence')
+                        spawn.assert_not_called()
                 self.download.assert_not_called()
 
     def test_mac_missing_override_fails_before_spawn_and_invalidates_reused_evidence(self):
@@ -202,6 +219,34 @@ class WeightSelectionTests(unittest.TestCase):
         self.assertFalse((evidence / 'ready.json').exists())
         completion = json.loads((evidence / 'completion.json').read_text())
         self.assertIsNone(completion['server_pid'])
+        self.download.assert_not_called()
+
+    def test_speech_server_serves_int3_by_its_pins_with_the_nvfp4_engine(self):
+        config = self.root / 'speech-server.ini'
+        (self.root / 'gpu.lock').touch()
+        config.write_text(f'[server]\nweights = int3-5900\ngpu_lock = {self.root / "gpu.lock"}\n'
+                          f'runtime_dir = {self.root / "runtime"}\nevidence_dir = {self.root / "evidence"}\n'
+                          f'engine_port = {free_port()}\n')
+        command = speech_server.pilot_command(speech_server.read_config(config))
+        evidence = self.root / 'evidence'
+        for damaged in (False, True):
+            if damaged:
+                (selection.checkpoint_path('int3-5900', None) / 'config.json').write_bytes(b'other build')
+            with self.subTest(damaged=damaged), patch.object(sys, 'argv', command[1:]), \
+                    patch.object(pilot_macos, 'memory_available', return_value=100 * GIB), \
+                    patch.object(pilot_macos.subprocess, 'Popen', side_effect=Spawned) as spawn:
+                self.assertEqual(pilot_macos.main(), 1)
+                self.assertEqual(spawn.call_count, 0 if damaged else 1)
+            if damaged:
+                completion = json.loads((evidence / 'completion.json').read_text())
+                self.assertIn('splice_int3.py', '\n'.join(completion['failures']))
+                continue
+            session = json.loads((evidence / 'session.json').read_text())
+            self.assertEqual(session['checkpoint_manifest'],
+                             str(self.recipe / 'checksums' / 'trim-bf16-int3.sha256'))
+            self.assertTrue(session['checkpoint_verified'])
+            self.assertEqual(session['server_command'][:3], [str(selection.native_path('nvfp4', None)), 'serve',
+                                                             str(selection.checkpoint_path('int3-5900', None))])
         self.download.assert_not_called()
 
     def test_linux_launcher_stops_its_unit_once_the_parent_is_gone(self):
@@ -237,6 +282,22 @@ class WeightSelectionTests(unittest.TestCase):
         self.assertEqual(pilot.guard(20 * GIB, False), (88 * GIB, 34 * GIB))
         self.assertEqual(pilot.guard(70 * GIB, False), (100 * GIB, 34 * GIB))
         self.assertEqual(pilot.guard(70 * GIB, True), (None, None))
+
+    def test_linux_launcher_serves_int3_by_its_pins(self):
+        arguments = self.launcher_arguments('int3-5900') + ['--port', str(free_port())]
+        systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+        (self.root / 'runtime').mkdir()
+        with patch.object(sys, 'argv', arguments), \
+                patch.object(pilot, 'memory_available', return_value=100 * GIB), \
+                patch.object(pilot.subprocess, 'run', return_value=systemctl), \
+                patch.object(pilot.subprocess, 'Popen', side_effect=Spawned) as spawn, \
+                self.assertRaises(Spawned):
+            pilot.main()
+        spawn.assert_called_once()
+        session = json.loads((self.root / 'evidence/session.json').read_text())
+        self.assertEqual(session['checkpoint_manifest'], str(self.recipe / 'checksums' / 'trim-bf16-int3.sha256'))
+        self.assertTrue(session['checkpoint_verified'])
+        self.download.assert_not_called()
 
     def test_both_launchers_admit_externally_below_the_floor(self):
         systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')

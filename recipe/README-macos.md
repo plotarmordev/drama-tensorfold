@@ -1,6 +1,6 @@
 # macOS: running the pinned recipe on Apple silicon
 
-Both `--weights full` and the NVFP4 quants (`--weights nvfp4-5900`, `--weights nvfp4`) use the native Zig/Metal engine, not Python/MLX.
+Both `--weights full` and the quantized builds (`--weights nvfp4-5900`, `--weights int3-5900`, `--weights nvfp4`) use the native Zig/Metal engine, not Python/MLX.
 The full model uses the Linux recipe's pin, TensorFold v1.1.9, plus a Metal-only calibration-rows patch. NVFP4 uses the separate
 [Mac engine pin](../engine/nvfp4/macos/UPSTREAM) and patch series; the CUDA NVFP4 pin is unchanged.
 Neither path requires CUDA, `nvcc`, systemd, or `/proc`. Use `recipe/pilot_macos.py`.
@@ -60,6 +60,16 @@ The launcher verifies the directory against the manifest of the selected quant:
 `checksums/nvfp4-t5900cover.sha256` for `--weights nvfp4-5900` (`drama3-nvfp4-t5900cover-v1`, published as
 `plotarmordev/drama-3-NVFP4-Pruned-5900`) or `checksums/nvfp4.sha256` for `--weights nvfp4`
 (`drama3-nvfp4-trim7369-v1`). A changed file is refused rather than repaired.
+
+### The 14.5 GB int3 build
+
+`--weights int3-5900` serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its codec in BF16
+and its routed experts in int3, the int3 build of [`results/smaller-builds`](../results/smaller-builds/README.md). It is
+not published, so nothing is downloaded: build it with
+[`splice_int3.py`](../results/smaller-builds/splice_int3.py) into `drama-3-trim-bf16-int3` (or pass
+`--checkpoint`). It is checked against `checksums/trim-bf16-int3.sha256` (`drama3-trim-bf16-int3-v1`) and served
+by the same `--weights nvfp4` engine build, whose Metal patch 0005 reads int3 experts. A missing or changed file is
+refused, naming `splice_int3.py`.
 
 ### BF16 codec
 
@@ -193,7 +203,9 @@ Check the HTTP status and `X-Finish-Reason` rather than treating any saved file 
 
 `recipe/speech_server.py` runs the NVFP4 engine behind the same `/v1/audio/speech` API as the GB10
 host, from one config file. Copy [`speech-server.example.ini`](speech-server.example.ini) to
-`speech-server.ini` (git-ignored), set `checkpoint` (and `weights = nvfp4` for the 20.8 GB quant) and, for cloned voices, `voices` and `default_voice`, then
+`speech-server.ini` (git-ignored), set `weights` (`nvfp4-5900`, the default; `int3-5900` for the 14.5 GB int3 build;
+`nvfp4` for the 20.8 GB quant), `checkpoint` if it is not in that build's folder in the repository root and, for
+cloned voices, `voices` and `default_voice`, then
 create the lock file and start it from the repository root:
 
 ```sh

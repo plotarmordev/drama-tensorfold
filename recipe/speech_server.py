@@ -69,9 +69,11 @@ def pilot_command(server: configparser.SectionProxy) -> list[str]:
     def place(key: str) -> str:
         return str(Path(server[key]).resolve())
 
-    command = [sys.executable, str(RECIPE / 'pilot_macos.py'), '--weights', server['weights'],
-               '--checkpoint', place('checkpoint'), '--runtime-dir', place('runtime_dir'),
-               '--gpu-lock', place('gpu_lock'), '--evidence-dir', place('evidence_dir'), '--evidence-reuse',
+    # Without a checkpoint, pilot_macos.py serves the selected weights' own folder in the repository root.
+    checkpoint = ['--checkpoint', place('checkpoint')] if 'checkpoint' in server else []
+    command = [sys.executable, str(RECIPE / 'pilot_macos.py'), '--weights', server['weights'], *checkpoint,
+               '--runtime-dir', place('runtime_dir'), '--gpu-lock', place('gpu_lock'),
+               '--evidence-dir', place('evidence_dir'), '--evidence-reuse',
                '--port', server['engine_port'], '--', *ENGINE_FLAGS]
     if 'voices' in server:
         command += ['--voices', place('voices')]

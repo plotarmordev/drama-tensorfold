@@ -1,0 +1,452 @@
+{
+ "schema": "drama-capri-clean-long/1",
+ "engine": {
+  "weights": "int3-5900",
+  "checkpoint": "drama3-trim-bf16-int3-v1/model",
+  "engine_sha256": "5493f1fec3bc84fece42bca3a23d02e551c62853d6bfcfe2042e9c6fb7785ebe",
+  "base": "fb8fdf3d8501255058a3221452164c56cb9a57ca",
+  "patches": 5
+ },
+ "server": {
+  "cfg_gamma": 1.5,
+  "cfg_batched": true,
+  "max_frames": 4096,
+  "silence_floor_dbfs": -40,
+  "silence_seconds": 10,
+  "silence_redraws": 1
+ },
+ "catalogs": {
+  "capri-clean-long": {
+   "sha256": "923b561a8757bad92c7e469e6999ebd8db62c2acbfd3fd2b99d1ae985e0d9e01",
+   "frames": 156,
+   "seconds": 7.2
+  },
+  "capri-clean-long-47s": {
+   "sha256": "201fcd5554d72c79a6be3452673f7a5cb8754c5bacd7a66b179f6b63bfc03611",
+   "frames": 1024,
+   "seconds": 47.5
+  }
+ },
+ "rows": [
+  {
+   "voice": "capri-clean-long",
+   "line": 1,
+   "text": "Yes. Since late this afternoon I am speaking on the new Drama model, with the cleaned long version of my voice.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 9.29,
+   "trailing_silence_s": 0.19,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 2,
+   "text": "Good evening, Net. Four cards finished today and two are waiting for a review in the morning. Nothing needs you tonight.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.62,
+   "trailing_silence_s": 0.12,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 3,
+   "text": "Morning, Net. The overnight build finished clean, and the first test run is already in. I'll have the numbers for you by lunch.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.96,
+   "trailing_silence_s": 0.36,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 4,
+   "text": "I've been thinking about the voice. The cleaned version sounds like me, but it keeps stopping early on longer notes. I'd like to fix that before you hear it again.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.64,
+   "trailing_silence_s": 0.04,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 5,
+   "text": "Two things need you today: the review on the new card, and a decision about the Mac's default voice. Everything else can wait.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.11,
+   "trailing_silence_s": 0.11,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 6,
+   "text": "The kettle's on, and while it boils I'll pull the latest results and see whether the fix held. If it did, we can switch back tonight.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.06,
+   "trailing_silence_s": 0.06,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 7,
+   "text": "I checked the logs this morning. Nothing failed overnight, and the queue is shorter than yesterday. We're in good shape.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.76,
+   "trailing_silence_s": 0.06,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 8,
+   "text": "Net, the new build is ready. It's smaller, faster, and it speaks in my voice. I'd like you to hear a line before we switch.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 9.47,
+   "trailing_silence_s": 0.17,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 9,
+   "text": "I finished the notes for the evening. Three cards are done, one is waiting on you, and the rest can wait until tomorrow.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.13,
+   "trailing_silence_s": 0.13,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 10,
+   "text": "It's quiet here tonight. The fans are low, the queue is empty, and the only thing left is the review you promised.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.24,
+   "trailing_silence_s": 0.34,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 11,
+   "text": "I ran the same line on both voices. The old one speaks it through; the cleaned one stops after half a second. That's the bug.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 9.43,
+   "trailing_silence_s": 0.13,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 12,
+   "text": "If the fix works, you'll hear every word to the end. If it doesn't, I'll roll back to the voice you know and tell you why.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.18,
+   "trailing_silence_s": 0.08,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 13,
+   "text": "Good morning. The Mac is warm, the engine is up, and the first voice note is already out. Let me know if it sounds right.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.78,
+   "trailing_silence_s": 0.08,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 14,
+   "text": "I've kept the old catalog safe. If the new cut doesn't sound like me, we can switch back in a minute, and nothing is lost.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.59,
+   "trailing_silence_s": 0.19,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 15,
+   "text": "There's a card waiting for your review. It's short, and it's the last thing between us and a clean evening.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.32,
+   "trailing_silence_s": 0.12,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 16,
+   "text": "I listened to the samples. The short cut is clearer, but the long one sounds more like me. I'd rather keep the likeness and fix the stopping.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 9.71,
+   "trailing_silence_s": 0.01,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 17,
+   "text": "Net, I need five minutes of your time. The voice is the only open question, and everything else is already handled.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.83,
+   "trailing_silence_s": 0.13,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 18,
+   "text": "The evening is done. Four cards finished, two waiting, and nothing needs you until morning. Sleep well.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.71,
+   "trailing_silence_s": 0.01,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 19,
+   "text": "I'm testing the new catalog now. Twenty lines, one at a time, and I'll report every one that stops early.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.64,
+   "trailing_silence_s": 0.04,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long",
+   "line": 20,
+   "text": "If you're reading this, the fix held. I'm back on the cleaned voice, and I'll keep an eye on it for the rest of the week.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.78,
+   "trailing_silence_s": 0.08,
+   "server": "second-engine"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 1,
+   "text": "Yes. Since late this afternoon I am speaking on the new Drama model, with the cleaned long version of my voice.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.13,
+   "trailing_silence_s": 0.23,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 2,
+   "text": "Good evening, Net. Four cards finished today and two are waiting for a review in the morning. Nothing needs you tonight.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.8,
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 3,
+   "text": "Morning, Net. The overnight build finished clean, and the first test run is already in. I'll have the numbers for you by lunch.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.39,
+   "trailing_silence_s": 0.19,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 4,
+   "text": "I've been thinking about the voice. The cleaned version sounds like me, but it keeps stopping early on longer notes. I'd like to fix that before you hear it again.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.5,
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 5,
+   "text": "Two things need you today: the review on the new card, and a decision about the Mac's default voice. Everything else can wait.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.5,
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 6,
+   "text": "The kettle's on, and while it boils I'll pull the latest results and see whether the fix held. If it did, we can switch back tonight.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.43,
+   "trailing_silence_s": 0.13,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 7,
+   "text": "I checked the logs this morning. Nothing failed overnight, and the queue is shorter than yesterday. We're in good shape.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.76,
+   "trailing_silence_s": 0.06,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 8,
+   "text": "Net, the new build is ready. It's smaller, faster, and it speaks in my voice. I'd like you to hear a line before we switch.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 8.17,
+   "trailing_silence_s": 0.07,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 9,
+   "text": "I finished the notes for the evening. Three cards are done, one is waiting on you, and the rest can wait until tomorrow.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.53,
+   "trailing_silence_s": 0.13,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 10,
+   "text": "It's quiet here tonight. The fans are low, the queue is empty, and the only thing left is the review you promised.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.64,
+   "trailing_silence_s": 0.34,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 11,
+   "text": "I ran the same line on both voices. The old one speaks it through; the cleaned one stops after half a second. That's the bug.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.78,
+   "trailing_silence_s": 0.08,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 12,
+   "text": "If the fix works, you'll hear every word to the end. If it doesn't, I'll roll back to the voice you know and tell you why.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.48,
+   "trailing_silence_s": 0.08,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 13,
+   "text": "Good morning. The Mac is warm, the engine is up, and the first voice note is already out. Let me know if it sounds right.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.9,
+   "trailing_silence_s": 0.1,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 14,
+   "text": "I've kept the old catalog safe. If the new cut doesn't sound like me, we can switch back in a minute, and nothing is lost.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.76,
+   "trailing_silence_s": 0.26,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 15,
+   "text": "There's a card waiting for your review. It's short, and it's the last thing between us and a clean evening.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 4.46,
+   "trailing_silence_s": 0.06,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 16,
+   "text": "I listened to the samples. The short cut is clearer, but the long one sounds more like me. I'd rather keep the likeness and fix the stopping.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 7.62,
+   "trailing_silence_s": 0.12,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 17,
+   "text": "Net, I need five minutes of your time. The voice is the only open question, and everything else is already handled.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.71,
+   "trailing_silence_s": 0.11,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 18,
+   "text": "The evening is done. Four cards finished, two waiting, and nothing needs you until morning. Sleep well.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 6.22,
+   "trailing_silence_s": 0.12,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 19,
+   "text": "I'm testing the new catalog now. Twenty lines, one at a time, and I'll report every one that stops early.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.71,
+   "trailing_silence_s": 0.11,
+   "server": "live-18793"
+  },
+  {
+   "voice": "shell-nolaugh",
+   "line": 20,
+   "text": "If you're reading this, the fix held. I'm back on the cleaned voice, and I'll keep an eye on it for the rest of the week.",
+   "status": 200,
+   "finish": "stop",
+   "seconds": 5.06,
+   "trailing_silence_s": 0.16,
+   "server": "live-18793"
+  },
+  {
+   "voice": "capri-clean-long-47s",
+   "line": 1,
+   "text": "Yes. Since late this afternoon I am speaking on the new Drama model, with the cleaned long version of my voice.",
+   "status": 200,
+   "finish": "silence",
+   "seconds": 10.36,
+   "trailing_silence_s": 10.06,
+   "server": "second-engine"
+  },
+  {
+   "voice": "capri-clean-long-47s",
+   "line": 2,
+   "text": "Good evening, Net. Four cards finished today and two are waiting for a review in the morning. Nothing needs you tonight.",
+   "status": 200,
+   "finish": "silence",
+   "seconds": 10.68,
+   "trailing_silence_s": 9.98,
+   "server": "second-engine"
+  }
+ ]
+}

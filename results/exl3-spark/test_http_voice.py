@@ -12,7 +12,7 @@ CODEBOOKS = [[4095, 7, 9]] + [[c, c + 1, 1023] for c in range(9)]  # 10 codebook
 
 
 def fork_voice(codebooks=CODEBOOKS):
-    raw = b''.join(struct.pack(f'<{len(row)}i', *row) for row in CODEBOOKS)
+    raw = b''.join(struct.pack(f'<{len(row)}i', *row) for row in codebooks)
     return {'format': 'drama3-voice/2', 'source': {'kind': 'model-invented', 'note': 'three passages'},
             'references': [{'text': 'A lighthouse.', 'codes_sha256': hashlib.sha256(raw).hexdigest(),
                             'vq_codes': codebooks}]}
@@ -28,9 +28,10 @@ class Convert(unittest.TestCase):
         self.assertEqual([9] + [1023] * 9, codes[2])
 
     def test_codes_that_miss_their_sha256_are_refused(self):
-        swapped = [row[::-1] for row in CODEBOOKS]
+        voice = fork_voice()
+        voice['references'][0]['vq_codes'] = [row[::-1] for row in CODEBOOKS]
         with self.assertRaises(ValueError):
-            http_voice.convert(fork_voice(swapped))
+            http_voice.convert(voice)
 
 
 if __name__ == '__main__':

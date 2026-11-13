@@ -15,8 +15,9 @@ from the pilot's `drama-3-NVFP4-Pruned-5900` model and its `exl3-done` EXL3 laye
 
 The `eq-3ref` voice (sha256 `86ccbe54…`) went to BOTTOM through the `put` door; it is the only file from the Mac.
 It is the fork's `drama3-voice/2` file, which the pinned main engine refuses (`BadVoice`), so
-[`http_voice.py`](http_voice.py) rewrites it on BOTTOM, through `bottom shell`, as `voices-eq3ref-http/eq-3ref.json`
-in main's `drama3-http-voice/1` format: the same codes, checked against their sha256, frame-major.
+[`http_voice.py`](http_voice.py) rewrites it on BOTTOM, through `bottom shell`, in main's `drama3-http-voice/1`
+format: the same codes, checked against their sha256, frame-major. In the pilot folder, after `stage.sh`:
+`python3 http_voice.py voices-eq3ref/eq-3ref.json voices-eq3ref-http` (that script fetched at the job's sha).
 
 ## Expected window length, stated before it starts
 

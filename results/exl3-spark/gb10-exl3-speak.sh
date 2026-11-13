@@ -1,11 +1,11 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # The winning smaller build (trim-bf16-exl3-3.0, 13.51 GiB) end to end on a GB10, in one window:
 # `results/smaller-builds/gb10-start.sh <sha> results/exl3-spark/gb10-exl3-speak.sh`, with everything it needs
 # already staged in the Drama pilot folder by stage.sh (the assembled checkpoint from the pilot's own t5900-cover
 # model and exl3-done experts, the eq-3ref voice) and prebuild-spark.sh (the engine binary). No network: the job
 # only checks and runs what is staged. It speaks card 37's 24 texts in both voices at salts 0 and 1 and writes
 # /work/out/exl3-spark: load time, peak device memory and seconds per take, next to every WAV.
-set -eu
+set -euo pipefail
 pilot=/assets/drama3-pilot
 out=/work/out/exl3-spark
 here=$PWD/results/exl3-spark

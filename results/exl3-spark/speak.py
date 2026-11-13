@@ -99,11 +99,13 @@ def summary(runs):
 def main():
     binary, checkpoint, voices, out = map(Path, sys.argv[1:5])
     out.mkdir(parents=True, exist_ok=True)
-    runs = [speak_arm(binary, checkpoint, arm, salt, voices, out / arm / f's{salt}')
-            for arm in ARMS for salt in SALTS]
-    rows = summary(runs)
-    (out / 'summary.json').write_text(json.dumps({'runs': runs, 'report': rows}, indent=1) + '\n')
-    for row in rows:
+    runs = []
+    for arm in ARMS:
+        for salt in SALTS:
+            runs.append(speak_arm(binary, checkpoint, arm, salt, voices, out / arm / f's{salt}'))
+            # a window that closes mid-run still leaves the arms it finished
+            (out / 'summary.json').write_text(json.dumps({'runs': runs, 'report': summary(runs)}, indent=1) + '\n')
+    for row in summary(runs):
         print(row, flush=True)
 
 

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: build-engine <build-engine@example.invalid>
 Date: Thu, 1 Jan 1970 00:00:00 +0000
-Subject: [PATCH] drama3 cuda: EXL3 routed experts, the trimmed lm_head and
+Subject: [PATCH 1/2] drama3 cuda: EXL3 routed experts, the trimmed lm_head and
  head-row metadata
 
 The EXL3 build the pilot serves (card 40, 13.51 GiB): every layer that

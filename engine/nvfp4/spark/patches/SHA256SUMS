@@ -1,1 +1,2 @@
-66c416b04f549b875055106cf95c47e38bced45b404aa531519c844174c45891  0001-drama3-cuda-EXL3-routed-experts-the-trimmed-lm_head-.patch
+836fb7dc782cf6752e109ce4f04e9871638c7e796e8bf1345a333bb06af52201  0001-drama3-cuda-EXL3-routed-experts-the-trimmed-lm_head-.patch
+410248145998bf371921995e513f6e0a7cd14f9f645bc3b2bb6be05fb5b30f7f  0002-drama3-read-BF16-codec-checkpoints.patch

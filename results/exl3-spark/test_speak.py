@@ -14,9 +14,9 @@ def take(seconds, finish='stop'):
 class Summary(unittest.TestCase):
     def test_rows_aggregate_both_salts_of_an_arm(self):
         rows = speak.summary([
-            {'arm': 'ref', 'salt': 0, 'load_s': 20.0, 'peak_bytes': 15 * 2**30,
+            {'arm': 'ref', 'salt': 0, 'load_s': 20.0, 'peak_bytes': 15 * 2**30, 'repeat_identical': True,
              'takes': [take(10.0), take(20.0), take(30.0), take(50.0, 'length')]},
-            {'arm': 'ref', 'salt': 1, 'load_s': 30.0, 'peak_bytes': 16 * 2**30,
+            {'arm': 'ref', 'salt': 1, 'load_s': 30.0, 'peak_bytes': 16 * 2**30, 'repeat_identical': False,
              'takes': [take(40.0), take(60.0), take(70.0), take(80.0)]}])
         self.assertEqual(1, len(rows))
         row = rows[0]
@@ -27,9 +27,10 @@ class Summary(unittest.TestCase):
         self.assertEqual(50.0, row['seconds_p50'])
         self.assertEqual(360.0, row['seconds_total'])
         self.assertEqual(1, row['capped'])
+        self.assertFalse(row['repeat_identical'], 'one salt whose repeat differed fails the arm')
 
     def test_seconds_are_sorted_before_the_median(self):
-        row = speak.summary([{'arm': 'builtin', 'salt': 0, 'load_s': 1.0, 'peak_bytes': 0,
+        row = speak.summary([{'arm': 'builtin', 'salt': 0, 'load_s': 1.0, 'peak_bytes': 0, 'repeat_identical': True,
                               'takes': [take(9.0), take(1.0), take(5.0)]}])[0]
         self.assertEqual(5.0, row['seconds_p50'])
         self.assertEqual(3, row['takes'])

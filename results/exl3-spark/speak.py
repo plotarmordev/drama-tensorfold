@@ -43,8 +43,19 @@ def wait_ready(server, log, timeout=900):
             time.sleep(1)
 
 
+def say(text):
+    """One take through the running server: its WAV bytes and finish reason."""
+    body = json.dumps({'model': 'fishaudio/drama-3', 'input': text, 'voice': 'default',
+                       'response_format': 'wav'}).encode()
+    request = urllib.request.Request(f'http://127.0.0.1:{PORT}/v1/audio/speech', body,
+                                     {'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=1800) as reply:
+        return reply.read(), reply.headers.get('X-Finish-Reason')
+
+
 def speak_arm(binary, checkpoint, arm, salt, voices, out):
-    """One arm and salt: a server seeded by TENSORFOLD_SEED_SALT, every corpus text spoken alone, timed."""
+    """One arm and salt: a server seeded by TENSORFOLD_SEED_SALT, every corpus text spoken alone, timed, then the
+    first text again, which must give the same bytes: the guide and the conditional stream share no scratch."""
     out.mkdir(parents=True, exist_ok=True)
     log = out / 'server.log'
     with log.open('w') as sink:
@@ -59,27 +70,23 @@ def speak_arm(binary, checkpoint, arm, salt, voices, out):
         load_s = time.monotonic() - started
         takes = []
         for item in CORPUS:
-            body = json.dumps({'model': 'fishaudio/drama-3', 'input': item['text'], 'voice': 'default',
-                               'response_format': 'wav'}).encode()
-            request = urllib.request.Request(f'http://127.0.0.1:{PORT}/v1/audio/speech', body,
-                                             {'Content-Type': 'application/json'})
             before = time.monotonic()
-            with urllib.request.urlopen(request, timeout=1800) as reply:
-                wav = reply.read()
-                takes.append({'arm': arm, 'salt': salt, 'item': item['id'],
-                              'seconds': round(time.monotonic() - before, 3), 'bytes': len(wav),
-                              'finish': reply.headers.get('X-Finish-Reason')})
+            wav, finish = say(item['text'])
+            takes.append({'arm': arm, 'salt': salt, 'item': item['id'],
+                          'seconds': round(time.monotonic() - before, 3), 'bytes': len(wav), 'finish': finish})
             (out / f"{item['id']}.wav").write_bytes(wav)
+        repeat_identical = say(CORPUS[0]['text'])[0] == (out / f"{CORPUS[0]['id']}.wav").read_bytes()
         peak = json.load(urllib.request.urlopen(f'http://127.0.0.1:{PORT}/memory', timeout=30))
     finally:
         server.terminate()
         server.wait(60)
     return {'arm': arm, 'salt': salt, 'load_s': round(load_s, 3), 'peak_bytes': peak['device']['peak_bytes'],
-            'takes': takes}
+            'repeat_identical': repeat_identical, 'takes': takes}
 
 
 def summary(runs):
-    """The report's rows: per arm the load, peak and per-take seconds, and the failed (capped) takes."""
+    """The report's rows: per arm the load, peak and per-take seconds, the failed (capped) takes, and whether every
+    salt's repeated first take matched its bytes."""
     rows = []
     for arm in ARMS:
         arm_runs = [run for run in runs if run['arm'] == arm]
@@ -92,7 +99,8 @@ def summary(runs):
                      'takes': len(seconds), 'seconds_mean': round(sum(seconds) / len(seconds), 3),
                      'seconds_p50': seconds[len(seconds) // 2],
                      'seconds_total': round(sum(seconds), 1),
-                     'capped': sum(1 for run in arm_runs for take in run['takes'] if take['finish'] == 'length')})
+                     'capped': sum(1 for run in arm_runs for take in run['takes'] if take['finish'] == 'length'),
+                     'repeat_identical': all(run['repeat_identical'] for run in arm_runs)})
     return rows
 
 

@@ -23,9 +23,9 @@ format: the same codes, checked against their sha256, frame-major. In the pilot 
 
 Card 37's takes on this GB10 are 623 s of audio with the reference voice and 746 s with the built-in voice (the
 EXL3 build's built-in runaways at the 47.55 s cap included). At the RTF the same engine measured on this Spark with
-the same weights (`pruned-5900`: 2.233 guided, 1.43 unguided) that is 41 min of speech plus four loads (a server
-per arm and salt, about 2 min); if EXL3 decodes 1.3× slower than NVFP4 experts, 55 min. **The job asks for a
-one-hour window.**
+the same weights (`pruned-5900`: 2.233 guided, 1.43 unguided) that is 41 min of speech plus four loads and four
+repeats of the first (short) text (a server per arm and salt, about 4 min); if EXL3 decodes 1.3× slower than NVFP4
+experts, 57 min. The last window took 52 min without the repeats. **The job asks for a one-hour window.**
 
 ## Result
 

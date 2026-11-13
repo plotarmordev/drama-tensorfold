@@ -10,6 +10,7 @@ PILOT_MACOS_INTEGRATION=1 python3 -m unittest discover -s recipe -p 'test_*.py'
 python3 -m unittest discover -s results/smaller-builds -p 'test_*.py'
 python3 -m unittest discover -s results/exl3-ldlq -p 'test_*.py'
 python3 -m unittest discover -s results/exl3-build -p 'test_*.py'
+python3 -m unittest discover -s results/exl3-spark -p 'test_*.py'
 python3 -m unittest discover -s results/capri-clean-long -p 'test_*.py'
 python3 bench/stream_check.py --self-test
 gpu-checks/selftest.sh

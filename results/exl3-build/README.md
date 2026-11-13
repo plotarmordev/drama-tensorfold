@@ -2,21 +2,35 @@
 
 Card 39 found exllamav3 `bd1f519`'s EXL3 at 3.0 bits at 0.15× the `trim-bf16-int3` build's Hessian error on six
 experts ([`../exl3-ldlq`](../exl3-ldlq/README.md)). This build encodes every kept routed expert of `t5900-cover`
-the same way, for `trim-bf16-exl3-3.0` (13.51 GiB planned, against int3's 14.50 GiB), to be measured next to int3
-with [`../smaller-builds`](../smaller-builds/README.md)' protocol and pick rule.
+the same way, as `trim-bf16-exl3-3.0`, and measures it next to int3 with
+[`../smaller-builds`](../smaller-builds/README.md)' protocol and pick rule.
 
-**Status: GPU job running; no EXL3 build or measurements yet.**
-The v3 rows are staged on BOTTOM at the pilot folder's `exl3-rows-v3/` and passed `sha256sum -c` against
-[`rows.sha256`](rows.sha256) (Desk, 12 November 18:20 HKT). Job `bottom-ccd34101e181` runs `gb10-exl3.sh` at
-`398b1a0`, started 13 November 08:37 HKT in the 08:34–12:34 window, expected ~3.6 h (done ~12:15). If the window
-closes first, copy its `recipe.json` and finished pairs into the pilot folder's `exl3-done/` before the next one.
+## Result: `trim-bf16-int3` stays the winner
 
-BOTTOM's older `eq/runs/fp8-calib-rows` capture is **not admitted** (Desk decision, 12 November). Card 32's
-unchanged gates over it ([saved report](bottom-rows-preflight.json), commit `63e671a`) found 5,886/5,900 kept
-experts with rows: layer 36 experts 188 and 243 (best router ranks 14 and 15) are missing beyond the twelve
-approved exceptions, which stay as written.
+`trim-bf16-exl3-3.0` is **13.51 GiB** (weights + codec, 0.99 GiB under int3's 14.50) and fails all 96 takes:
+every one of the 24 texts, salts 0 and 1, in both voices runs to the 1024-frame cap, and Whisper hears filler
+("Thank you for watching", repeated clicks) instead of the text: mean WER 645 % reference, 397 % built-in, against
+int3's 1.78 % and 5.78 %. `pick.py` over [`builds.json`](../smaller-builds/builds.json) names `trim-bf16-int3`.
+The listening page (`/Users/Shared/agent-work/drama-assets/drama3-smaller-builds/listening.html`, on the Mac, not
+published) has the EXL3 build next to int3 and `t5900`, including built-in `medium-05`.
 
-## The GPU job: ~3.5 hours on one GB10
+Why it fails is not settled. What was checked:
+
+- The encode matches card 39: its six probe experts' errors in the job's records are within 2 % of card 39's.
+- The stored tensors decode correctly: a numpy port of exllamav3's unpack, tile permutation, mul1 codebook and
+  Hadamard/`suh`/`svh` rebuilds real projections at cosine 0.97–0.99 against the originals (layers 5, 38, 39). A
+  read of patch 0006 against exllamav3's sources found the same conventions on every axis.
+- The error grows with depth. Per projection, `tr((W−Q)H(W−Q)ᵀ)/tr(WHWᵀ)` has median 0.015–0.02 in layers 1–17,
+  0.5 by layer 34 and above 1 in layers 38–39, where 107/162 and 114/225 projections are worse than zero weights;
+  outliers reach 729 (layer 8 expert 172) and 3.1×10⁵ (layer 39 expert 108). Int3 has no matching per-layer record
+  to compare. Whether the deep-layer error alone breaks the model, or the Metal kernel also differs on real data,
+  needs one check: Metal's projection of a real expert against the reference decode.
+
+The v3 rows were staged on BOTTOM and passed `sha256sum -c` against [`rows.sha256`](rows.sha256). BOTTOM's older
+`eq/runs/fp8-calib-rows` capture is **not admitted** (Desk decision, 12 November; its
+[saved report](bottom-rows-preflight.json) misses layer 36 experts 188 and 243 beyond the twelve approved exceptions).
+
+## The GPU job: ~3.5 hours on one GB10 planned, 1.78 hours run
 
 [`gb10-exl3.sh`](gb10-exl3.sh) runs [`encode.py`](encode.py) on BOTTOM: 5,900 experts × gate, up and down = 17,700
 projections at card 39's 0.6 s each (FP8 load and float64 scoring included) is 2.95 h, plus the 40 layers' rows
@@ -48,24 +62,23 @@ Once the rows are staged and the Desk opens the window:
 results/smaller-builds/gb10-start.sh <sha> results/exl3-build/gb10-exl3.sh   # /work/out/exl3/layer-LL.*
 ```
 
-`job fetch <id>` returns `/work/out` as a tar stream. Preserve completed pairs and `recipe.json` in the host's
-pilot `exl3-done/` before a new job; `/work` is container-local, not a host directory. The launcher copies those
-pairs into the new job, and the encoder validates the recipe and checksums before skipping finished layers.
+Job `bottom-ccd34101e181` ran `gb10-exl3.sh` at `398b1a0` on 13 November 08:37–10:24 HKT and exited 0: 40 layers,
+5,900 experts, 1.78 hours of encoding ([`encode.log`](encode.log); [`exl3.sha256`](exl3.sha256) has its 40 shards).
+Its pairs and `recipe.json` are in BOTTOM's pilot `exl3-done/`. `job fetch` stops at 1 GiB, so the shards came to
+the Mac as base64 through `bottom shell` in 12-character lines (longer lines get secret-like runs redacted), each
+checked against `exl3.sha256`.
 
-## After the job, on the Mac
+## On the Mac
 
-1. Run `python3 results/exl3-build/assemble.py TRIM_BF16 ENCODED_LAYERS NEW_CHECKPOINT`. It requires every saved
+1. `python3 results/exl3-build/assemble.py TRIM_BF16 ENCODED_LAYERS NEW_CHECKPOINT` requires every saved
    layer/record pair, validates the EXL3 3.0 tensor geometry and mul1 marker, preserves dense tensors, codec and
-   pruning/head metadata, removes the old routed-expert tensors, and writes the new index last. Its printed GiB
-   is weights plus codec; the planned full-build size above is not a measurement.
-2. Build the Mac engine with `scripts/build-engine.sh --weights nvfp4`. Patch `0006-exl3-routed-experts.patch`
-   admits mul1 EXL3 3.0 expert groups, preserves compact router slots, and runs gate/up, SwiGLU and down through
-   core's indexed Metal projection. The full checkpoint still needs an end-to-end speech run after encoding.
-3. Speak and score the 24 texts, salts 0 and 1, both voices, with `../smaller-builds/measure.py`, add the build to
-   `builds.json` and name the winner with `pick.py`; add it to the listening page next to int3 and `t5900`, with
-   built-in `medium-05` (int3's runaway).
+   pruning/head metadata, removes the old routed-expert tensors, and writes the new index last. On this job's
+   layers it printed 5,900 experts, 13.5106 GiB.
+2. `scripts/build-engine.sh --weights nvfp4` applies patch `0006-exl3-routed-experts.patch`, which admits mul1
+   EXL3 3.0 expert groups and runs gate/up, SwiGLU and down through core's indexed Metal projection.
+3. `../smaller-builds/measure.py` speak (both voices, salts 0 and 1), score, report and listen, as card 37.
 
-## Verification before scheduling
+## Verification
 
 - Card 39's vendored source and extension match the SHA-256 values in `exllamav3-env.sh`.
 - All 123 local calibration files pass `rows.sha256`; the staged copy on BOTTOM passed the same check.
@@ -77,9 +90,12 @@ pairs into the new job, and the encoder validates the recipe and checksums befor
   executable passed NVFP4, int3 and EXL3 checks for decode and three-row prompt shapes. EXL3 checked 16,384
   values each for gate, up and SwiGLU and 65,536 down values against scalar trellis decode; maximum absolute
   difference was zero. This synthetic gate is not an exllamav3-produced full-model speech measurement.
-- No `builds.json` entry, winner, measured size or listening sample has been invented for the unbuilt model.
-- `nice -n 10 scripts/test.sh`: passed (91 recipe tests, two skipped; eight smaller-build tests; four LDLQ
-  tests; full-build tests; streaming and GPU-harness self-tests). Job shell syntax checks passed.
+- The engine at `fb8fdf3` + 6 patches built (`tensorfold-native` `727b6a8a…`), served the assembled checkpoint and
+  spoke all 96 takes; `measure.py report` rewrote `builds.json` with the earlier builds' figures unchanged except
+  `t5900`/`trim`/`trim-bf16` built-in WER mean 0.06911 → 0.0691 (rounding of the same scores).
+- `nice -n 10 scripts/test.sh`: passed (91 recipe tests, two skipped; nine smaller-build tests, one checking
+  `builds.json`'s winner against `pick.py`; four LDLQ tests; ten full-build tests; streaming and GPU-harness
+  self-tests). Job shell syntax checks passed.
   Input-identity smoke rejects mismatched calibration/checkpoint config before creating output.
 - Changed-row resume regression failed before the fix (no rejection) and passes with actual-row hashing.
 - `talia health` after the CPU work reported gateway active, zero failed units and DeepSeek listed; its iMessage

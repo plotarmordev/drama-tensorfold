@@ -3,14 +3,15 @@
   {
    "arm": "ref",
    "salt": 0,
-   "load_s": 10.023,
-   "peak_bytes": 17332691956,
+   "load_s": 10.027,
+   "peak_bytes": 17370440692,
+   "repeat_identical": true,
    "takes": [
     {
      "arm": "ref",
      "salt": 0,
      "item": "short-01",
-     "seconds": 39.417,
+     "seconds": 39.606,
      "bytes": 258092,
      "finish": "stop"
     },
@@ -18,7 +19,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-02",
-     "seconds": 39.175,
+     "seconds": 39.366,
      "bytes": 237612,
      "finish": "stop"
     },
@@ -26,7 +27,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-03",
-     "seconds": 38.439,
+     "seconds": 38.607,
      "bytes": 184364,
      "finish": "stop"
     },
@@ -34,7 +35,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-04",
-     "seconds": 39.304,
+     "seconds": 39.5,
      "bytes": 245804,
      "finish": "stop"
     },
@@ -42,7 +43,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-05",
-     "seconds": 40.247,
+     "seconds": 40.533,
      "bytes": 311340,
      "finish": "stop"
     },
@@ -50,7 +51,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-06",
-     "seconds": 38.962,
+     "seconds": 39.196,
      "bytes": 217132,
      "finish": "stop"
     },
@@ -58,7 +59,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-07",
-     "seconds": 42.043,
+     "seconds": 42.276,
      "bytes": 438316,
      "finish": "stop"
     },
@@ -66,7 +67,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "short-08",
-     "seconds": 40.232,
+     "seconds": 40.495,
      "bytes": 307244,
      "finish": "stop"
     },
@@ -74,7 +75,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-01",
-     "seconds": 48.442,
+     "seconds": 48.685,
      "bytes": 880684,
      "finish": "stop"
     },
@@ -82,7 +83,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-02",
-     "seconds": 51.307,
+     "seconds": 51.626,
      "bytes": 1093676,
      "finish": "stop"
     },
@@ -90,7 +91,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-03",
-     "seconds": 48.13,
+     "seconds": 48.407,
      "bytes": 872492,
      "finish": "stop"
     },
@@ -98,7 +99,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-04",
-     "seconds": 47.723,
+     "seconds": 47.973,
      "bytes": 831532,
      "finish": "stop"
     },
@@ -106,7 +107,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-05",
-     "seconds": 50.592,
+     "seconds": 50.865,
      "bytes": 1044524,
      "finish": "stop"
     },
@@ -114,7 +115,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-06",
-     "seconds": 49.929,
+     "seconds": 50.154,
      "bytes": 991276,
      "finish": "stop"
     },
@@ -122,7 +123,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-07",
-     "seconds": 51.244,
+     "seconds": 51.52,
      "bytes": 1101868,
      "finish": "stop"
     },
@@ -130,7 +131,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "medium-08",
-     "seconds": 45.576,
+     "seconds": 45.793,
      "bytes": 667692,
      "finish": "stop"
     },
@@ -138,7 +139,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-01",
-     "seconds": 64.484,
+     "seconds": 64.813,
      "bytes": 1998892,
      "finish": "stop"
     },
@@ -146,7 +147,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-02",
-     "seconds": 69.612,
+     "seconds": 70.001,
      "bytes": 2388012,
      "finish": "stop"
     },
@@ -154,7 +155,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-03",
-     "seconds": 60.672,
+     "seconds": 61.852,
      "bytes": 1728556,
      "finish": "stop"
     },
@@ -162,7 +163,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-04",
-     "seconds": 66.517,
+     "seconds": 67.797,
      "bytes": 2150444,
      "finish": "stop"
     },
@@ -170,7 +171,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-05",
-     "seconds": 65.423,
+     "seconds": 65.849,
      "bytes": 2084908,
      "finish": "stop"
     },
@@ -178,7 +179,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-06",
-     "seconds": 68.796,
+     "seconds": 69.245,
      "bytes": 2334764,
      "finish": "stop"
     },
@@ -186,7 +187,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-07",
-     "seconds": 66.903,
+     "seconds": 67.334,
      "bytes": 2199596,
      "finish": "stop"
     },
@@ -194,7 +195,7 @@
      "arm": "ref",
      "salt": 0,
      "item": "long-08",
-     "seconds": 63.733,
+     "seconds": 64.176,
      "bytes": 1966124,
      "finish": "stop"
     }
@@ -204,13 +205,14 @@
    "arm": "ref",
    "salt": 1,
    "load_s": 10.006,
-   "peak_bytes": 17332691956,
+   "peak_bytes": 17370440692,
+   "repeat_identical": true,
    "takes": [
     {
      "arm": "ref",
      "salt": 1,
      "item": "short-01",
-     "seconds": 40.126,
+     "seconds": 40.304,
      "bytes": 303148,
      "finish": "stop"
     },
@@ -218,7 +220,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-02",
-     "seconds": 40.067,
+     "seconds": 40.257,
      "bytes": 303148,
      "finish": "stop"
     },
@@ -226,7 +228,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-03",
-     "seconds": 38.354,
+     "seconds": 38.56,
      "bytes": 180268,
      "finish": "stop"
     },
@@ -234,7 +236,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-04",
-     "seconds": 38.975,
+     "seconds": 39.146,
      "bytes": 221228,
      "finish": "stop"
     },
@@ -242,7 +244,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-05",
-     "seconds": 39.804,
+     "seconds": 39.991,
      "bytes": 274476,
      "finish": "stop"
     },
@@ -250,7 +252,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-06",
-     "seconds": 39.614,
+     "seconds": 39.792,
      "bytes": 266284,
      "finish": "stop"
     },
@@ -258,7 +260,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-07",
-     "seconds": 40.918,
+     "seconds": 41.139,
      "bytes": 352300,
      "finish": "stop"
     },
@@ -266,7 +268,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "short-08",
-     "seconds": 40.33,
+     "seconds": 40.505,
      "bytes": 311340,
      "finish": "stop"
     },
@@ -274,7 +276,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-01",
-     "seconds": 49.729,
+     "seconds": 49.691,
      "bytes": 958508,
      "finish": "stop"
     },
@@ -282,7 +284,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-02",
-     "seconds": 51.869,
+     "seconds": 51.437,
      "bytes": 1060908,
      "finish": "stop"
     },
@@ -290,7 +292,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-03",
-     "seconds": 48.382,
+     "seconds": 49.022,
      "bytes": 860204,
      "finish": "stop"
     },
@@ -298,7 +300,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-04",
-     "seconds": 48.487,
+     "seconds": 49.231,
      "bytes": 892972,
      "finish": "stop"
     },
@@ -306,7 +308,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-05",
-     "seconds": 51.586,
+     "seconds": 51.882,
      "bytes": 1122348,
      "finish": "stop"
     },
@@ -314,7 +316,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-06",
-     "seconds": 49.169,
+     "seconds": 49.504,
      "bytes": 933932,
      "finish": "stop"
     },
@@ -322,7 +324,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-07",
-     "seconds": 49.776,
+     "seconds": 50.013,
      "bytes": 987180,
      "finish": "stop"
     },
@@ -330,7 +332,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "medium-08",
-     "seconds": 46.111,
+     "seconds": 46.415,
      "bytes": 712748,
      "finish": "stop"
     },
@@ -338,7 +340,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-01",
-     "seconds": 66.168,
+     "seconds": 66.673,
      "bytes": 2134060,
      "finish": "stop"
     },
@@ -346,7 +348,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-02",
-     "seconds": 69.875,
+     "seconds": 70.341,
      "bytes": 2412588,
      "finish": "stop"
     },
@@ -354,7 +356,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-03",
-     "seconds": 63.741,
+     "seconds": 64.141,
      "bytes": 1966124,
      "finish": "stop"
     },
@@ -362,7 +364,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-04",
-     "seconds": 65.891,
+     "seconds": 66.367,
      "bytes": 2105388,
      "finish": "stop"
     },
@@ -370,7 +372,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-05",
-     "seconds": 68.547,
+     "seconds": 69.069,
      "bytes": 2326572,
      "finish": "stop"
     },
@@ -378,7 +380,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-06",
-     "seconds": 72.791,
+     "seconds": 73.315,
      "bytes": 2641964,
      "finish": "stop"
     },
@@ -386,7 +388,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-07",
-     "seconds": 67.457,
+     "seconds": 67.778,
      "bytes": 2236460,
      "finish": "stop"
     },
@@ -394,7 +396,7 @@
      "arm": "ref",
      "salt": 1,
      "item": "long-08",
-     "seconds": 65.406,
+     "seconds": 65.504,
      "bytes": 2080812,
      "finish": "stop"
     }
@@ -403,14 +405,15 @@
   {
    "arm": "builtin",
    "salt": 0,
-   "load_s": 10.007,
-   "peak_bytes": 16824089716,
+   "load_s": 15.012,
+   "peak_bytes": 16836672628,
+   "repeat_identical": true,
    "takes": [
     {
      "arm": "builtin",
      "salt": 0,
      "item": "short-01",
-     "seconds": 33.908,
+     "seconds": 33.635,
      "bytes": 4194348,
      "finish": "length"
     },
@@ -418,7 +421,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-02",
-     "seconds": 2.402,
+     "seconds": 2.35,
      "bytes": 200748,
      "finish": "stop"
     },
@@ -426,7 +429,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-03",
-     "seconds": 1.812,
+     "seconds": 1.789,
      "bytes": 139308,
      "finish": "stop"
     },
@@ -434,7 +437,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-04",
-     "seconds": 2.392,
+     "seconds": 2.367,
      "bytes": 204844,
      "finish": "stop"
     },
@@ -442,7 +445,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-05",
-     "seconds": 2.825,
+     "seconds": 2.78,
      "bytes": 249900,
      "finish": "stop"
     },
@@ -450,7 +453,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-06",
-     "seconds": 2.149,
+     "seconds": 2.124,
      "bytes": 172076,
      "finish": "stop"
     },
@@ -458,7 +461,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-07",
-     "seconds": 2.992,
+     "seconds": 2.969,
      "bytes": 262188,
      "finish": "stop"
     },
@@ -466,7 +469,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "short-08",
-     "seconds": 4.655,
+     "seconds": 4.59,
      "bytes": 479276,
      "finish": "stop"
     },
@@ -474,7 +477,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-01",
-     "seconds": 7.206,
+     "seconds": 7.138,
      "bytes": 745516,
      "finish": "stop"
     },
@@ -482,7 +485,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-02",
-     "seconds": 8.59,
+     "seconds": 8.509,
      "bytes": 909356,
      "finish": "stop"
     },
@@ -490,7 +493,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-03",
-     "seconds": 7.066,
+     "seconds": 7.047,
      "bytes": 745516,
      "finish": "stop"
     },
@@ -498,7 +501,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-04",
-     "seconds": 6.768,
+     "seconds": 6.714,
      "bytes": 700460,
      "finish": "stop"
     },
@@ -506,7 +509,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-05",
-     "seconds": 34.337,
+     "seconds": 34.125,
      "bytes": 4194348,
      "finish": "length"
     },
@@ -514,7 +517,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-06",
-     "seconds": 7.297,
+     "seconds": 7.258,
      "bytes": 757804,
      "finish": "stop"
     },
@@ -522,7 +525,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-07",
-     "seconds": 7.772,
+     "seconds": 7.703,
      "bytes": 823340,
      "finish": "stop"
     },
@@ -530,7 +533,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "medium-08",
-     "seconds": 6.703,
+     "seconds": 6.674,
      "bytes": 696364,
      "finish": "stop"
     },
@@ -538,7 +541,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-01",
-     "seconds": 16.404,
+     "seconds": 16.279,
      "bytes": 1794092,
      "finish": "stop"
     },
@@ -546,7 +549,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-02",
-     "seconds": 35.283,
+     "seconds": 35.171,
      "bytes": 4194348,
      "finish": "length"
     },
@@ -554,7 +557,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-03",
-     "seconds": 13.052,
+     "seconds": 12.975,
      "bytes": 1396780,
      "finish": "stop"
     },
@@ -562,7 +565,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-04",
-     "seconds": 23.047,
+     "seconds": 22.911,
      "bytes": 2629676,
      "finish": "stop"
     },
@@ -570,7 +573,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-05",
-     "seconds": 18.415,
+     "seconds": 18.359,
      "bytes": 2060332,
      "finish": "stop"
     },
@@ -578,7 +581,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-06",
-     "seconds": 17.676,
+     "seconds": 17.556,
      "bytes": 1953836,
      "finish": "stop"
     },
@@ -586,7 +589,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-07",
-     "seconds": 20.886,
+     "seconds": 20.734,
      "bytes": 2371628,
      "finish": "stop"
     },
@@ -594,7 +597,7 @@
      "arm": "builtin",
      "salt": 0,
      "item": "long-08",
-     "seconds": 13.854,
+     "seconds": 13.796,
      "bytes": 1490988,
      "finish": "stop"
     }
@@ -603,14 +606,15 @@
   {
    "arm": "builtin",
    "salt": 1,
-   "load_s": 10.005,
-   "peak_bytes": 16824089716,
+   "load_s": 10.01,
+   "peak_bytes": 16836672628,
+   "repeat_identical": true,
    "takes": [
     {
      "arm": "builtin",
      "salt": 1,
      "item": "short-01",
-     "seconds": 3.039,
+     "seconds": 2.989,
      "bytes": 282668,
      "finish": "stop"
     },
@@ -618,7 +622,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-02",
-     "seconds": 2.655,
+     "seconds": 2.62,
      "bytes": 237612,
      "finish": "stop"
     },
@@ -626,7 +630,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-03",
-     "seconds": 1.652,
+     "seconds": 1.622,
      "bytes": 118828,
      "finish": "stop"
     },
@@ -634,7 +638,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-04",
-     "seconds": 2.56,
+     "seconds": 2.515,
      "bytes": 229420,
      "finish": "stop"
     },
@@ -642,7 +646,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-05",
-     "seconds": 3.095,
+     "seconds": 3.038,
      "bytes": 286764,
      "finish": "stop"
     },
@@ -650,7 +654,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-06",
-     "seconds": 2.444,
+     "seconds": 2.384,
      "bytes": 208940,
      "finish": "stop"
     },
@@ -658,7 +662,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-07",
-     "seconds": 3.366,
+     "seconds": 3.317,
      "bytes": 311340,
      "finish": "stop"
     },
@@ -666,7 +670,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "short-08",
-     "seconds": 2.992,
+     "seconds": 2.941,
      "bytes": 270380,
      "finish": "stop"
     },
@@ -674,7 +678,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-01",
-     "seconds": 7.071,
+     "seconds": 6.927,
      "bytes": 729132,
      "finish": "stop"
     },
@@ -682,7 +686,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-02",
-     "seconds": 8.881,
+     "seconds": 8.735,
      "bytes": 946220,
      "finish": "stop"
     },
@@ -690,7 +694,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-03",
-     "seconds": 6.431,
+     "seconds": 6.322,
      "bytes": 663596,
      "finish": "stop"
     },
@@ -698,7 +702,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-04",
-     "seconds": 7.243,
+     "seconds": 7.121,
      "bytes": 757804,
      "finish": "stop"
     },
@@ -706,7 +710,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-05",
-     "seconds": 7.308,
+     "seconds": 7.176,
      "bytes": 757804,
      "finish": "stop"
     },
@@ -714,7 +718,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-06",
-     "seconds": 9.097,
+     "seconds": 8.961,
      "bytes": 983084,
      "finish": "stop"
     },
@@ -722,7 +726,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-07",
-     "seconds": 7.543,
+     "seconds": 7.414,
      "bytes": 794668,
      "finish": "stop"
     },
@@ -730,7 +734,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "medium-08",
-     "seconds": 7.859,
+     "seconds": 7.732,
      "bytes": 839724,
      "finish": "stop"
     },
@@ -738,7 +742,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-01",
-     "seconds": 20.596,
+     "seconds": 20.255,
      "bytes": 2322476,
      "finish": "stop"
     },
@@ -746,7 +750,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-02",
-     "seconds": 18.457,
+     "seconds": 18.178,
      "bytes": 2048044,
      "finish": "stop"
     },
@@ -754,7 +758,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-03",
-     "seconds": 35.122,
+     "seconds": 34.632,
      "bytes": 4194348,
      "finish": "length"
     },
@@ -762,7 +766,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-04",
-     "seconds": 16.415,
+     "seconds": 16.172,
      "bytes": 1789996,
      "finish": "stop"
     },
@@ -770,7 +774,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-05",
-     "seconds": 18.218,
+     "seconds": 17.954,
      "bytes": 2031660,
      "finish": "stop"
     },
@@ -778,7 +782,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-06",
-     "seconds": 15.054,
+     "seconds": 14.816,
      "bytes": 1617964,
      "finish": "stop"
     },
@@ -786,7 +790,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-07",
-     "seconds": 17.673,
+     "seconds": 17.395,
      "bytes": 1962028,
      "finish": "stop"
     },
@@ -794,7 +798,7 @@
      "arm": "builtin",
      "salt": 1,
      "item": "long-08",
-     "seconds": 13.101,
+     "seconds": 12.887,
      "bytes": 1392684,
      "finish": "stop"
     }
@@ -804,23 +808,25 @@
  "report": [
   {
    "arm": "ref",
-   "load_s": 10.014,
-   "peak_gib": 16.14,
+   "load_s": 10.017,
+   "peak_gib": 16.18,
    "takes": 48,
-   "seconds_mean": 51.877,
-   "seconds_p50": 49.729,
-   "seconds_total": 2490.1,
-   "capped": 0
+   "seconds_mean": 52.203,
+   "seconds_p50": 49.691,
+   "seconds_total": 2505.7,
+   "capped": 0,
+   "repeat_identical": true
   },
   {
    "arm": "builtin",
-   "load_s": 10.006,
-   "peak_gib": 15.67,
+   "load_s": 12.511,
+   "peak_gib": 15.68,
    "takes": 48,
-   "seconds_mean": 11.153,
-   "seconds_p50": 7.543,
-   "seconds_total": 535.4,
-   "capped": 4
+   "seconds_mean": 11.034,
+   "seconds_p50": 7.414,
+   "seconds_total": 529.7,
+   "capped": 4,
+   "repeat_identical": true
   }
  ]
 }

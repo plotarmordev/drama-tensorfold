@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netrunner <299844489+plotarmordev@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 23:10:49 +0800
+Subject: [PATCH] server: a speech request holds a shared lock on
+ /tmp/tensorfold-speech.lock and stamps /tmp/tensorfold-speech.lock.stamp
+
+The speech side of TensorFold #49 as plotarmordev/TensorFold main carries it, so a render or
+benchmark on the same Mac can give way to a voice. Speech blocks only behind batch work's brief
+exclusive probe; the lock file is 0644 and opened read-only, the stamp 0666, so a speech server
+and a render running as different users share both.
+---
+ zig/src/server/gpu_turn.zig | 136 ++++++++++++++++++++++++++++++++++++
+ zig/src/server/root.zig     |   1 +
+ zig/src/server/speech.zig   |   4 ++
+ 3 files changed, 141 insertions(+)
+ create mode 100644 zig/src/server/gpu_turn.zig
+
+diff --git a/zig/src/server/gpu_turn.zig b/zig/src/server/gpu_turn.zig
+new file mode 100644
+index 000000000..518c82eed
+--- /dev/null
++++ b/zig/src/server/gpu_turn.zig
+@@ -0,0 +1,136 @@
++//! Speech holds a shared flock on `path` and stamps `path ++ ".stamp"`, so long GPU work on this machine (a
++//! render or benchmark) can probe for a voice, give way, and tell whether one overlapped its timings.
++//! The speech side of TensorFold #49 (plotarmordev/TensorFold main); the batch side lives in the other process.
++const std = @import("std");
++
++pub const path = "/tmp/tensorfold-speech.lock";
++
++/// Shared hold; best effort only when the lock file cannot be opened. It blocks only behind batch work's exclusive
++/// probes, which batch work takes with tryLock and releases at once, never across GPU work.
++pub fn speak(io: std.Io, at: []const u8) ?std.Io.File {
++    defer stamp(io, at);
++    const file = open(io, at) catch return null;
++    file.lock(io, .shared) catch {
++        file.close(io);
++        return null;
++    };
++    return file;
++}
++
++pub fn done(io: std.Io, held: ?std.Io.File) void {
++    if (held) |file| file.close(io);
++}
++
++/// Read-only so the speech server's and a render's users can share one file; flock needs no write access.
++fn open(io: std.Io, at: []const u8) !std.Io.File {
++    const dir = std.Io.Dir.cwd();
++    return dir.openFile(io, at, .{}) catch |e| switch (e) {
++        error.FileNotFound => {
++            const file = try dir.createFile(io, at, .{ .read = true, .truncate = false });
++            file.setPermissions(io, .fromMode(0o644)) catch {}; // past the creator's umask, so the other user opens it
++            return file;
++        },
++        else => e,
++    };
++}
++
++fn stamp(io: std.Io, at: []const u8) void {
++    const file = marker(io, at) catch return;
++    defer file.close(io);
++    var bytes: [16]u8 = undefined;
++    io.random(&bytes);
++    file.writePositionalAll(io, &bytes, 0) catch {
++        file.setLength(io, 0) catch {}; // leave an unreadable generation rather than certify the stale one
++    };
++}
++
++// Separate from the read-only flock: both users can publish activity without replacing a live lock's inode.
++fn marker(io: std.Io, at: []const u8) !std.Io.File {
++    var buf: [std.fs.max_path_bytes]u8 = undefined;
++    const name = try std.fmt.bufPrint(&buf, "{s}.stamp", .{at});
++    const dir = std.Io.Dir.cwd();
++    return dir.openFile(io, name, .{ .mode = .read_write, .follow_symlinks = false }) catch |e| switch (e) {
++        error.FileNotFound => {
++            const file = dir.createFile(io, name, .{ .read = true, .exclusive = true }) catch |create_err| {
++                if (create_err == error.PathAlreadyExists) return dir.openFile(io, name, .{ .mode = .read_write, .follow_symlinks = false });
++                return create_err;
++            };
++            errdefer file.close(io);
++            try file.setPermissions(io, .fromMode(0o666));
++            var bytes: [16]u8 = undefined;
++            io.random(&bytes);
++            try file.writePositionalAll(io, &bytes, 0);
++            return file;
++        },
++        else => e,
++    };
++}
++
++/// Whether a batch process's nonblocking exclusive probe would get the turn.
++fn probeFree(io: std.Io, file: std.Io.File) !bool {
++    const got = try file.tryLock(io, .exclusive);
++    if (got) file.unlock(io);
++    return got;
++}
++
++fn readStamp(io: std.Io, dir: std.Io.Dir) ![16]u8 {
++    var bytes: [16]u8 = undefined;
++    const file = try dir.openFile(io, "speech.lock.stamp", .{});
++    defer file.close(io);
++    try std.testing.expectEqual(bytes.len, try file.readPositionalAll(io, &bytes, 0));
++    return bytes;
++}
++
++test "every voice holds the turn against an exclusive probe and stamps a new generation, in files every user opens" {
++    const io = std.testing.io;
++    var tmp = std.testing.tmpDir(.{});
++    defer tmp.cleanup();
++    const at = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
++    defer std.testing.allocator.free(at);
++    const lock = try std.fs.path.join(std.testing.allocator, &.{ at, "speech.lock" });
++    defer std.testing.allocator.free(lock);
++
++    const first = speak(io, lock) orelse return error.NoHold;
++    const probe = try tmp.dir.openFile(io, "speech.lock", .{});
++    defer probe.close(io);
++    try std.testing.expectEqual(@as(u32, 0o644), (try probe.stat(io)).permissions.toMode() & 0o777);
++    const stamp_file = try tmp.dir.openFile(io, "speech.lock.stamp", .{});
++    try std.testing.expectEqual(@as(u32, 0o666), (try stamp_file.stat(io)).permissions.toMode() & 0o777);
++    stamp_file.close(io);
++    const after_first = try readStamp(io, tmp.dir);
++
++    const second = speak(io, lock) orelse return error.NoHold; // two voices at once share the turn
++    try std.testing.expect(!std.mem.eql(u8, &after_first, &try readStamp(io, tmp.dir)));
++    try std.testing.expect(!try probeFree(io, probe));
++    done(io, first);
++    try std.testing.expect(!try probeFree(io, probe));
++    done(io, second);
++    try std.testing.expect(try probeFree(io, probe));
++}
++
++test "speech waits out a batch probe however long it is held" {
++    const io = std.testing.io;
++    var tmp = std.testing.tmpDir(.{});
++    defer tmp.cleanup();
++    const at = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
++    defer std.testing.allocator.free(at);
++    const lock = try std.fs.path.join(std.testing.allocator, &.{ at, "speech.lock" });
++    defer std.testing.allocator.free(lock);
++
++    const prober = try open(io, lock);
++    defer prober.close(io);
++    // a probe descheduled for 200 ms while speech arrives
++    try prober.lock(io, .exclusive);
++    const Release = struct {
++        fn run(file: std.Io.File) void {
++            std.Io.sleep(std.testing.io, .fromMilliseconds(200), .awake) catch {};
++            file.unlock(std.testing.io);
++        }
++    };
++    const thread = try std.Thread.spawn(.{}, Release.run, .{prober});
++    const turn = speak(io, lock);
++    thread.join();
++    const held = turn orelse return error.NoHold;
++    defer done(io, held);
++    try std.testing.expect(!try probeFree(io, prober));
++}
+diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
+index cad114521..d48f6e17c 100644
+--- a/zig/src/server/root.zig
++++ b/zig/src/server/root.zig
+@@ -39,6 +39,7 @@ test {
+     _ = @import("done_times_test.zig");
+     _ = @import("drain_test.zig");
+     _ = @import("keepalive_test.zig");
++    _ = @import("gpu_turn.zig");
+     _ = @import("idle_unload.zig");
+     _ = @import("idle_unload_test.zig");
+     _ = @import("wait_reason_test.zig");
+diff --git a/zig/src/server/speech.zig b/zig/src/server/speech.zig
+index b9a49c74d..238da015f 100644
+--- a/zig/src/server/speech.zig
++++ b/zig/src/server/speech.zig
+@@ -19,6 +19,7 @@ const log = @import("log.zig");
+ const clock = @import("clock.zig");
+ const wait = @import("wait_reason.zig");
+ const Mailbox = @import("mailbox.zig").Mailbox;
++const gpu_turn = @import("gpu_turn.zig");
+ const Server = @import("server.zig").Server;
+ const Conn = @import("http_conn.zig").Conn;
+ const Value = json.Value;
+@@ -164,6 +165,9 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         }
+         if (srv.speech_inflight.cmpxchgWeak(held, held + 1, .acq_rel, .acquire)) |now| held = now else break;
+     }
++    // a render or benchmark on this GPU pauses at its next short command buffer until this voice has finished
++    const turn = gpu_turn.speak(srv.io, gpu_turn.path);
++    defer gpu_turn.done(srv.io, turn);
+     var lane_released = false;
+     defer releaseLane(srv, &lane_released);
+     const pcm_len = std.math.mul(usize, sp.max_frames, sp.frame_length) catch 0;
+-- 
+2.54.0 (Apple Git-157)
+

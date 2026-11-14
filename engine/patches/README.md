@@ -37,6 +37,7 @@ sampling controls ([#1277](https://github.com/ashhart/TensorFold/pull/1277)) and
 | [`0003-drama3-compact-lm-head.patch`](../nvfp4/macos/patches/0003-drama3-compact-lm-head.patch) | Load a compact lm_head listed by `drama_head_rows` ([`recipe/trim_head.py`](../../recipe/trim_head.py)) | this repo |
 | [`0004-drama-read-BF16-codec-checkpoints.patch`](../nvfp4/macos/patches/0004-drama-read-BF16-codec-checkpoints.patch) | Read a BF16 `codec.pth`, widened exactly to FP32 | this repo |
 | [`0005-int3-routed-experts.patch`](../nvfp4/macos/patches/0005-int3-routed-experts.patch) | Int3 routed experts (3.5 bits) unpacked in `d3_nvfp4_up/down`, with `quant_check` device cases; NVFP4 layers unchanged | this repo |
+| [`0007-speech-holds-gpu-turn.patch`](../nvfp4/macos/patches/0007-speech-holds-gpu-turn.patch) | A speech request holds a shared flock on `/tmp/tensorfold-speech.lock` and stamps `/tmp/tensorfold-speech.lock.stamp` (0644 and 0666, so users share them), so a render on the same Mac gives way to the voice | [plotarmordev/TensorFold#49](https://github.com/plotarmordev/TensorFold/pull/49), speech side as fork main carries it |
 
 The [Mac qualification receipt](../../results/macos-nvfp4.json) separates observed GPU/model results,
 the initial failed fixture and focused correction, and the final CPU-only CLI integration build.

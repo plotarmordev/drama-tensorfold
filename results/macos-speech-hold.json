@@ -1,0 +1,69 @@
+{
+ "scope": "Mac NVFP4 engine fb8fdf3d + patches 0001-0006 (the live engine) against the same plus patch 0007 (TensorFold #49's speech hold): every corpus take byte for byte on the int3 checkpoint, and the speech lock seen from a separate process. No speed or quality claim.",
+ "platform": {
+  "observed_gpu": "Apple M5 Ultra",
+  "ram_gib": 256
+ },
+ "engines": {
+  "old": {
+   "base": "fb8fdf3d8501255058a3221452164c56cb9a57ca",
+   "patches": 6,
+   "head": "7c88ec4c25a83a3a81e9e748e46d6a97cd44ec29",
+   "native_sha256": "8034b39fe2e17a5f4e9b7d90a2fb38674ffec016a2c611058662a44c3b77b511"
+  },
+  "new": {
+   "base": "fb8fdf3d8501255058a3221452164c56cb9a57ca",
+   "patches": 7,
+   "head": "794f06873181b8174c81d3df66b8d6f1be3d929c",
+   "build": "scripts/build-engine.sh --weights nvfp4",
+   "native_sha256": "966a5b6d3e1a1e87fcaca15666629850cf439da603a75f47699aa2ee5a830dc1"
+  }
+ },
+ "checkpoint": "drama3-trim-bf16-int3-v1/model, manifest recipe/checksums/trim-bf16-int3.sha256 verified at start (--weights int3-5900)",
+ "launch": "recipe/pilot_macos.py --weights int3-5900 --native-bin BIN --checkpoint DIR -- --cfg-gamma 1.5 --cfg-batched",
+ "workload": "bench/corpus_capture.py, builtin voice, 24 corpus items: 1 pass on the old engine, 2 on the new",
+ "requests_new": 48,
+ "http_200_new": 48,
+ "old_vs_new_pcm_identical": {
+  "pass_0": "24/24",
+  "pass_1": "24/24"
+ },
+ "audio_s_per_pass": 311.7,
+ "speech_lock": {
+  "probe": "a separate process: open /tmp/tensorfold-speech.lock read-only, flock LOCK_EX|LOCK_NB, unlock; read /tmp/tensorfold-speech.lock.stamp; every 50 ms through the new engine's run (load, 48 requests, stop)",
+  "probes": 2415,
+  "contended": 2303,
+  "stamp_changes": 48,
+  "modes": {
+   "/tmp/tensorfold-speech.lock": "0o644",
+   "/tmp/tensorfold-speech.lock.stamp": "0o666"
+  },
+  "note": "48 stamp changes for 48 requests. Uncontended probes include the model load, the stop and the gaps between requests. Cross-user access rests on the modes (lock opened read-only at 0644, stamp written at 0666); a second user was not available to run the probe."
+ },
+ "pcm_sha256": {
+  "short-01": "897fc90c036eb415456c93357d9294ef85792bad855f67ca9de034205358b2d6",
+  "short-02": "e6ce65c3466147c56845e80034d015ca4470e5dec8cb54ef3866a7a1833dc990",
+  "short-03": "6f383cfed6f42583e9670b5994b5ca39e246347b137fc28e797c3f6b1ca99abb",
+  "short-04": "a34dbf6029ba68ba5f7f30f74b38e42ec4cc8bf9938031ddb985e5ff7b59efe7",
+  "short-05": "37e0751d9f46bfd462db5d43642299c0ec31c99b1329ca2a5ccce4c114a3f64e",
+  "short-06": "b49df173ce37e927ad6a3a3edc6fbe1fb38f6a9375ae0669e969263095300706",
+  "short-07": "37a8d98a1286eddaa1604d98de76fbeed6cdbfe0d26abc5e8e885568b6c23b9a",
+  "short-08": "4f341573cba7a62f7baa724bc908e1303a51a25cd30cab1c0b844ec3c8746080",
+  "medium-01": "69466d13ee1e2458e850d5fd418c5d240da363803aae913b5d253b6ea9af2a6c",
+  "medium-02": "00e671224f33fa5a07ddbe4989d25b541019359dacd9987e789e04cc397247cc",
+  "medium-03": "3f1922ae0c8fc379f677dc23fc3314520622d0312d357704f3ff4207c82e9e8d",
+  "medium-04": "f7620a9430813d6036fa39f4aeb58514184a2f4256d23ebf4a652336773e75c4",
+  "medium-05": "0082c9b5e8c8415e9b4ca45ec5ed9b451abc4d593cfe87c78d1cc1bafc194d62",
+  "medium-06": "4527f3b090b87423eebb92d7ffbe2bbd2a2b5a2b22fd852dcddde3600c41fb31",
+  "medium-07": "f61c67a632601dc4818605dedb12c4969730500e74fa46cf57ccbeae658e124a",
+  "medium-08": "8060fef500e7c489058c63b7e40e6c93d3c26f83078e81826360c8e164bdcb0a",
+  "long-01": "4425760ef3b86aed54009b4184f894e5193b683bf80c5966ced4bba2295223c2",
+  "long-02": "0c9f57ebaab86cf00bbbf3d04584684009e84b2a1ee71fdd65915aa6edceeb3b",
+  "long-03": "8b4f44023158c20aab6a00134ef0ae7446b2c9b45fffa43ca4b4410f2c89c4e8",
+  "long-04": "8d2772ac681658a76f22df72c7f76a20e18df768fcd2710634451a892b0a616e",
+  "long-05": "5d191494ca934bd4f3eeba9e2a2b34de344d39d57349649a48b8dd57328a167d",
+  "long-06": "3170e393ef2ddfc34e2a9ff679c34d302ef277be62f7a947dd52e775896e54a0",
+  "long-07": "2baf64067e232e17776021ae35592a25fe7e6aa5091b7a786609e6ae74f173b9",
+  "long-08": "38400d17ff96f106b36aa067e13a5af565684b658c77a3268f5d9523bfa63b73"
+ }
+}

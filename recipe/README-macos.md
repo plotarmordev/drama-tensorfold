@@ -221,6 +221,17 @@ ends (else spaces, never inside a tag or bracketed cue) and joined into one WAV 
 segment that ends in silence or at the frame cap does not end the reply. `X-Finish-Reason` is the last
 segment's; the reply's other engine headers come from one segment.
 
+The engine has one lane, and the server gives it out one segment at a time. A short note (under 400
+characters) that arrives during a long reply is spoken before that reply's next segment, so it waits for at
+most one segment (up to 500 characters) rather than the whole reply; long replies keep their audio and are
+spoken one after another. The log shows each take's start, with its characters and seconds queued, and its
+end, with seconds on the engine:
+
+```text
+take 1/1 start: 34 chars, 9.81 s queued
+take 1/1 end: 2.40 s on the engine
+```
+
 On an Apple M5 Ultra with the t5900-cover quant, a 2425-character English passage in the built-in voice
 gave six segments and 150 s of audio in 104 s; one segment fell silent twice (guard and redraw) and the
 next segments were still spoken. Without the guard the same passage gave 320 s, 170 s of it silence

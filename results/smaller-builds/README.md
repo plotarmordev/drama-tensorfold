@@ -60,8 +60,10 @@ speaker-similarity claim; speed is `mac-speed.json`'s alone.
 ## Published
 
 `trim-bf16-int3` replaced the NVFP4 build in
-[`plotarmordev/drama-3-NVFP4-Pruned-5900`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) on 15 Nov
-2026; the NVFP4 build stays at revision `4bfe2c32`, which `--weights nvfp4-5900` pins. On `mac-speed.json`'s run
+[`plotarmordev/drama-3-NVFP4-Pruned-5900`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) at
+revision `0a0afd5d` on 15 Nov 2026; the NVFP4 build stays at revision `4bfe2c32`, which `--weights nvfp4-5900`
+pins. On `mac-speed.json`'s run
 the int3 build's warm RTF was 0.511 median (0.503 whole pass) against `t5900`'s 0.620 (0.688) on a shared machine
 where `t5900` had measured 0.513 before ([`macos-nvfp4-quants.json`](../macos-nvfp4-quants.json)): no slower, not
-a measured speed-up. It has not been served on the Spark.
+a measured speed-up. It has not been served on the Spark, and the CUDA pin `b1f4b9b` refuses its BF16 codec
+(`codec_pth.zig` reads float32 only): the card points CUDA users to the previous revision's FP32 `codec.pth`.

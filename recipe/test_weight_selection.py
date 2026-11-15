@@ -119,7 +119,7 @@ class WeightSelectionTests(unittest.TestCase):
                 selection.prepare_checkpoint(mode, selection.checkpoint_path(other, None))
         self.download.assert_not_called()
 
-    def test_int3_is_never_downloaded_and_names_its_build_tool(self):
+    def test_int3_is_never_downloaded_and_names_its_release_and_build_tool(self):
         target = selection.checkpoint_path('int3-5900', None)
         provenance = selection.prepare_checkpoint('int3-5900', None)
         self.assertTrue(provenance['checkpoint_verified'])
@@ -127,8 +127,11 @@ class WeightSelectionTests(unittest.TestCase):
         for checkpoint in (selection.checkpoint_path('nvfp4-5900', None), None):
             if checkpoint is None:
                 target.rename(self.root / 'moved-int3')
-            with self.subTest(checkpoint=checkpoint), self.assertRaisesRegex(ValueError, 'splice_int3.py'):
+            with self.subTest(checkpoint=checkpoint), self.assertRaises(ValueError) as refused:
                 selection.prepare_checkpoint('int3-5900', checkpoint)
+            self.assertIn('hf download plotarmordev/drama-3-NVFP4-Pruned-5900 --revision '
+                          '0a0afd5d0825d39443e522b27aab6eb2f85287bd', str(refused.exception))
+            self.assertIn('splice_int3.py', str(refused.exception))
         self.assertFalse(target.exists())
         self.download.assert_not_called()
 

@@ -111,6 +111,11 @@ engine and that FP32 codec swapped in: warm p50 RTF 0.614 built-in and 0.809 ref
 codec, so I expect the same speed and memory; I have not yet timed the BF16 codec on a GB10. Its quality was
 measured on the Mac, with the BF16 codec, not on the GB10.
 
+[`results/gb10-default/gb10-default.sh`](results/gb10-default/gb10-default.sh) is the end-to-end check on a GB10:
+it builds the default engine with `scripts/build-engine.sh`, checks the weights against
+[`trim-bf16-int3.sha256`](recipe/checksums/trim-bf16-int3.sha256), serves them without systemd and asks for speech
+once. I have not run it on a GB10 yet.
+
 ### A reference voice
 
 The quants' results above were measured with a reference voice; requests in the built-in voice, like the two above,

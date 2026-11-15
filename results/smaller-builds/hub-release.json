@@ -120,8 +120,8 @@
   "not_checked": "No transcript: words were not recognised, only that the reply is voiced audio of the line's length."
  },
  "card_revision": {
-  "revision": "7cb11eec736fb3917a112bddfdae4f0c61ffc0a3",
-  "upload": "hf-upload door job drama-20261115-int3-5900-card-2.json, replace true: README.md, MANIFEST.sha256 and charts/speed.png only",
+  "revision": "8c6c3d79577c9640a8272babea88de1b0677fee7",
+  "upload": "hf-upload door job drama-20261115-int3-5900-card-3.json, replace true: README.md (GB10 rows, CUDA served with the FP32 codec) and MANIFEST.sha256 only",
   "check": "its MANIFEST.sha256 equals the release folder's; all 21 entries match the Hub (11 by LFS sha256, 10 downloaded and hashed); weights, codec, config and tokenizer files are those of the revision above"
  }
 }

@@ -13,6 +13,9 @@
 - [`results/smaller-builds/hub-release.json`](results/smaller-builds/hub-release.json): revision `0a0afd5d`
   downloaded fresh from the Hub matches all 21 `MANIFEST.sha256` entries and speaks a line through
   `recipe/pilot_macos.py --weights int3-5900` on the Mac.
-- [`results/smaller-builds/gb10-speed.sh`](results/smaller-builds/gb10-speed.sh): the GB10 job for the card's
-  Spark rows, both builds and voices on one `engine/nvfp4` binary, staged on BOTTOM by `gb10-speed-stage.sh` and
-  `results/exl3-spark/prebuild-spark.sh` (now `PIN`/`OUT` for another engine pin).
+- [`results/smaller-builds/spark-speed.json`](results/smaller-builds/spark-speed.json): on one GB10 and one
+  `engine/nvfp4` binary the int3 build (with the FP32 codec) and `t5900` run at the same warm p50 RTF (0.614 / 0.809
+  against 0.619 / 0.831, built-in / reference voice), the int3 build at 14.77 GiB peak device memory against 16.93;
+  the card's Spark rows and CUDA how-to carry it. [`gb10-speed.sh`](results/smaller-builds/gb10-speed.sh) runs on
+  TOP from folders sent with `put top`; `results/exl3-spark/prebuild-spark.sh` takes `PIN`/`OUT` for another engine
+  pin.

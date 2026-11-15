@@ -67,6 +67,15 @@ class SpeakOnceTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'exited with status 3 before /health answered'):
             self.run_fake('exit')
 
+    def test_an_occupied_port_fails_instead_of_using_its_server(self):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            with mock.patch.object(speak_once, 'PORT', port):
+                with self.assertRaisesRegex(RuntimeError, f'127.0.0.1:{port} is unavailable: .*Address already in use'):
+                    speak_once.serve_and_speak([sys.executable, '-c', FAKE, 'exit', str(port)])
+
 
 if __name__ == '__main__':
     unittest.main()

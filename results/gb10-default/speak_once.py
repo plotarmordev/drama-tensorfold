@@ -12,6 +12,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import time
@@ -32,6 +33,8 @@ def wait_ready(server, timeout):
         try:
             with urllib.request.urlopen(f'http://127.0.0.1:{PORT}/health', timeout=2) as reply:
                 if reply.status == 200:
+                    if server.poll() is not None:
+                        raise RuntimeError(f'the server exited with status {server.returncode} after /health answered')
                     return
         except OSError:
             pass
@@ -66,6 +69,11 @@ def speak():
 
 
 def serve_and_speak(command, ready_timeout=900):
+    with socket.socket() as probe:
+        try:
+            probe.bind(('127.0.0.1', PORT))
+        except OSError as error:
+            raise RuntimeError(f'127.0.0.1:{PORT} is unavailable: {error}') from error
     server = subprocess.Popen(command, env={**os.environ, 'TENSORFOLD_NO_UPDATE_CHECK': '1'})
     try:
         wait_ready(server, ready_timeout)

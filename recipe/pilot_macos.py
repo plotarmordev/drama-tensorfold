@@ -265,11 +265,9 @@ def main() -> int:
             for name in ('hf-cache', 'runtime-cache'):
                 (root / name).mkdir(exist_ok=True)
 
-            serve_args = weight_selection.serve_arguments(args.weights, args.serve_args)
-            server_command = [str(executable), 'serve', str(checkpoint), '--host', args.host,
-                              '--port', str(args.port), '--name', 'fishaudio/drama-3',
-                              '--context', '8192', '--parallel', '1', '--no-drafts',
-                              '--prompt-cache-gib', '0', '--keep-warm', '0', *serve_args]
+            server_command = weight_selection.server_command(
+                executable, checkpoint, args.host, args.port,
+                weight_selection.serve_arguments(args.weights, args.serve_args))
             environment = {
                 'HOME': str(Path.home()),
                 'PATH': f'{root / "venv/bin"}:/usr/bin:/bin:/usr/sbin:/sbin',

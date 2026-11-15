@@ -237,6 +237,28 @@ note (`bin/voice-note` sends at most 600) is therefore one take, with one intona
 segment that ends in silence or at the frame cap does not end the reply. `X-Finish-Reason` is the last
 segment's; the reply's other engine headers come from one segment.
 
+The engine has one lane, and the server gives it out one segment at a time. A short note (under 400
+characters) that arrives during a long reply is spoken before that reply's next segment, so it waits for at
+most one segment (up to 600 characters) rather than the whole reply; long replies keep their audio and are
+spoken one after another. The log shows each take's start, with its characters and seconds queued, and its
+end, with seconds on the engine and seconds of audio:
+
+```text
+take 1/1 start: 34 chars, 9.81 s queued
+take 1/1 end: 2.40 s on the engine, 2.95 s of audio
+```
+
+Another GPU job on the Mac slows every take: TensorFold's FastH3 transformer test made 24–38 s of audio
+take 137–154 s. From a request's arrival to its last byte the server holds a shared flock on
+`/tmp/tensorfold-speech.lock`, the turn that TensorFold's batch tools (`tf-h3-image`, `tf-h3-dit`, from
+plotarmordev/TensorFold #49 on) probe between GPU blocks and give way to; patch 0007's hold in the engine covers
+only its takes, not the gaps between a long reply's segments. A build from before #49 never probes, so it keeps
+the GPU through any voice. A symlink at the lock path is not followed: speech then goes on without the hold.
+
+A note's wait is bounded by one segment, not measured: from the idle figures below (six segments in 104 s,
+about 17 s each, and longer for a full 600 characters), a note that arrives as a segment starts may reach
+TOP's ~20 s deadline before its own take ends. No receipt yet times a short note sent during a long take.
+
 On an Apple M5 Ultra with the t5900-cover quant, a 2425-character English passage in the built-in voice
 gave six segments and 150 s of audio in 104 s; one segment fell silent twice (guard and redraw) and the
 next segments were still spoken. Without the guard the same passage gave 320 s, 170 s of it silence

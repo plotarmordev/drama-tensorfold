@@ -11,15 +11,23 @@ results/silence-guard-floor.json) ends a take that falls silent, redrawing a who
 sentence ends, else at spaces, never inside a special token, tag, paired tag or bracketed cue. A segment that
 ends in silence or at the frame cap does not end the reply; the reply's X-Finish-Reason is its last segment's.
 A take with no audio at all is drawn again with another seed; if every draw is empty, the reply is a 502 error,
-never an empty success.
+never an empty success. The engine has one lane, taken one segment at a time: a short note (under 400 characters)
+waiting goes before a long reply's next segment, so it waits for at most one segment, never a whole long reply;
+a streamed long reply pauses for that note's take. Each take's start (with its length and time queued) and end
+(with its seconds on the engine and of audio) are logged. From arrival to its last byte a speech request holds a
+shared lock on SPEECH_LOCK, the turn that TensorFold's batch tools (tf-h3-image, tf-h3-dit) give way to between GPU
+blocks; the engine's own hold (Metal patch 0007) covers only its takes, not the gaps between them.
 """
 from __future__ import annotations
 
 import configparser
+import contextlib
+import fcntl
 import http.client
 import http.server
 import itertools
 import json
+import os
 from pathlib import Path
 import re
 import signal
@@ -41,9 +49,14 @@ ENGINE_FLAGS = ('--max-frames', '4096', '--silence-floor-dbfs', '-40', '--silenc
 # A take that falls silent loses at most the rest of one segment. 600 is bin/voice-note's cap, so a voice note is
 # always one take: separately drawn segments restart the intonation at their join.
 SEGMENT_CHARS = 600
+# A note shorter than this is one segment and goes before the next segment of a long reply.
+SHORT_CHARS = 400
 # The engine's own input limit; a longer input is relayed for the engine to refuse.
 MAX_INPUT_CHARS = 4096
 WAV_HEADER = 44
+# Mono signed 16-bit PCM at 44.1 kHz, whole or streamed.
+AUDIO_BYTES_PER_S = 44100 * 2
+SPEECH_LOCK = '/tmp/tensorfold-speech.lock'
 # The engine can sample end of speech at a take's first frame. Without a request seed it draws from the prompt,
 # so the same text repeats it; such a take is drawn again with another seed. Metal patch 0002 refuses it with a
 # 500 naming NO_AUDIO; an engine without the patch answers a clean stop with no audio.
@@ -163,6 +176,27 @@ def joined_wav(parts: list[bytes]) -> bytes:
     return head[:4] + struct.pack('<I', 36 + len(data)) + head[8:40] + struct.pack('<I', len(data)) + data
 
 
+@contextlib.contextmanager
+def gpu_turn(path: str) -> Iterator[None]:
+    """A shared hold on ``path`` while live speech needs the GPU; batch work probes it with a nonblocking exclusive
+    flock and pauses until it is free. Read-only and best effort, as the engine's own hold is. A symlink at ``path``
+    is not followed, so one planted in the shared /tmp cannot have its target's mode changed; speech then goes on
+    without the hold."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    except OSError:
+        yield
+        return
+    try:
+        # past the creator's umask, as patch 0007 does, so batch work running as another user can open it
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(fd)
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     server: Proxy
@@ -175,12 +209,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
         request = speech_request(body) if self.path == SPEECH else None
         if request is None:
             return self.relay(body)
-        # one speech request at a time: another must not take the single engine lane between segments
-        with self.server.speech:
-            if request.get('stream'):
-                self.stream(request)
-            else:
-                self.whole(request)
+        # each take's queue time runs from the request's arrival, then from its previous take's end
+        self.queued = time.monotonic()
+        self.short = len(request['input']) < SHORT_CHARS
+        with gpu_turn(self.server.speech_lock):
+            if self.short:
+                return self.reply(request)
+            # long replies speak one at a time, so a stream never pauses for another long reply's segments
+            with self.server.long:
+                self.reply(request)
+
+    def reply(self, request: dict) -> None:
+        if request.get('stream'):
+            self.stream(request)
+        else:
+            self.whole(request)
+
+    @contextlib.contextmanager
+    def turn(self, n: int, of: int, text: str) -> Iterator[None]:
+        """The engine lane for take ``n`` of ``of``, logged so a slow queue shows; ``self.audio`` counts its bytes."""
+        with self.server.lane.turn(self.short):
+            started = time.monotonic()
+            self.audio = 0
+            self.log_message('take %d/%d start: %d chars, %.2f s queued', n, of, len(text), started - self.queued)
+            try:
+                yield
+            finally:
+                self.queued = time.monotonic()
+                self.log_message('take %d/%d end: %.2f s on the engine, %.2f s of audio', n, of,
+                                 self.queued - started, self.audio / AUDIO_BYTES_PER_S)
 
     def upstream(self, body: bytes) -> socket.socket:
         engine = socket.create_connection(self.server.engine)
@@ -248,8 +305,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def whole(self, request: dict) -> None:
         parts = []
-        for text in segments(request['input']):
-            take = self.take(request, text, whole_audio)
+        pieces = segments(request['input'])
+        for n, text in enumerate(pieces, 1):
+            with self.turn(n, len(pieces), text):
+                take = self.take(request, text, whole_audio)
+                if take is not None and take[0] == 200:
+                    self.audio = len(take[2]) - (WAV_HEADER if take[1]['Content-Type'] == 'audio/wav' else 0)
             if take is None:
                 return self.no_audio()
             status, headers, body = take
@@ -262,32 +323,61 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def stream(self, request: dict) -> None:
         started = False
         trailer: dict[str, str] = {}
-        for text in segments(request['input']):
-            take = self.take(request, text, lambda _, reply: stream_audio(reply, trailer))
-            if take is None or take[0] != 200:
-                if started:
-                    # audio is already out: no terminating chunk, so the client sees an incomplete body
-                    self.close_connection = True
-                    return
-                return self.no_audio() if take is None else self.answer(*take)
-            _, headers, audio = take
-            if not started:
-                self.send_head(200, headers)
-                self.send_header('Transfer-Encoding', 'chunked')
-                self.send_header('Trailer', 'X-Finish-Reason')
-                self.end_headers()
-                started = True
-            for data in audio:
-                self.wfile.write(b'%x\r\n%s\r\n' % (len(data), data))
+        pieces = segments(request['input'])
+        for n, text in enumerate(pieces, 1):
+            # the engine speaks while the audio is relayed, so the turn lasts until the take's last chunk
+            with self.turn(n, len(pieces), text):
+                take = self.take(request, text, lambda _, reply: stream_audio(reply, trailer))
+                if take is None or take[0] != 200:
+                    if started:
+                        # audio is already out: no terminating chunk, so the client sees an incomplete body
+                        self.close_connection = True
+                        return
+                    return self.no_audio() if take is None else self.answer(*take)
+                _, headers, audio = take
+                if not started:
+                    self.send_head(200, headers)
+                    self.send_header('Transfer-Encoding', 'chunked')
+                    self.send_header('Trailer', 'X-Finish-Reason')
+                    self.end_headers()
+                    started = True
+                for data in audio:
+                    self.audio += len(data)
+                    self.wfile.write(b'%x\r\n%s\r\n' % (len(data), data))
         reason = trailer.get('x-finish-reason')
         self.wfile.write(b'0\r\n' + (f'X-Finish-Reason: {reason}\r\n'.encode() if reason else b'') + b'\r\n')
 
 
+class Lane:
+    """The engine's one lane: one take at a time, and a short note waiting takes the next turn."""
+
+    def __init__(self):
+        self.free = threading.Condition()
+        self.taken = False
+        self.short_waiting = 0
+
+    @contextlib.contextmanager
+    def turn(self, short: bool) -> Iterator[None]:
+        with self.free:
+            self.short_waiting += short
+            self.free.wait_for(lambda: not self.taken and (short or not self.short_waiting))
+            self.short_waiting -= short
+            self.taken = True
+        try:
+            yield
+        finally:
+            with self.free:
+                self.taken = False
+                self.free.notify_all()
+
+
 class Proxy(http.server.ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], engine: tuple[str, int]):
+    def __init__(self, address: tuple[str, int], engine: tuple[str, int], speech_lock: str = SPEECH_LOCK):
         super().__init__(address, Handler)
         self.engine = engine
-        self.speech = threading.Lock()
+        self.speech_lock = speech_lock
+        self.long = threading.Lock()
+        self.lane = Lane()
 
 
 def main() -> int:

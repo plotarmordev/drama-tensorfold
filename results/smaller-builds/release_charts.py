@@ -4,7 +4,8 @@
   release_charts.py OUT_DIR
 
 Writes footprint.png (weights and codec on disk, each smaller-build step), quality.png (card 37's word error rate
-and failed takes, both voices) and speed.png (warm real-time factor on the M5 Ultra). Needs matplotlib.
+and failed takes, both voices) and speed.png (warm real-time factor per take on the M5 Ultra, median with its
+min-max range). Needs matplotlib.
 """
 import json
 import sys
@@ -23,14 +24,16 @@ LABELS = {'t5900': 'NVFP4 5,900\n(previous release)', 'trim': 'head trimmed', 't
 PAIR = ('t5900', 'trim-bf16-int3')
 
 
-def bars(ax, names, values, title, unit, fmt):
+def bars(ax, names, values, title, unit, fmt, tops=None):
+    """Labelled bars; each label sits at its bar's top, or at tops[i] when a whisker rises above it."""
     ax.bar(range(len(names)), values, color=COLOURS[:len(names)] if len(names) > 2 else (COLOURS[0], COLOURS[2]))
     ax.set_xticks(range(len(names)), [LABELS[n] for n in names], fontsize=9)
     ax.set_title(title, fontsize=11)
     ax.set_ylabel(unit)
-    ax.set_ylim(0, max(max(values) * 1.18, 1))
-    for i, v in enumerate(values):
-        ax.annotate(fmt.format(v), (i, v), ha='center', va='bottom', xytext=(0, 3), textcoords='offset points',
+    tops = tops or values
+    ax.set_ylim(0, max(max(tops) * 1.18, 1))
+    for i, (v, top) in enumerate(zip(values, tops)):
+        ax.annotate(fmt.format(v), (i, top), ha='center', va='bottom', xytext=(0, 3), textcoords='offset points',
                     fontsize=9)
 
 
@@ -56,12 +59,14 @@ def main(out):
     fig.tight_layout()
     fig.savefig(out / 'quality.png', dpi=150)
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    bars(axes[0], PAIR, [speed[n]['rtf_warm']['median'] for n in PAIR], 'Real-time factor, warm, median\n'
-         '(lower is faster)', 'RTF', '{:.3f}')
-    bars(axes[1], PAIR, [speed[n]['rtf_warm']['total'] for n in PAIR], 'Real-time factor, warm, whole pass',
-         'RTF', '{:.3f}')
-    fig.suptitle('Speed on the M5 Ultra (Metal): built-in voice, 24-text corpus, one request at a time')
+    fig, ax = plt.subplots(figsize=(6, 4))
+    rtf = [speed[n]['rtf_warm'] for n in PAIR]
+    medians = [r['median'] for r in rtf]
+    bars(ax, PAIR, medians, 'Real-time factor per take, warm: median, min to max\n(lower is faster)', 'RTF',
+         '{:.3f}', tops=[r['max'] for r in rtf])
+    ax.errorbar(range(len(PAIR)), medians, fmt='none', ecolor='black', capsize=6,
+                yerr=[[m - r['min'] for m, r in zip(medians, rtf)], [r['max'] - m for m, r in zip(medians, rtf)]])
+    fig.suptitle('Speed on the M5 Ultra (Metal): built-in voice, 24 texts, one at a time', fontsize=11)
     fig.tight_layout()
     fig.savefig(out / 'speed.png', dpi=150)
 

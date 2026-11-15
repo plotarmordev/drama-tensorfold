@@ -1,5 +1,6 @@
 {
- "scope": "Warm speed of the int3 build against t5900 on the Mac, same engine binary, back to back: the HF card's Mac speed rows and speed.png. No quality claim (builds.json has it).",
+ "scope": "Warm speed of the int3 build and t5900 on the Mac, one engine binary: the HF card's Mac speed rows and speed.png. No quality claim (builds.json has it).",
+ "conditions": "The M5 Ultra is shared: other users' load reached a load average of 53 during these runs, and the GPU showed 0% utilisation before the 14:36 to 14:50 runs. A run is clean when every warm take is under 0.65 RTF; 'builds' holds each build's first clean run and 'runs' every run. The clean medians differ by 0.009, within the run-to-run spread: the builds are as fast as each other.",
  "platform": {
   "observed_gpu": "Apple M5 Ultra",
   "ram_gib": 256
@@ -16,12 +17,14 @@
   "trim-bf16-int3": {
    "checkpoint": "drama3-trim-bf16-int3-v1/model",
    "manifest": "recipe/checksums/trim-bf16-int3.sha256",
+   "started": "2026-11-15 12:22",
    "requests": 48,
    "http_200": 48,
    "audio_s_per_pass": 311.7,
    "rtf_warm": {
     "total": 0.503,
     "median": 0.511,
+    "min": 0.475,
     "max": 0.579
    },
    "reply_s_warm_median": 4.91,
@@ -30,16 +33,74 @@
   "t5900": {
    "checkpoint": "drama3-nvfp4-t5900cover-v1/model",
    "manifest": "recipe/checksums/nvfp4-t5900cover.sha256",
+   "started": "2026-11-15 14:42",
    "requests": 48,
    "http_200": 48,
    "audio_s_per_pass": 343.3,
    "rtf_warm": {
-    "total": 0.688,
-    "median": 0.62,
-    "max": 1.466
+    "total": 0.513,
+    "median": 0.52,
+    "min": 0.48,
+    "max": 0.603
    },
-   "reply_s_warm_median": 6.31,
+   "reply_s_warm_median": 4.9,
    "repeat_pass_pcm_identical": "24/24"
   }
+ },
+ "runs": {
+  "trim-bf16-int3": [
+   {
+    "started": "2026-11-15 12:22",
+    "rtf_warm": {
+     "total": 0.503,
+     "median": 0.511,
+     "min": 0.475,
+     "max": 0.579
+    },
+    "clean": true
+   },
+   {
+    "started": "2026-11-15 14:36",
+    "rtf_warm": {
+     "total": 0.559,
+     "median": 0.536,
+     "min": 0.498,
+     "max": 1.01
+    },
+    "clean": false
+   },
+   {
+    "started": "2026-11-15 14:50",
+    "rtf_warm": {
+     "total": 0.773,
+     "median": 0.8,
+     "min": 0.604,
+     "max": 1.352
+    },
+    "clean": false
+   }
+  ],
+  "t5900": [
+   {
+    "started": "2026-11-15 12:28",
+    "rtf_warm": {
+     "total": 0.688,
+     "median": 0.62,
+     "min": 0.531,
+     "max": 1.466
+    },
+    "clean": false
+   },
+   {
+    "started": "2026-11-15 14:42",
+    "rtf_warm": {
+     "total": 0.513,
+     "median": 0.52,
+     "min": 0.48,
+     "max": 0.603
+    },
+    "clean": true
+   }
+  ]
  }
 }

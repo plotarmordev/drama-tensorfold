@@ -47,7 +47,8 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`gb10-start.sh`](gb10-start.sh) | Starts a GB10 job once a GPU is free: retries while no window is open, never pauses DeepSeek |
 | [`int3.sha256`](int3.sha256) | SHA-256 of its 40 `layer-LL.safetensors` |
 | [`splice_int3.py`](splice_int3.py) | `trim-bf16` with its kept experts taken from those files |
-| [`mac-speed.json`](mac-speed.json) | Warm real-time factor of `trim-bf16-int3` and `t5900` on the M5 Ultra, one engine binary, back to back |
+| [`hub-release.json`](hub-release.json) | The published revision downloaded fresh from the Hub, checked against its `MANIFEST.sha256` and spoken on the Mac |
+| [`mac-speed.json`](mac-speed.json) | Warm real-time factor per take of `trim-bf16-int3` and `t5900` on the M5 Ultra, one engine binary, every run with the clean ones marked |
 | [`release_charts.py`](release_charts.py) | The Hugging Face card's `footprint.png`, `quality.png` and `speed.png` from `builds.json` and `mac-speed.json` |
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
@@ -62,8 +63,8 @@ speaker-similarity claim; speed is `mac-speed.json`'s alone.
 `trim-bf16-int3` replaced the NVFP4 build in
 [`plotarmordev/drama-3-NVFP4-Pruned-5900`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) at
 revision `0a0afd5d` on 15 Nov 2026; the NVFP4 build stays at revision `4bfe2c32`, which `--weights nvfp4-5900`
-pins. On `mac-speed.json`'s run
-the int3 build's warm RTF was 0.511 median (0.503 whole pass) against `t5900`'s 0.620 (0.688) on a shared machine
-where `t5900` had measured 0.513 before ([`macos-nvfp4-quants.json`](../macos-nvfp4-quants.json)): no slower, not
-a measured speed-up. It has not been served on the Spark, and the CUDA pin `b1f4b9b` refuses its BF16 codec
+pins. On one engine binary, [`mac-speed.json`](mac-speed.json)'s clean runs (every warm take under 0.65 RTF on a
+shared machine) put the int3 build at 0.511 median warm RTF per take and `t5900` at 0.520: equally fast, the gap
+within the run-to-run spread; the three contended runs are kept in its `runs`. It has not been served on the
+Spark, and the CUDA pin `b1f4b9b` refuses its BF16 codec
 (`codec_pth.zig` reads float32 only): the card points CUDA users to the previous revision's FP32 `codec.pth`.

@@ -1,0 +1,127 @@
+{
+ "scope": "The published int3 release, downloaded fresh from the Hub and spoken on the Mac: the release card's acceptance evidence.",
+ "repository": "plotarmordev/drama-3-NVFP4-Pruned-5900",
+ "revision": "0a0afd5d0825d39443e522b27aab6eb2f85287bd",
+ "upload": "hf-upload door job drama-20261115-int3-5900-release-3.json, replace true: uploaded 22/22 files (15.6 GB), each checked against the Hub",
+ "hub_files_beyond_manifest": [
+  ".gitattributes",
+  "MANIFEST.sha256"
+ ],
+ "download": {
+  "method": "curl https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900/resolve/REVISION/FILE, no token, into an empty folder; 206 is a resumed transfer",
+  "files": {
+   "LICENSE": {
+    "http": 200,
+    "bytes_this_request": 19685
+   },
+   "MANIFEST.sha256": {
+    "http": 200,
+    "bytes_this_request": 1864
+   },
+   "NOTICE": {
+    "http": 200,
+    "bytes_this_request": 2256
+   },
+   "README.md": {
+    "http": 200,
+    "bytes_this_request": 13298
+   },
+   "charts/footprint.png": {
+    "http": 200,
+    "bytes_this_request": 42663
+   },
+   "charts/quality.png": {
+    "http": 200,
+    "bytes_this_request": 87017
+   },
+   "charts/speed.png": {
+    "http": 200,
+    "bytes_this_request": 49807
+   },
+   "chat_template.jinja": {
+    "http": 200,
+    "bytes_this_request": 7756
+   },
+   "codec.pth": {
+    "http": 200,
+    "bytes_this_request": 1088191935
+   },
+   "config.json": {
+    "http": 200,
+    "bytes_this_request": 5535
+   },
+   "model-00001-of-00008.safetensors": {
+    "http": 200,
+    "bytes_this_request": 2789396208
+   },
+   "model-00002-of-00008.safetensors": {
+    "http": 200,
+    "bytes_this_request": 2130220604
+   },
+   "model-00003-of-00008.safetensors": {
+    "http": 200,
+    "bytes_this_request": 1854325576
+   },
+   "model-00004-of-00008.safetensors": {
+    "http": 200,
+    "bytes_this_request": 1505606156
+   },
+   "model-00005-of-00008.safetensors": {
+    "http": 206,
+    "bytes_this_request": 673055642
+   },
+   "model-00006-of-00008.safetensors": {
+    "http": 206,
+    "bytes_this_request": 692189542
+   },
+   "model-00007-of-00008.safetensors": {
+    "http": 200,
+    "bytes_this_request": 1746953324
+   },
+   "model-00008-of-00008.safetensors": {
+    "http": 200,
+    "bytes_this_request": 2188100740
+   },
+   "model.safetensors.index.json": {
+    "http": 200,
+    "bytes_this_request": 6066125
+   },
+   "special_tokens_map.json": {
+    "http": 200,
+    "bytes_this_request": 102779
+   },
+   "tokenizer.json": {
+    "http": 200,
+    "bytes_this_request": 20791070
+   },
+   "tokenizer_config.json": {
+    "http": 200,
+    "bytes_this_request": 103580
+   }
+  },
+  "manifest_check": "shasum -a 256 -c MANIFEST.sha256 (the downloaded one): 21/21 OK"
+ },
+ "speech": {
+  "launch": "recipe/pilot_macos.py --weights int3-5900 --checkpoint DOWNLOAD (checkpoint_verified true against recipe/checksums/trim-bf16-int3.sha256)",
+  "engine_native_sha256": "2790b0763c59ada3ca3513754bc9eaa199229268821d9933158ed792ffafaef1",
+  "request": {
+   "input": "This is Drama 3, downloaded fresh from Hugging Face and speaking on the Mac.",
+   "voice": "built-in",
+   "response_format": "wav"
+  },
+  "http": 200,
+  "wav": {
+   "seconds": 4.5,
+   "sample_rate": 44100,
+   "peak": 19152,
+   "voiced_share_of_100ms_windows": 0.87,
+   "sha256": "b3121fd4edac10cb7cb6565176796dcafdc9c7f0a7d1366491b012912b0f4461"
+  },
+  "not_checked": "No transcript: words were not recognised, only that the reply is voiced audio of the line's length."
+ },
+ "card_revision": {
+  "revision": "7cb11eec736fb3917a112bddfdae4f0c61ffc0a3",
+  "upload": "hf-upload door job drama-20261115-int3-5900-card-2.json, replace true: README.md, MANIFEST.sha256 and charts/speed.png only",
+  "check": "its MANIFEST.sha256 equals the release folder's; all 21 entries match the Hub (11 by LFS sha256, 10 downloaded and hashed); weights, codec, config and tokenizer files are those of the revision above"
+ }
+}

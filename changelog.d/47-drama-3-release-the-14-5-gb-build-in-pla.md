@@ -8,5 +8,8 @@
 ### Added
 
 - [`results/smaller-builds/mac-speed.json`](results/smaller-builds/mac-speed.json): on one engine binary on the
-  M5 Ultra, the int3 build's warm RTF is 0.511 median against `t5900`'s 0.620 on a shared machine (no slower);
+  M5 Ultra, clean runs put the int3 build at 0.511 median warm RTF per take and `t5900` at 0.520 (equally fast);
   [`release_charts.py`](results/smaller-builds/release_charts.py) draws the card's charts.
+- [`results/smaller-builds/hub-release.json`](results/smaller-builds/hub-release.json): revision `0a0afd5d`
+  downloaded fresh from the Hub matches all 21 `MANIFEST.sha256` entries and speaks a line through
+  `recipe/pilot_macos.py --weights int3-5900` on the Mac.

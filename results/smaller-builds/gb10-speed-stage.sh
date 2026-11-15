@@ -4,7 +4,7 @@
 # then its BF16 codec swapped for the pilot t5900-cover model's FP32 one, which the CUDA pin reads (the card's CUDA
 # recipe). Run from anywhere on BOTTOM:
 #   ssh top-menu "bottom shell" < results/smaller-builds/gb10-speed-stage.sh   # env: SHA (default origin/main), PILOT
-# The engine is built by results/exl3-spark/prebuild-spark.sh with PIN=engine/nvfp4 OUT=drama3-nvfp4-engine.
+# The engine is built by results/exl3-spark/prebuild-spark.sh with PIN=engine/nvfp4 OUT=drama3-int3-engine.
 set -eu
 repo_sha=${SHA:-origin/main}
 pilot=${PILOT:-"$HOME/Documents/drama3-pilot-20261014"}
@@ -27,5 +27,5 @@ done
 (cd "$work/ckpt" && sha256sum --quiet -c "$pins/trim-bf16-int3.sha256")
 cp "$t5900/codec.pth" "$work/ckpt/codec.pth"
 mv "$work/ckpt" "$stage"
-(cd "$stage" && sha256sum $(cut -c67- "$pins/trim-bf16-int3.sha256")) > "$stage.sha256"
-echo "staged $stage: $(sha256sum < "$stage.sha256" | cut -d' ' -f1)"
+(cd "$stage" && sha256sum $(cut -c67- "$pins/trim-bf16-int3.sha256") > SHA256SUMS)
+echo "staged $stage: $(sha256sum < "$stage/SHA256SUMS" | cut -d' ' -f1)"

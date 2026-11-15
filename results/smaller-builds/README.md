@@ -51,7 +51,7 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`mac-speed.json`](mac-speed.json) | Warm real-time factor per take of `trim-bf16-int3` and `t5900` on the M5 Ultra, one engine binary, every run with the clean ones marked |
 | [`release_charts.py`](release_charts.py) | The Hugging Face card's `footprint.png`, `quality.png` and `speed.png` from `builds.json` and `mac-speed.json` |
 | [`gb10-speed-stage.sh`](gb10-speed-stage.sh) | `bottom shell`, before a window: the published int3 revision from the Hub, checked, with the pilot's FP32 codec swapped in |
-| [`gb10-speed.sh`](gb10-speed.sh), [`spark_speed.py`](spark_speed.py) | The GB10 job for the card's Spark rows: both builds, both voices, one engine binary (`engine/nvfp4`, built by [`prebuild-spark.sh`](../exl3-spark/prebuild-spark.sh) with `PIN=engine/nvfp4 OUT=drama3-nvfp4-engine`), warm p50 RTF, load and peak memory |
+| [`gb10-speed.sh`](gb10-speed.sh), [`spark_speed.py`](spark_speed.py) | The GB10 job for the card's Spark rows: both builds, both voices, one engine binary (`engine/nvfp4`, built by [`prebuild-spark.sh`](../exl3-spark/prebuild-spark.sh) with `PIN=engine/nvfp4 OUT=drama3-int3-engine`), warm p50 RTF, load and peak memory |
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
 `eq-3ref` reference voice with guidance γ 1.5 batched or the built-in voice; failed = capped, WER > 0.2 or a quiet

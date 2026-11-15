@@ -5,6 +5,7 @@ The stand-in speaks a request's input as its UTF-8 bytes, so a joined reply show
 """
 from __future__ import annotations
 
+import fcntl
 import http.client
 import http.server
 import json
@@ -13,6 +14,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 import unittest
 
 import speech_server
@@ -25,16 +27,57 @@ def wav(data: bytes) -> bytes:
             + b'data' + struct.pack('<I', len(data)) + data)
 
 
+def chunked_audio(body: bytes) -> bytes:
+    """The data of a chunked body."""
+    audio, rest = b'', body
+    while size := int(rest.split(b'\r\n', 1)[0], 16):
+        data_start = rest.index(b'\r\n') + 2
+        audio += rest[data_start:data_start + size]
+        rest = rest[data_start + size + 2:]
+    return audio
+
+
+def turn_free(lock: str) -> bool:
+    """Whether batch GPU work's probe of ``lock``, a nonblocking exclusive flock as TensorFold's takes, gets the turn."""
+    with open(lock) as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+
+class BatchJob(threading.Thread):
+    """Another job on the GPU, as TensorFold's tf-h3-dit runs: a block whenever its probe gets the turn, else a pause."""
+
+    def __init__(self, lock: str):
+        super().__init__(daemon=True)
+        self.lock = lock
+        self.blocks = 0
+        self.paused = False
+        self.done = threading.Event()
+
+    def run(self):
+        while not self.done.wait(0.01):
+            if turn_free(self.lock):
+                self.blocks += 1
+            else:
+                self.paused = True
+
+
 class Engine(http.server.ThreadingHTTPServer):
     """Built-in voice plus the catalogs in ``voices``; finish reasons are taken from ``reasons`` in turn.
 
     The first ``empty`` takes end at frame 0 with no audio: a 500 naming it, as Metal patch 0002 answers, or with
     ``empty_ok`` a clean stop, as an engine without the patch does.
 
-    As the real engine does, it answers 503 once right after a reply, before its lane is free again.
+    As the real engine does, it answers 503 once right after a reply, before its lane is free again. A take whose
+    input is in ``holds`` waits for that event before it speaks. Each take records whether batch work's probe of
+    ``lock`` would get the GPU turn.
     """
 
-    def __init__(self, voices: set[str], reasons: list[str], empty: int, empty_ok: bool):
+    def __init__(self, voices: set[str], reasons: list[str], empty: int, empty_ok: bool,
+                 holds: dict[str, threading.Event], lock: str):
         super().__init__(('127.0.0.1', 0), EngineHandler)
         self.voices = {'default'} | voices
         self.reasons = reasons
@@ -42,6 +85,9 @@ class Engine(http.server.ThreadingHTTPServer):
         self.empty_ok = empty_ok
         self.requests: list[dict] = []
         self.busy = False
+        self.holds = holds
+        self.lock = lock
+        self.turn_free: list[bool] = []
 
 
 class EngineHandler(http.server.BaseHTTPRequestHandler):
@@ -66,6 +112,9 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
             self.server.busy = False
             return self.refuse(503, 'speech output capacity is full')
         self.server.requests.append(request)
+        self.server.turn_free.append(turn_free(self.server.lock))
+        if hold := self.server.holds.get(request['input']):
+            hold.wait(10)
         if request.get('voice', 'default') not in self.server.voices:
             return self.refuse(400, 'Drama 3 request: unknown voice')
         self.server.busy = True
@@ -98,9 +147,11 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
 
 
 class ServerTests(unittest.TestCase):
-    def start(self, voices=frozenset(), reasons=(), empty=0, empty_ok=False):
-        self.engine = Engine(set(voices), list(reasons), empty, empty_ok)
-        self.proxy = speech_server.Proxy(('127.0.0.1', 0), self.engine.server_address)
+    def start(self, voices=frozenset(), reasons=(), empty=0, empty_ok=False, holds=None):
+        lock = tempfile.NamedTemporaryFile()
+        self.addCleanup(lock.close)
+        self.engine = Engine(set(voices), list(reasons), empty, empty_ok, holds or {}, lock.name)
+        self.proxy = speech_server.Proxy(('127.0.0.1', 0), self.engine.server_address, lock.name)
         self.proxy.RequestHandlerClass.log_message = lambda *_: None
         for server in (self.engine, self.proxy):
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -196,12 +247,85 @@ class ServerTests(unittest.TestCase):
         head, _, body = self.raw_stream(input=LONG).partition(b'\r\n\r\n')
         self.assertIn(b'Transfer-Encoding: chunked', head)
         self.assertTrue(body.endswith(b'0\r\nX-Finish-Reason: length\r\n\r\n'))
-        audio, rest = b'', body
-        while size := int(rest.split(b'\r\n', 1)[0], 16):
-            data_start = rest.index(b'\r\n') + 2
-            audio += rest[data_start:data_start + size]
-            rest = rest[data_start + size + 2:]
-        self.assertEqual(audio, ''.join(speech_server.segments(LONG)).encode())
+        self.assertEqual(chunked_audio(body), ''.join(speech_server.segments(LONG)).encode())
+
+    def test_a_short_note_goes_before_the_rest_of_a_long_take(self):
+        note = 'The train leaves at seven fifteen.'
+        pieces = speech_server.segments(LONG)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                hold = threading.Event()
+                self.start(holds={pieces[0]: hold})
+                logged = []
+                self.proxy.RequestHandlerClass.log_message = lambda _, form, *args: logged.append(form % args)
+                long = []
+                speaking = threading.Thread(target=lambda: long.append(
+                    chunked_audio(self.raw_stream(input=LONG).partition(b'\r\n\r\n')[2]) if stream
+                    else self.post(input=LONG).read()))
+                speaking.start()
+                self.wait_for(lambda: self.engine.requests)  # the long take's first segment is on the engine
+                noting = threading.Thread(target=lambda: long.append(self.post(input=note).read()))
+                noting.start()
+                self.wait_for(lambda: self.proxy.lane.short_waiting)
+                hold.set()
+                noting.join(10)
+                speaking.join(10)
+                spoken = ''.join(pieces).encode()
+                self.assertEqual(long, [wav(note.encode()), spoken if stream else wav(spoken)])
+                self.assertEqual([request['input'] for request in self.engine.requests], [pieces[0], note, *pieces[1:]])
+                # speech kept the GPU turn through every take and the gaps between them, then gave it back
+                self.assertEqual(self.engine.turn_free, [False] * (len(pieces) + 1))
+                self.wait_for(lambda: turn_free(self.engine.lock))
+                order = [(f'1/{len(pieces)}', pieces[0]), ('1/1', note),
+                         *((f'{n}/{len(pieces)}', piece) for n, piece in enumerate(pieces[1:], 2))]
+                self.assertEqual([line.split(':')[0] for line in logged],
+                                 [f'take {take} {edge}' for take, _ in order for edge in ('start', 'end')])
+                # the stand-in's audio is the input's bytes, at 88200 bytes a second
+                self.assertEqual([line.rsplit(', ', 1)[1] for line in logged[1::2]],
+                                 [f'{len(text.encode()) / 88200:.2f} s of audio' for _, text in order])
+
+    def test_a_short_note_during_a_long_take_finishes_while_another_gpu_job_waits(self):
+        note = 'The train leaves at seven fifteen.'
+        pieces = speech_server.segments(LONG)
+        first, second = threading.Event(), threading.Event()
+        self.start(holds={pieces[0]: first, pieces[1]: second})
+        job = BatchJob(self.engine.lock)
+        job.start()
+        self.addCleanup(job.done.set)
+        self.wait_for(lambda: job.blocks)  # the job has the GPU
+        long, replies = [], []
+        speaking = threading.Thread(target=lambda: long.append(self.post(input=LONG).read()))
+        speaking.start()
+        self.wait_for(lambda: job.paused)  # the long take holds the GPU turn and the job gave way
+        self.wait_for(lambda: self.engine.requests)  # its first segment is on the engine, so the note arrives mid-take
+        blocks = job.blocks
+        noting = threading.Thread(target=lambda: replies.append(self.post(input=note).read()))
+        noting.start()
+        self.wait_for(lambda: self.proxy.lane.short_waiting)
+        first.set()
+        # the long take's second segment is held until the note is back, so the note waits for one segment at most
+        noting.join(10)
+        self.assertEqual(replies, [wav(note.encode())])
+        self.assertEqual(job.blocks, blocks)  # no batch block ran while speech had the GPU
+        second.set()
+        speaking.join(10)
+        self.assertEqual(long, [wav(''.join(pieces).encode())])
+        self.wait_for(lambda: job.blocks > blocks)  # the job carries on once speech is done
+
+    def test_the_gpu_turn_leaves_a_symlinks_target_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target, link = Path(folder, 'private'), Path(folder, 'speech.lock')
+            target.touch(0o600)
+            link.symlink_to(target)
+            with speech_server.gpu_turn(str(link)):
+                pass
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+    def wait_for(self, condition, timeout=10):
+        deadline = time.monotonic() + timeout
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, 'timed out')
+            time.sleep(0.01)
 
     def test_an_empty_take_is_redrawn_with_another_seed(self):
         text = 'The train leaves at seven fifteen.'

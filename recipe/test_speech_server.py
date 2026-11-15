@@ -13,6 +13,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 import unittest
 
 import speech_server
@@ -25,16 +26,27 @@ def wav(data: bytes) -> bytes:
             + b'data' + struct.pack('<I', len(data)) + data)
 
 
+def chunked_audio(body: bytes) -> bytes:
+    """The data of a chunked body."""
+    audio, rest = b'', body
+    while size := int(rest.split(b'\r\n', 1)[0], 16):
+        data_start = rest.index(b'\r\n') + 2
+        audio += rest[data_start:data_start + size]
+        rest = rest[data_start + size + 2:]
+    return audio
+
+
 class Engine(http.server.ThreadingHTTPServer):
     """Built-in voice plus the catalogs in ``voices``; finish reasons are taken from ``reasons`` in turn.
 
     The first ``empty`` takes end at frame 0 with no audio: a 500 naming it, as Metal patch 0002 answers, or with
     ``empty_ok`` a clean stop, as an engine without the patch does.
 
-    As the real engine does, it answers 503 once right after a reply, before its lane is free again.
+    As the real engine does, it answers 503 once right after a reply, before its lane is free again, and takes
+    ``delay`` seconds to speak.
     """
 
-    def __init__(self, voices: set[str], reasons: list[str], empty: int, empty_ok: bool):
+    def __init__(self, voices: set[str], reasons: list[str], empty: int, empty_ok: bool, delay: float):
         super().__init__(('127.0.0.1', 0), EngineHandler)
         self.voices = {'default'} | voices
         self.reasons = reasons
@@ -42,6 +54,7 @@ class Engine(http.server.ThreadingHTTPServer):
         self.empty_ok = empty_ok
         self.requests: list[dict] = []
         self.busy = False
+        self.delay = delay
 
 
 class EngineHandler(http.server.BaseHTTPRequestHandler):
@@ -66,6 +79,7 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
             self.server.busy = False
             return self.refuse(503, 'speech output capacity is full')
         self.server.requests.append(request)
+        time.sleep(self.server.delay)
         if request.get('voice', 'default') not in self.server.voices:
             return self.refuse(400, 'Drama 3 request: unknown voice')
         self.server.busy = True
@@ -98,8 +112,8 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
 
 
 class ServerTests(unittest.TestCase):
-    def start(self, voices=frozenset(), reasons=(), empty=0, empty_ok=False):
-        self.engine = Engine(set(voices), list(reasons), empty, empty_ok)
+    def start(self, voices=frozenset(), reasons=(), empty=0, empty_ok=False, delay=0.0):
+        self.engine = Engine(set(voices), list(reasons), empty, empty_ok, delay)
         self.proxy = speech_server.Proxy(('127.0.0.1', 0), self.engine.server_address)
         self.proxy.RequestHandlerClass.log_message = lambda *_: None
         for server in (self.engine, self.proxy):
@@ -186,12 +200,36 @@ class ServerTests(unittest.TestCase):
         head, _, body = self.raw_stream(input=LONG).partition(b'\r\n\r\n')
         self.assertIn(b'Transfer-Encoding: chunked', head)
         self.assertTrue(body.endswith(b'0\r\nX-Finish-Reason: length\r\n\r\n'))
-        audio, rest = b'', body
-        while size := int(rest.split(b'\r\n', 1)[0], 16):
-            data_start = rest.index(b'\r\n') + 2
-            audio += rest[data_start:data_start + size]
-            rest = rest[data_start + size + 2:]
-        self.assertEqual(audio, ''.join(speech_server.segments(LONG)).encode())
+        self.assertEqual(chunked_audio(body), ''.join(speech_server.segments(LONG)).encode())
+
+    def test_a_short_note_goes_before_the_rest_of_a_long_take(self):
+        note = 'The train leaves at seven fifteen.'
+        pieces = speech_server.segments(LONG)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                self.start(delay=0.1)
+                logged = []
+                self.proxy.RequestHandlerClass.log_message = lambda _, form, *args: logged.append(form % args)
+                long = []
+                speaking = threading.Thread(target=lambda: long.append(
+                    chunked_audio(self.raw_stream(input=LONG).partition(b'\r\n\r\n')[2]) if stream
+                    else self.post(input=LONG).read()))
+                speaking.start()
+                while not self.engine.requests:  # the long take's first segment is on the engine
+                    time.sleep(0.01)
+                reply = self.post(input=note)
+                self.assertEqual(reply.status, 200)
+                self.assertEqual(reply.read(), wav(note.encode()))
+                self.assertTrue(speaking.is_alive(), 'the note waited for the whole long take')
+                speaking.join()
+                spoken = ''.join(pieces).encode()
+                self.assertEqual(long, [spoken if stream else wav(spoken)])
+                self.assertEqual([request['input'] for request in self.engine.requests], [pieces[0], note, *pieces[1:]])
+                takes = [f'1/{len(pieces)}', '1/1', *(f'{n}/{len(pieces)}' for n in range(2, len(pieces) + 1))]
+                self.assertEqual([line.split(':')[0] for line in logged],
+                                 [f'take {take} {edge}' for take in takes for edge in ('start', 'end')])
+                queued = float(logged[2].split(', ')[1].split()[0])
+                self.assertGreater(queued, 0)
 
     def test_an_empty_take_is_redrawn_with_another_seed(self):
         text = 'The train leaves at seven fifteen.'

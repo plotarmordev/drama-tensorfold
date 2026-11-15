@@ -1,6 +1,6 @@
 {
  "schema": "drama-silence-guard-floor/1",
- "scope": "The silence guard's -40 dBFS floor (engine patches 0055-0057), replayed offline on the CPU over captured renders of the built-in voice and model-invented voices, and checked on whispered and soft speech rendered on our GB10. Neutralized: no audio, texts or file names.",
+ "scope": "The silence guard's -40 dBFS floor (engine patches 0055-0057), replayed offline on the CPU over captured renders of the built-in voice and model-invented voices, and checked on whispered and soft speech rendered on my GB10. Neutralized: no audio, texts or file names.",
  "rule": "10 s of 2048-sample frames in a row whose mean power is below the floor ends the reply at the frame that completes it.",
  "replay": {
   "renders": 278,
@@ -175,7 +175,7 @@
   }
  },
  "quiet_speech": {
-  "method": "Six texts (whispered, soft, a [quietly, almost whispering] prefix, sighs, a bedtime story, speech turning into a whisper) rendered on our GB10 in a model-invented test voice and the built-in voice with the -40 dBFS build; word peaks from Whisper word times; trips replayed at four floors.",
+  "method": "Six texts (whispered, soft, a [quietly, almost whispering] prefix, sighs, a bedtime story, speech turning into a whisper) rendered on my GB10 in a model-invented test voice and the built-in voice with the -40 dBFS build; word peaks from Whisper word times; trips replayed at four floors.",
   "renders": [
    {
     "voice": "model-invented test voice",

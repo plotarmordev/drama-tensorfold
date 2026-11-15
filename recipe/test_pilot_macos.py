@@ -237,7 +237,7 @@ class MacLifecycleSmokeTests(unittest.TestCase):
         self.launches = []
 
     def tearDown(self):
-        # Never signal a guessed/reaped PGID. Launchers are our direct unreaped
+        # Never signal a guessed/reaped PGID. Launchers are the test's direct unreaped
         # children; server fixtures also have their own absolute lifetime bound.
         (self.base / 'stop-fixtures').touch()
         for process, root, evidence, output, log in self.launches:

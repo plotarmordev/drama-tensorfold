@@ -274,7 +274,7 @@ def run_native(args, out: Path, fixture: dict, record: dict) -> None:
 
 
 class LoopWatchdog(threading.Thread):
-    """Stops the scheduler loop once our request has a terminal message, or at the deadline.
+    """Stops the scheduler loop once the captured request has a terminal message, or at the deadline.
 
     It only reads the outbox under its lock and clears ``running``; it never touches CUDA.
     """

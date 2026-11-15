@@ -1,6 +1,6 @@
 {
  "schema": "drama-stream-silence-cut/1",
- "scope": "Engine patches 0041-0043: a stream's silence guard hears each chunk before it is handed over, and a stream and a whole reply cut at the frame that completes 10 s of silence. On our GB10, our corpus. Measured on f5c11dea plus the same three changes, built before they were stacked on patch 0040; their code diff is identical. Neutralized from the captures; numbers unchanged.",
+ "scope": "Engine patches 0041-0043: a stream's silence guard hears each chunk before it is handed over, and a stream and a whole reply cut at the frame that completes 10 s of silence. On my GB10, my corpus. Measured on f5c11dea plus the same three changes, built before they were stacked on patch 0040; their code diff is identical. Neutralized from the captures; numbers unchanged.",
  "pcm": "mono 16-bit at 44.1 kHz; a whole reply's samples are its WAV data",
  "collapsing_reply": {
   "voice": "model-invented test voice",

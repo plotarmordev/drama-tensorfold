@@ -12,6 +12,7 @@ selected patch exactly once, verifies its digest, then applies the series.
 | `0004-remove-unused-redraw-salt.patch` | Remove the unused seed-salt helper superseded by request sampling | [TensorFold #7](https://github.com/plotarmordev/TensorFold/pull/7) |
 | `0005-drama-compact-lm-head.patch` | Load a `[4097, 2048]` lm_head listed by `drama_head_rows` ([`recipe/trim_head.py`](../../../recipe/trim_head.py)) | none |
 | `0006-int3-routed-experts.patch` | Int3 routed experts (3.5 bits) in the NVFP4 expert kernel; GPTQ packer `--mode int3` from the FP8 originals | this repo |
+| `0007-drama-read-BF16-codec-checkpoints.patch` | Read a BF16 `codec.pth` (the int3 build's), widened exactly to FP32 on load; Metal patch 0004 ported to this base | this repo |
 
 Patch 0002 adds [request sampling](../../../recipe/README-sampling.md). Each
 long-form segment starts with the supplied seed; its retries add their own
@@ -29,6 +30,11 @@ Patch 0006 reads a layer whose gate codes are `[n, 3k/8]` bytes as int3: per 16 
 u16 planes (sign, hi, lo) for E2M1 magnitudes 0, 2, 4, 6, under NVFP4's E4M3 block-16 scales and FP32 global.
 `tools/zig/drama_nvfp4_gptq.py --mode int3 --provenance nvfp4-provenance.json` quantizes the FP8 originals
 with each layer's recorded GPTQ rows, kappa and damping. NVFP4 layers decode through unchanged kernels.
+
+Patch 0007 lets `codec_pth.zig`'s `readF32` take BF16 storage as well as FP32, so the codec loader and
+`voice encode` read the int3 build's codec. Its `zig test` widens BF16 bit patterns (signed zero, one, π, infinity,
+NaN) exactly. Read through it, the int3 build's BF16 codec equals the original FP32 codec rounded to BF16 in all 535
+float tensors (391,430,530 values).
 
 Protected constructs are complete model special tokens, balanced bracketed
 spans and correctly nested, exact-name ASCII tags without attributes. Unclosed

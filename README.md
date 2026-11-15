@@ -114,7 +114,10 @@ measured on the Mac, with the BF16 codec, not on the GB10.
 [`results/gb10-default/gb10-default.sh`](results/gb10-default/gb10-default.sh) is the end-to-end check on a GB10:
 it builds the default engine with `scripts/build-engine.sh`, checks the weights against
 [`trim-bf16-int3.sha256`](recipe/checksums/trim-bf16-int3.sha256), serves them without systemd and asks for speech
-once. I have not run it on a GB10 yet.
+once. I ran it on TOP (`top-d82da41452ef`, at `4c97e8d7d`): all 49 build steps succeeded, the weights matched all
+15 checksums at revision `8c6c3d79`, and one request returned HTTP 200 with 2.23 seconds of audio and its first audio
+after 0.095 seconds. The job image needed a staged GCC 12 host toolchain (`nvcc-host-bundle`): nvcc cannot parse Zig
+0.17.0's libc++ headers.
 
 ### A reference voice
 

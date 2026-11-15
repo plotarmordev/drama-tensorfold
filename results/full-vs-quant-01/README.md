@@ -14,6 +14,7 @@ binary for every arm, from run `run-01` of `bench/full-vs-quant/run.py`. Five ar
 | File | What it holds |
 |---|---|
 | [`card-section.md`](card-section.md) | The model-card section: the recipe (quant, engine, codec), the tables, the charts, The Grill's speed comparison and the run history, including the resume |
+| [`hub-card.md`](hub-card.md) | The Hugging Face card's README.md for `plotarmordev/drama-3-NVFP4-Pruned`, kept by hand |
 | [`tables.md`](tables.md) | The per-arm table and the paired comparisons |
 | [`tables.json`](tables.json) | Every number in the tables, the environment, the resume record, the pin change and, under `grill`, The Grill's comparison |
 | [`charts/`](charts) | `footprint`, `speed` and `quality`, each as PNG and SVG |
@@ -23,10 +24,10 @@ binary for every arm, from run `run-01` of `bench/full-vs-quant/run.py`. Five ar
 (byte-identical to `raw/scores.jsonl` and `raw/speaker-pairs.jsonl`) and The Grill's comparison SHA-256 `ba79d2c9…`
 (byte-identical to `raw/grill-compare.json`).
 
-`report.py` writes every file here except this README, which is maintained by hand. A rerun of the command below with
-the same matplotlib reproduces the other files byte for byte, the SVGs included (fixed `svg.hashsalt`, no date). The
-tables mark which rows are nearest-rank percentiles from the benchmark client's summaries and which are arithmetic
-medians computed by `report.py`.
+`report.py` writes every file here except this README and `hub-card.md`, which are maintained by hand. A rerun of the
+command below with the same matplotlib reproduces the other files byte for byte, the SVGs included (fixed
+`svg.hashsalt`, no date). The tables mark which rows are nearest-rank percentiles from the benchmark client's
+summaries and which are arithmetic medians computed by `report.py`.
 
 ## The Grill
 

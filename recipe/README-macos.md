@@ -225,12 +225,19 @@ The engine has one lane, and the server gives it out one segment at a time. A sh
 characters) that arrives during a long reply is spoken before that reply's next segment, so it waits for at
 most one segment (up to 500 characters) rather than the whole reply; long replies keep their audio and are
 spoken one after another. The log shows each take's start, with its characters and seconds queued, and its
-end, with seconds on the engine:
+end, with seconds on the engine and seconds of audio:
 
 ```text
 take 1/1 start: 34 chars, 9.81 s queued
-take 1/1 end: 2.40 s on the engine
+take 1/1 end: 2.40 s on the engine, 2.95 s of audio
 ```
+
+Another GPU job on the Mac slows every take: TensorFold's FastH3 transformer test made 24–38 s of audio
+take 137–154 s. From a request's arrival to its last byte the server holds a shared flock on
+`/tmp/tensorfold-speech.lock`, the turn that TensorFold's batch tools (`tf-h3-image`, `tf-h3-dit`, from
+plotarmordev/TensorFold #49 on) probe between GPU blocks and give way to; patch 0007's hold in the engine covers
+only its takes, not the gaps between a long reply's segments. A build from before #49 never probes, so it keeps
+the GPU through any voice.
 
 On an Apple M5 Ultra with the t5900-cover quant, a 2425-character English passage in the built-in voice
 gave six segments and 150 s of audio in 104 s; one segment fell silent twice (guard and redraw) and the

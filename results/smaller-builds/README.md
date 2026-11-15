@@ -47,10 +47,21 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`gb10-start.sh`](gb10-start.sh) | Starts a GB10 job once a GPU is free: retries while no window is open, never pauses DeepSeek |
 | [`int3.sha256`](int3.sha256) | SHA-256 of its 40 `layer-LL.safetensors` |
 | [`splice_int3.py`](splice_int3.py) | `trim-bf16` with its kept experts taken from those files |
+| [`mac-speed.json`](mac-speed.json) | Warm real-time factor of `trim-bf16-int3` and `t5900` on the M5 Ultra, one engine binary, back to back |
+| [`release_charts.py`](release_charts.py) | The Hugging Face card's `footprint.png`, `quality.png` and `speed.png` from `builds.json` and `mac-speed.json` |
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
 `eq-3ref` reference voice with guidance γ 1.5 batched or the built-in voice; failed = capped, WER > 0.2 or a quiet
 run of 3 s or more inside speech. The listening page (`measure.py listen`: salt 0, one text of each length and
 `medium-05`, both voices, every build) and the audio stay on the Mac and are not published: open
-`/Users/Shared/agent-work/drama-assets/drama3-smaller-builds/listening.html` in a browser there. No speed, memory or
-speaker-similarity claim.
+`/Users/Shared/agent-work/drama-assets/drama3-smaller-builds/listening.html` in a browser there. No memory or
+speaker-similarity claim; speed is `mac-speed.json`'s alone.
+
+## Published
+
+`trim-bf16-int3` replaced the NVFP4 build in
+[`plotarmordev/drama-3-NVFP4-Pruned-5900`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) on 15 Nov
+2026; the NVFP4 build stays at revision `4bfe2c32`, which `--weights nvfp4-5900` pins. On `mac-speed.json`'s run
+the int3 build's warm RTF was 0.511 median (0.503 whole pass) against `t5900`'s 0.620 (0.688) on a shared machine
+where `t5900` had measured 0.513 before ([`macos-nvfp4-quants.json`](../macos-nvfp4-quants.json)): no slower, not
+a measured speed-up. It has not been served on the Spark.

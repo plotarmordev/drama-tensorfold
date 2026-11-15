@@ -1,0 +1,45 @@
+{
+ "scope": "Warm speed of the int3 build against t5900 on the Mac, same engine binary, back to back: the HF card's Mac speed rows and speed.png. No quality claim (builds.json has it).",
+ "platform": {
+  "observed_gpu": "Apple M5 Ultra",
+  "ram_gib": 256
+ },
+ "engine": {
+  "head": "794f06873181b8174c81d3df66b8d6f1be3d929c",
+  "base": "fb8fdf3d8501255058a3221452164c56cb9a57ca + engine/nvfp4/macos/patches 0001-0007",
+  "build": "scripts/build-engine.sh --weights nvfp4",
+  "native_sha256": "2790b0763c59ada3ca3513754bc9eaa199229268821d9933158ed792ffafaef1"
+ },
+ "launch": "recipe/pilot_macos.py --weights {int3-5900|nvfp4-5900} --checkpoint DIR (--cfg-gamma 1.5 --cfg-batched, --context 8192, --parallel 1)",
+ "workload": "bench/corpus_capture.py --passes 2, built-in voice, 24 corpus items; pass 1 is the warm pass",
+ "builds": {
+  "trim-bf16-int3": {
+   "checkpoint": "drama3-trim-bf16-int3-v1/model",
+   "manifest": "recipe/checksums/trim-bf16-int3.sha256",
+   "requests": 48,
+   "http_200": 48,
+   "audio_s_per_pass": 311.7,
+   "rtf_warm": {
+    "total": 0.503,
+    "median": 0.511,
+    "max": 0.579
+   },
+   "reply_s_warm_median": 4.91,
+   "repeat_pass_pcm_identical": "24/24"
+  },
+  "t5900": {
+   "checkpoint": "drama3-nvfp4-t5900cover-v1/model",
+   "manifest": "recipe/checksums/nvfp4-t5900cover.sha256",
+   "requests": 48,
+   "http_200": 48,
+   "audio_s_per_pass": 343.3,
+   "rtf_warm": {
+    "total": 0.688,
+    "median": 0.62,
+    "max": 1.466
+   },
+   "reply_s_warm_median": 6.31,
+   "repeat_pass_pcm_identical": "24/24"
+  }
+ }
+}

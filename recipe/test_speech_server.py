@@ -157,7 +157,8 @@ class ServerTests(unittest.TestCase):
             released = speech_server.pilot_command(speech_server.read_config(config))
             config.write_text(base.replace('checkpoint = model\n', 'weights = int3-5900\n'))
             int3 = speech_server.pilot_command(speech_server.read_config(config))
-        self.assertEqual(default[default.index('--weights') + 1], 'nvfp4-5900')
+        # a config with no weights line is checked against the default build's pins
+        self.assertEqual(default[default.index('--weights') + 1], 'int3-5900')
         self.assertEqual(default[default.index('--checkpoint') + 1], str(Path('model').resolve()))
         self.assertEqual(released[released.index('--weights') + 1], 'nvfp4')
         # without a checkpoint, the launcher serves the build's own folder

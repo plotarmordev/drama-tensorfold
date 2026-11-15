@@ -31,6 +31,8 @@ import threading
 import time
 from typing import BinaryIO, Iterator
 
+from weight_selection import DEFAULT_WEIGHTS
+
 RECIPE = Path(__file__).resolve().parent
 SPEECH = '/v1/audio/speech'
 READY = 'DRAMA_PILOT_READY'
@@ -58,7 +60,7 @@ SPEAKER = re.compile(r'<\|speaker:\d+\|>')
 
 
 def read_config(path: Path) -> configparser.SectionProxy:
-    parser = configparser.ConfigParser(defaults={'weights': 'nvfp4-5900', 'host': '127.0.0.1', 'port': '18793',
+    parser = configparser.ConfigParser(defaults={'weights': DEFAULT_WEIGHTS, 'host': '127.0.0.1', 'port': '18793',
                                                  'engine_port': '18794'})
     with path.open() as config:
         parser.read_file(config)

@@ -3,11 +3,11 @@
 #
 # Usage: scripts/build-engine.sh [--weights full|nvfp4] [BUILD_DIR]
 #
-#   --weights full    (the Linux default) upstream TensorFold at engine/UPSTREAM with the opt-in patches in
-#                     engine/patches: the native server and drama3-generate, in build/tensorfold
-#   --weights nvfp4   (the Mac default) CUDA: engine/nvfp4/UPSTREAM plus its patches, native server.
+#   --weights full    upstream TensorFold at engine/UPSTREAM with the opt-in patches in engine/patches: the native
+#                     server and drama3-generate, in build/tensorfold
+#   --weights nvfp4   (the default) CUDA: engine/nvfp4/UPSTREAM plus its patches, native server.
 #                     Metal: engine/nvfp4/macos/UPSTREAM plus its patches, native server and voice tools.
-#                     It serves every quant (the launchers' --weights nvfp4, nvfp4-5900 and int3-5900, the Mac
+#                     It serves every quant (the launchers' --weights nvfp4, nvfp4-5900 and int3-5900, their
 #                     default), in build/tensorfold-nvfp4.
 #
 # Environment:
@@ -30,8 +30,7 @@ die() {
   exit 1
 }
 
-weights=full
-if [[ $platform == Darwin ]]; then weights=nvfp4; fi
+weights=nvfp4
 if [[ ${1:-} == --weights ]]; then
   (($# >= 2)) || die "--weights needs full or nvfp4"
   weights=$2

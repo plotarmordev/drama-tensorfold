@@ -68,8 +68,11 @@ speaker-similarity claim; speed and memory are `mac-speed.json`'s and `spark-spe
 revision `0a0afd5d` on 15 Nov 2026; the NVFP4 build stays at revision `4bfe2c32`, which `--weights nvfp4-5900`
 pins. On one engine binary, [`mac-speed.json`](mac-speed.json)'s clean runs (every warm take under 0.65 RTF on a
 shared machine) put the int3 build at 0.511 median warm RTF per take and `t5900` at 0.520: equally fast, the gap
-within the run-to-run spread; the three contended runs are kept in its `runs`. The CUDA pin `b1f4b9b` refuses its
-BF16 codec (`codec_pth.zig` reads float32 only): the card points CUDA users to the previous revision's FP32
-`codec.pth`. With that codec, [`spark-speed.json`](spark-speed.json) puts both builds at the same warm p50 RTF on a
-GB10 (int3 0.614 built-in and 0.809 reference voice, `t5900` 0.619 and 0.831), the int3 build at 14.77 GiB peak
-device memory against 16.93.
+within the run-to-run spread; the three contended runs are kept in its `runs`. The CUDA pin `b1f4b9b` reads its
+BF16 codec through [patch 0007](../../engine/nvfp4/patches/0007-drama-read-BF16-codec-checkpoints.patch), exactly
+the original FP32 codec rounded to BF16. With the FP32 codec swapped in, [`spark-speed.json`](spark-speed.json) puts
+both builds at the same warm p50 RTF on a GB10 (int3 0.614 built-in and 0.809 reference voice, `t5900` 0.619 and
+0.831), the int3 build at 14.77 GiB peak device memory against 16.93.
+
+[`hub-card.md`](hub-card.md) is the Hugging Face card's next README.md: the default build on a Mac and a GB10, served
+with its BF16 codec.

@@ -52,7 +52,7 @@ The other quants are selected by name and download the same way into their own f
 `4bfe2c32daa771566970ad385292fab43d060bb8`, `checksums/nvfp4-t5900cover.sha256`, into `drama-3-NVFP4-Pruned-5900`),
 and `--weights nvfp4`, the 20.8 GB quant (`plotarmordev/drama-3-NVFP4-Pruned` at revision
 `494db08481db952f834b2241bce63fb3dfa72554`, `checksums/nvfp4.sha256`, into `drama-3-NVFP4-Pruned`). All three
-use the same engine build (`--weights nvfp4`, the Mac default).
+use the same engine build (`--weights nvfp4`, the default).
 
 The build verifies its ordered patch checksums and does not require a CUDA compiler on Darwin.
 Outputs are `build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native` and
@@ -75,7 +75,7 @@ the legacy explicit mode ([Launch and stop](#launch-and-stop)), with no manifest
 
 ### The 14.5 GB int3 build
 
-`--weights int3-5900`, the Mac default, serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its
+`--weights int3-5900`, the default, serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its
 codec in BF16 and its routed experts in int3, the int3 build of
 [`results/smaller-builds`](../results/smaller-builds/README.md): 14.50 GiB of weights and codec against 18.34 for
 `nvfp4-5900`, equally fast on the M5 Ultra (0.511 against 0.520 median warm RTF), with no more failed takes. It
@@ -102,8 +102,9 @@ BF16 round trips had zero WER on the recorded seven-second speech fixture. Encod
 (below the 97% gate) and full-round-trip SNR was 26.51 dB, so this is not a general quality-equivalence claim;
 see [`results/codec-bf16.json`](../results/codec-bf16.json).
 
-The published manifests still pin the FP32 codec. A converted directory therefore requires legacy explicit
-`--native-bin`/`--checkpoint` mode, without `--weights`; do not replace a pinned checkpoint's codec in place.
+The `nvfp4` and `nvfp4-5900` manifests pin the FP32 codec (`int3-5900` pins its BF16 one). A converted directory
+therefore requires legacy explicit `--native-bin`/`--checkpoint` mode, without `--weights`; do not replace a pinned
+checkpoint's codec in place.
 
 [`results/macos-nvfp4-quants.json`](../results/macos-nvfp4-quants.json) records both NVFP4 quants on an
 M5 Ultra beside a resident 171 GB local model. Both load and speak (48/48 corpus requests, warm
@@ -217,8 +218,8 @@ Check the HTTP status and `X-Finish-Reason` rather than treating any saved file 
 
 `recipe/speech_server.py` runs the NVFP4 engine behind the same `/v1/audio/speech` API as the GB10
 host, from one config file. Copy [`speech-server.example.ini`](speech-server.example.ini) to
-`speech-server.ini` (git-ignored), set `weights` (`int3-5900` for the 14.5 GB int3 build, as the example does;
-`nvfp4-5900`, the server's default when unset; `nvfp4` for the 20.8 GB quant), `checkpoint` if it is not in that
+`speech-server.ini` (git-ignored), set `weights` (`int3-5900` for the 14.5 GB int3 build, the server's default when
+unset; `nvfp4-5900` for the 5,900-expert NVFP4 quant; `nvfp4` for the 20.8 GB quant), `checkpoint` if it is not in that
 build's folder in the repository root and, for cloned voices, `voices` and `default_voice`, then create the lock
 file and start it from the repository root:
 

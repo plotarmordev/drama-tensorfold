@@ -13,3 +13,6 @@
 - [`results/smaller-builds/hub-release.json`](results/smaller-builds/hub-release.json): revision `0a0afd5d`
   downloaded fresh from the Hub matches all 21 `MANIFEST.sha256` entries and speaks a line through
   `recipe/pilot_macos.py --weights int3-5900` on the Mac.
+- [`results/smaller-builds/gb10-speed.sh`](results/smaller-builds/gb10-speed.sh): the GB10 job for the card's
+  Spark rows, both builds and voices on one `engine/nvfp4` binary, staged on BOTTOM by `gb10-speed-stage.sh` and
+  `results/exl3-spark/prebuild-spark.sh` (now `PIN`/`OUT` for another engine pin).

@@ -6,5 +6,6 @@
   (characters and seconds queued) and end (seconds on the engine and seconds of audio).
 - Every speech request holds a shared flock on `/tmp/tensorfold-speech.lock` from arrival to its last byte, so
   TensorFold's batch GPU tools (`tf-h3-image`, `tf-h3-dit`) pause for live speech through a whole reply, gaps between
-  segments included, not only while patch 0007's engine is mid-take. See
+  segments included, not only while patch 0007's engine is mid-take. A symlink at that path is not followed, so its
+  target's mode is left alone. See
   [the speech server](recipe/README-macos.md#speech-server).

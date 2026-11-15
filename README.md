@@ -1,41 +1,42 @@
 # drama-tensorfold
 
+[![weights: 14.5 GB int3 recommended](https://img.shields.io/badge/weights-14.5_GB_int3_recommended-76b900?style=flat-square)](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900)
 [![code: Apache-2.0](https://img.shields.io/badge/code-Apache--2.0-0969da?style=flat-square)](LICENSE)
 [![model: FACL v1.0](https://img.shields.io/badge/model-FACL_v1.0-8250df?style=flat-square)](https://huggingface.co/fishaudio/drama-3/blob/e0a9218aa48888270f06ef1ed9ea67622c0e17d2/LICENSE)
 [![GPU: GB10 sm_121](https://img.shields.io/badge/GPU-GB10_sm__121-76b900?style=flat-square)](#quickstart)
+[![Apple silicon: Metal](https://img.shields.io/badge/Apple_silicon-Metal-555555?style=flat-square)](recipe/README-macos.md)
 [![CUDA 13](https://img.shields.io/badge/CUDA-13-76b900?style=flat-square)](#quickstart)
 [![status: not yet compared](https://img.shields.io/badge/status-not_yet_compared-a16207?style=flat-square)](#the-patches)
-[![weights: NVFP4 recommended](https://img.shields.io/badge/weights-NVFP4_recommended-76b900?style=flat-square)](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned)
 
 > [!TIP]
-> **We recommend the [20.8 GB NVFP4 pruned weights](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned).** About half
-> the memory of the full model, with the same measured quality: 19.35 GiB peak GPU memory against 36.95 GiB, 20.76 GiB
-> on disk against 38.63 GiB, and a word error rate of 1.31 % against 1.42 % (paired difference -0.11 pp
-> [-0.35, +0.08], 0 failed takes of 96 on either). First audio arrives sooner, 1.955 s against 2.428 s at p50. The
-> trade-offs: a cold start takes 26.3 s against 5.9 s, and only 7,369 of the 10,240 routed experts are kept. Measured
-> on one GB10 over 24 English texts with a reference voice: [full model against quant](results/full-vs-quant-01/README.md).
+> **I recommend the [14.5 GB int3 build](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900), on a Mac
+> and on a GB10.** The [Quickstart](#quickstart) serves it with no `--weights`: it builds its engine, downloads the
+> weights on first run and applies the guidance they were measured with. It is the 5,900-expert quant with its head
+> trimmed, its codec in BF16 and its routed experts in int3: 14.50 GiB on disk against 18.34 GiB for the 5,900-expert
+> NVFP4 quant and 38.63 GiB for the full model. On an M5 Ultra it is as fast as the 5,900 quant (0.511 against 0.520
+> median warm RTF) and failed 4 built-in takes of 48 against 6
+> ([results/smaller-builds](results/smaller-builds/README.md), [macOS](recipe/README-macos.md)). On a GB10 it runs as
+> fast as the 5,900 quant in 2.16 GiB less device memory ([below](#the-int3-build-on-a-gb10)).
 >
-> The [Quickstart](#quickstart) serves them with `--weights nvfp4`: it builds their engine, downloads the weights
-> on first run and applies the guidance they were measured with.
+> **Larger: the [20.8 GB NVFP4 pruned weights](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned)**,
+> `--weights nvfp4`, downloaded and checked the same way. About half the memory of the full model, with the same
+> measured quality: 19.35 GiB peak GPU memory against 36.95 GiB, 20.76 GiB on disk against 38.63 GiB, and a word
+> error rate of 1.31 % against 1.42 % (paired difference -0.11 pp [-0.35, +0.08], 0 failed takes of 96 on either).
+> First audio arrives sooner, 1.955 s against 2.428 s at p50. The trade-offs: a cold start takes 26.3 s against
+> 5.9 s, and only 7,369 of the 10,240 routed experts are kept. Measured on one GB10 over 24 English texts with a
+> reference voice: [full model against quant](results/full-vs-quant-01/README.md).
 >
-> **Smaller: the [5,900-expert quant](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900/tree/4bfe2c32daa771566970ad385292fab43d060bb8)**, `--weights
-> nvfp4-5900`, downloaded and checked the same way. 18.34 GiB on disk against 20.76 GiB, 16.93 GiB peak GPU memory
-> against 19.35 GiB, and a cold start of 20.1 s against 26.1 s. With a reference voice it matches the 20.8 GB quant:
-> word error rate 1.50 % against 1.31 % (paired +0.19 pp [-0.02, +0.49]), 0 failed takes of 96 on either. With
-> the built-in voice it does worse: 5.85 % against 2.92 % (paired +2.93 pp [+0.43, +5.81]), 8 failed takes of 96
-> against 5. The 20.8 GB quant stays the GB10 default. Measured on one GB10: [results/quant-15gb](results/quant-15gb/README.md).
-> Its repository now holds the int3 build below; `--weights nvfp4-5900` pins this quant's own revision.
+> **The [5,900-expert NVFP4 quant](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900/tree/4bfe2c32daa771566970ad385292fab43d060bb8)**,
+> `--weights nvfp4-5900`, the int3 build's own source. 18.34 GiB on disk against 20.76 GiB, 16.93 GiB peak GPU
+> memory against 19.35 GiB, and a cold start of 20.1 s against 26.1 s. With a reference voice it matches the 20.8 GB
+> quant: word error rate 1.50 % against 1.31 % (paired +0.19 pp [-0.02, +0.49]), 0 failed takes of 96 on either.
+> With the built-in voice it does worse: 5.85 % against 2.92 % (paired +2.93 pp [+0.43, +5.81]), 8 failed takes of
+> 96 against 5. Measured on one GB10: [results/quant-15gb](results/quant-15gb/README.md). Its repository now holds
+> the int3 build; `--weights nvfp4-5900` pins this quant's own revision.
 >
-> **On a Mac: the [14.5 GB int3 build](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900)**, the
-> default there (`--weights int3-5900`), downloaded and checked the same way: the 5,900-expert quant with its head
-> trimmed, its codec in BF16 and its routed experts in int3. 14.50 GiB on disk against 18.34 GiB, equally fast on an
-> M5 Ultra (0.511 against 0.520 median warm RTF), with 4 failed built-in takes of 48 against 6
-> ([results/smaller-builds](results/smaller-builds/README.md), [macOS](recipe/README-macos.md)). On a GB10 it runs
-> as fast as the 5,900 quant in 2.16 GiB less device memory ([below](#the-int3-build-on-a-gb10)).
->
-> **Built with Fish Audio.** The quant is a modified version of
+> **Built with Fish Audio.** The quants are modified versions of
 > [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) under the Fish Audio Community License v1.0
-> ([License](#license)). `--weights full` serves the full model, the alternative.
+> ([License](#license)). `--weights full` serves the full model.
 
 **Fish Audio's Drama 3 text-to-speech on NVIDIA GB10 (native Zig/CUDA) or Apple silicon (native Zig/Metal).**
 
@@ -45,7 +46,7 @@ measured CUDA engine pin with a checksummed patch series and uses a separate ups
 and starts a local speech server with an OpenAI-style `/v1/audio/speech` route, whole or streamed.
 
 **Built with Fish Audio.** The model weights are not in this repository; the launcher downloads them from
-[Hugging Face](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned) under Fish Audio's own
+[Hugging Face](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) under Fish Audio's own
 [license](#license).
 
 > [!NOTE]
@@ -56,32 +57,33 @@ and starts a local speech server with an OpenAI-style `/v1/audio/speech` route, 
 ## Quickstart
 
 Apple silicon: use the [macOS/Metal instructions](recipe/README-macos.md); with no `--weights`, the Mac builds and
-serves the 14.5 GB int3 build. The GB10 measurements above do not qualify Mac speed or quality.
-The Linux requirements and cgroup cap below do not apply to the Mac launcher.
+serves the 14.5 GB int3 build too. The Linux requirements and cgroup cap below do not apply to the Mac launcher.
 
 You need Linux with user systemd, CUDA 13, [Zig 0.17.0](https://ziglang.org/download/), the `hf` command
 (`python3 -m pip install -U huggingface_hub`) and 88 GiB of free memory at load (the server is capped at 54 GiB).
-The NVFP4 weights take about 21 GiB of disk, the full model about 39 GiB; the engine checkout, build and runtime
-caches need more.
+The int3 build takes about 15 GiB of disk, the 20.8 GB quant about 21 GiB and the full model about 39 GiB; the engine
+checkout, build and runtime caches need more.
 
 The launcher takes your host's shared GPU lock, the one every GPU job on the machine already uses, so two models
 never load at once. Set `GPU_LOCK` to that file. Only if the host has none, create one with `touch` and make
 your other GPU jobs use it too.
 
 ```sh
-ZIG=/path/to/zig-0.17.0/zig NVCC=/usr/local/cuda/bin/nvcc scripts/build-engine.sh --weights nvfp4
+ZIG=/path/to/zig-0.17.0/zig NVCC=/usr/local/cuda/bin/nvcc scripts/build-engine.sh
 GPU_LOCK=/path/to/your/shared/gpu.lock && mkdir -p runtime
-python3 recipe/pilot.py --weights nvfp4 --runtime-dir runtime --gpu-lock "$GPU_LOCK" --evidence-dir runs/pilot-01
+python3 recipe/pilot.py --runtime-dir runtime --gpu-lock "$GPU_LOCK" --evidence-dir runs/pilot-01
 ```
 
-For the full model, write `--weights full` in both commands. For the 5,900-expert quant, keep the engine build and
-start with `--weights nvfp4-5900`: it shares the NVFP4 engine and guidance.
+With no `--weights`, both commands pick the int3 build (`--weights int3-5900`; the engine is `--weights nvfp4`).
+The other quants share that engine and guidance: start with `--weights nvfp4` for the 20.8 GB quant or
+`--weights nvfp4-5900` for the 5,900-expert one. For the full model, write `--weights full` in both commands.
 
 The first start downloads the weights at the revision pinned in [`recipe/sources.json`](recipe/sources.json),
-into `drama-3-NVFP4-Pruned/`, `drama-3-NVFP4-Pruned-5900/` or `drama-3/`. Every start checks them against [`recipe/checksums`](recipe/checksums)
-and refuses missing or changed files; for the 21 GiB NVFP4 weights that takes about 11 seconds on a GB10.
-On Linux, `--weights nvfp4` builds [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTREAM) plus
-[`engine/nvfp4/patches`](engine/nvfp4/patches) and serves with
+into `drama-3-trim-bf16-int3/`, `drama-3-NVFP4-Pruned/`, `drama-3-NVFP4-Pruned-5900/` or `drama-3/`. Every start
+checks them against [`recipe/checksums`](recipe/checksums) and refuses missing or changed files; for the 21 GiB
+NVFP4 weights that takes about 11 seconds on a GB10.
+On Linux, the NVFP4 engine is [`engine/nvfp4/UPSTREAM`](engine/nvfp4/UPSTREAM) plus
+[`engine/nvfp4/patches`](engine/nvfp4/patches), and the quants serve with
 guidance γ 1.5 and batched guidance, as measured; a `--cfg-gamma` of your own after `--` replaces both.
 On Mac it builds [`engine/nvfp4/macos/UPSTREAM`](engine/nvfp4/macos/UPSTREAM) plus its patch series.
 Metal's `--cfg-batched` pairs independent states in one command buffer, not a vectorized GEMM.
@@ -100,27 +102,18 @@ curl -sSN http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/j
 
 ### The int3 build on a GB10
 
-The CUDA NVFP4 engine reads the int3 build's experts and trimmed head, but only an FP32 `codec.pth`, so the launcher's
-`--weights int3-5900` (which pins the BF16 codec) does not start it here. Card 47 measured it on one GB10 with the
-NVFP4 engine build above and the 5,900 quant's FP32 codec swapped in: warm p50 RTF 0.614 built-in and 0.809 reference
-voice against 0.619 and 0.831 for the 5,900 quant, 14.77 GiB peak device memory against 16.93
-([spark-speed.json](results/smaller-builds/spark-speed.json)); its quality was measured on the Mac, not the GB10. To
-serve it that way:
-
-```sh
-hf download plotarmordev/drama-3-NVFP4-Pruned-5900 --revision 8c6c3d79577c9640a8272babea88de1b0677fee7 \
-  --local-dir drama-3-trim-bf16-int3
-(cd drama-3-trim-bf16-int3 && sha256sum -c ../recipe/checksums/trim-bf16-int3.sha256)
-hf download plotarmordev/drama-3-NVFP4-Pruned-5900 codec.pth --revision 4bfe2c32daa771566970ad385292fab43d060bb8 \
-  --local-dir drama-3-trim-bf16-int3
-(cd drama-3-trim-bf16-int3 && grep codec.pth ../recipe/checksums/nvfp4-t5900cover.sha256 | sha256sum -c)
-build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native serve drama-3-trim-bf16-int3 --name drama-3 \
-  --port 18793 --cfg-gamma 1.5 --cfg-batched
-```
+CUDA patch 0007 reads the int3 build's BF16 `codec.pth`, widening each value exactly to FP32 on load; from there the
+codec is built as before (FP16 on the device). Read through that loader, the BF16 codec's 535 float tensors equal the
+5,900 quant's FP32 codec rounded to BF16, value for value. I measured the int3 build on one GB10 with the NVFP4
+engine and that FP32 codec swapped in: warm p50 RTF 0.614 built-in and 0.809 reference voice against 0.619 and
+0.831 for the 5,900 quant, 14.77 GiB peak device memory against 16.93
+([spark-speed.json](results/smaller-builds/spark-speed.json)). The device image has the same layout with either
+codec, so I expect the same speed and memory; I have not yet timed the BF16 codec on a GB10. Its quality was
+measured on the Mac, with the BF16 codec, not on the GB10.
 
 ### A reference voice
 
-The NVFP4 results above were measured with a reference voice; requests in the built-in voice, like the two above,
+The quants' results above were measured with a reference voice; requests in the built-in voice, like the two above,
 are drawn without guidance, though their replies still say the server's γ in `X-Cfg-Gamma`. To use a voice, encode
 a clip of one you may use (your own, one recorded with consent, or one the model made) and serve it as the default,
 so a request that names no voice gets it:
@@ -128,9 +121,9 @@ so a request that names no voice gets it:
 ```sh
 mkdir -p voices
 python3 build/tensorfold-nvfp4/tools/zig/drama_voice.py --native build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native \
-  --checkpoint drama-3-NVFP4-Pruned --audio clip.wav --text clip.txt --out voices/NAME.json \
+  --checkpoint drama-3-trim-bf16-int3 --audio clip.wav --text clip.txt --out voices/NAME.json \
   --source-kind owner --source-note "my own voice, recorded 2026-10-23"
-python3 recipe/pilot.py --weights nvfp4 --runtime-dir runtime --gpu-lock "$GPU_LOCK" --evidence-dir runs/pilot-02 \
+python3 recipe/pilot.py --runtime-dir runtime --gpu-lock "$GPU_LOCK" --evidence-dir runs/pilot-02 \
   -- --voices "$PWD/voices" --default-voice NAME
 ```
 
@@ -145,8 +138,8 @@ Read its README, recipe/README.md and the Fish Audio Community License first, an
 
 1. Check the requirements: CUDA 13 with nvcc, Zig 0.17.0, the hf command, user systemd, disk space and free
    memory.
-2. Build the engine with scripts/build-engine.sh --weights nvfp4.
-3. Start it with recipe/pilot.py --weights nvfp4 on loopback; the first start downloads and verifies the weights.
+2. Build the engine with scripts/build-engine.sh (no --weights: the 14.5 GB int3 build's engine).
+3. Start it with recipe/pilot.py on loopback; the first start downloads and verifies the weights.
 4. Synthesize one sentence as WAV, then stream it, and tell me the X-Finish-Reason header.
 
 Ask me which GPU lock file this host already uses before starting, and before stopping anything already
@@ -213,7 +206,7 @@ request-level features, and the Mac NVFP4 pin, current TensorFold main, has them
 the CUDA engine's `drama3-voice` files in `--voices`; 0002 answers a take that ends speech before its first audio
 frame with a 500, not empty audio. CUDA patch 0005 and Metal patch 0003 load a checkpoint whose lm_head keeps
 only the 4,097 rows the engine scores (EOS and the semantic band), as [`recipe/trim_head.py`](recipe/trim_head.py)
-writes it: 0.95 GiB less on disk.
+writes it: 0.95 GiB less on disk. CUDA patch 0007 and Metal patch 0004 read a `codec.pth` stored in BF16.
 Each feature's notes are in the engine tree's `CHANGELOG.md` or `docs/`.
 
 | In TensorFold 1.1.9 | Opt in with | Upstream |

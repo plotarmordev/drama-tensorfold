@@ -1,8 +1,8 @@
 #!/bin/sh
 # Stages the Spark speed job's checkpoint in the Drama pilot folder, on BOTTOM through `bottom shell`, before any
 # window: the published int3 revision fetched from the Hub and checked against recipe/checksums/trim-bf16-int3.sha256,
-# then its BF16 codec swapped for the pilot t5900-cover model's FP32 one, which the CUDA pin reads (the card's CUDA
-# recipe). Run from anywhere on BOTTOM:
+# then its BF16 codec swapped for the pilot t5900-cover model's FP32 one, as the recorded spark-speed.json run had it
+# (the CUDA pin reads the BF16 codec since patch 0007). Run from anywhere on BOTTOM:
 #   ssh top-menu "bottom shell" < results/smaller-builds/gb10-speed-stage.sh   # env: SHA (default origin/main), PILOT
 # The engine is built by results/exl3-spark/prebuild-spark.sh with PIN=engine/nvfp4 OUT=drama3-int3-engine.
 set -eu

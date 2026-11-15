@@ -2,7 +2,7 @@
 # exllamav3 bd1f519's own quantize_exl3 on card 35's six experts at 3.0 and 2.5 bits, on a GB10:
 # `job start gpu middle|bottom plotarmordev/<repo> <sha> results/exl3-ldlq/gb10-exllamav3.sh`, with the Drama pilot
 # folder at /assets/drama3-pilot (read-only) and no network. Writes /work/out/exl3-ref/exllamav3.json (per-projection
-# Hessian error), parity.json (ours over exllamav3's, from probes.json, and exllamav3's verdict against int3 and
+# Hessian error), parity.json (my encoder over exllamav3's, from probes.json, and exllamav3's verdict against int3 and
 # NVFP4) and the log.
 set -euo pipefail
 

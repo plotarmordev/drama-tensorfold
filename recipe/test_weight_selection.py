@@ -267,21 +267,36 @@ class WeightSelectionTests(unittest.TestCase):
         self.assertEqual(pilot.guard(70 * GIB, False), (100 * GIB, 34 * GIB))
         self.assertEqual(pilot.guard(70 * GIB, True), (None, None))
 
-    def test_linux_launcher_serves_int3_by_its_pins(self):
-        arguments = self.launcher_arguments('int3-5900') + ['--port', str(free_port())]
-        systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+    def test_linux_launcher_without_weights_downloads_and_serves_int3_with_the_nvfp4_engine(self):
+        target = selection.checkpoint_path('int3-5900', None)
+        saved = self.root / 'download-fixture'
+        target.rename(saved)
+        downloads = []
+
+        def run(command, **_kwargs):
+            if command[0] == '/fixture/hf':
+                downloads.append(command)
+                saved.rename(target)
+            return subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+
+        arguments = self.launcher_arguments(None) + ['--port', str(free_port())]
         (self.root / 'runtime').mkdir()
         with patch.object(sys, 'argv', arguments), \
+                patch.object(selection.shutil, 'which', return_value='/fixture/hf'), \
                 patch.object(pilot, 'memory_available', return_value=100 * GIB), \
-                patch.object(pilot.subprocess, 'run', return_value=systemctl), \
+                patch.object(pilot.subprocess, 'run', side_effect=run), \
                 patch.object(pilot.subprocess, 'Popen', side_effect=Spawned) as spawn, \
                 self.assertRaises(Spawned):
             pilot.main()
         spawn.assert_called_once()
+        source = self.sources['int3_5900_checkpoint']
+        self.assertEqual(downloads, [['/fixture/hf', 'download', source['repository'], '--revision',
+                                      source['revision'], '--local-dir', str(target)]])
         session = json.loads((self.root / 'evidence/session.json').read_text())
         self.assertEqual(session['checkpoint_manifest'], str(self.recipe / 'checksums' / 'trim-bf16-int3.sha256'))
         self.assertTrue(session['checkpoint_verified'])
-        self.download.assert_not_called()
+        self.assertEqual(session['server_command'][:3], [str(selection.native_path('nvfp4', None)), 'serve',
+                                                         str(target)])
 
     def test_both_launchers_admit_externally_below_the_floor(self):
         systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')

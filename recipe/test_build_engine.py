@@ -105,8 +105,8 @@ else:
                 self.assertEqual([a for a in arguments if a in ('native', 'drama3-generate', 'drama3-voice')], expected)
                 self.assertEqual(any(a.startswith('-Dnvcc=') for a in arguments), platform == 'Linux')
 
-    def test_without_weights_the_mac_builds_the_int3_engine_and_linux_the_full_one(self):
-        for platform, selected in (('Darwin', 'metal'), ('Linux', 'full')):
+    def test_without_weights_both_platforms_build_the_int3_engine(self):
+        for platform, selected in (('Darwin', 'metal'), ('Linux', 'cuda')):
             with self.subTest(platform=platform):
                 result, target = self.build(platform, None, platform)
                 self.assertEqual(result.returncode, 0, result.stderr)

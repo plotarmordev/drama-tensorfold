@@ -4,13 +4,13 @@
   measure.py probe ENCODER INT3_DIR LAYER/EXPERT OUT_DIR   # one expert into OUT_DIR/LAYER-EXPERT.json
   measure.py report OUT_DIR OUT.json                       # card 35's six experts and the verdict
   measure.py hessians OUT_DIR                              # the six experts' Hessians for exllamav3_job.py
-  measure.py parity PROBES.json EXLLAMAV3.json OUT.json    # ours against exllamav3's own encodes
+  measure.py parity PROBES.json EXLLAMAV3.json OUT.json    # my encoder against exllamav3's own encodes
 
 ENCODER is tf-exl3-encode built with ldlq.patch; INT3_DIR holds the int3 build's layer-LL.safetensors (int3.sha256 in
 ../smaller-builds). Each expert's error is trace((W - Q) H (W - Q)^T) over gate, up and down, W the FP8 original and H
 its Hessians from the NVFP4-mix calibration rows (recipe/exl3_experts.py's recipe), for EXL3 at 3.0 and 2.5 bits, the
-published NVFP4 and int3. EXL3 beats int3 at a bitrate when it is smaller and its summed error is lower. Ours matches
-exllamav3 when every projection's error is within PARITY of exllamav3's on the same W and H.
+published NVFP4 and int3. EXL3 beats int3 at a bitrate when it is smaller and its summed error is lower. My encoder
+matches exllamav3 when every projection's error is within PARITY of exllamav3's on the same W and H.
 """
 import hashlib
 import json
@@ -126,7 +126,7 @@ def hessians(out_dir):
 
 def parity(probes, exllamav3):
     """Per bitrate and probe, each projection's error over exllamav3's, whether all of them are within PARITY, and
-    exllamav3's own verdict against int3 and NVFP4 (its EXL3 takes the same bytes as ours at each bitrate)."""
+    exllamav3's own verdict against int3 and NVFP4 (its EXL3 takes the same bytes as mine at each bitrate)."""
     ratios = {bits: {k: {p: probes[k][f'exl3-{bits}'][p] / ref[bits][p] for p in ex.PROJECTIONS}
                      for k, ref in exllamav3.items()} for bits in ex.BITS}
     worst = max(r for per_bits in ratios.values() for per_probe in per_bits.values() for r in per_probe.values())

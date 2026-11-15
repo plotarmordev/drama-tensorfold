@@ -12,7 +12,7 @@ RECIPE = Path(__file__).resolve().parent
 REPO = RECIPE.parent
 NVFP4_SERVE = ('--cfg-gamma', '1.5', '--cfg-batched')
 # 'engine' is the scripts/build-engine.sh --weights profile that builds 'build'; the quants share one.
-# int3-5900 (the Mac default) and nvfp4-5900 are two revisions of one Hugging Face repository.
+# int3-5900 (the default on Mac and GB10) and nvfp4-5900 are two revisions of one Hugging Face repository.
 WEIGHTS = {
     'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256',
              'engine': 'full', 'build': 'tensorfold', 'serve': ()},
@@ -24,6 +24,7 @@ WEIGHTS = {
     'int3-5900': {'source': 'int3_5900_checkpoint', 'dir': 'drama-3-trim-bf16-int3', 'pins': 'trim-bf16-int3.sha256',
                   'engine': 'nvfp4', 'build': 'tensorfold-nvfp4', 'serve': NVFP4_SERVE},
 }
+DEFAULT_WEIGHTS = 'int3-5900'
 GUIDANCE_FLAGS = ('--cfg-gamma', '--cfg-allow-request-gamma', '--cfg-batched')
 
 

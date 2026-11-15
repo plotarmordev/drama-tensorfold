@@ -83,8 +83,9 @@ else:
 
     def build(self, platform, weights, name='build'):
         target = self.root / name
+        selection = ['--weights', weights] if weights else []
         result = subprocess.run(
-            ['bash', str(self.repo / 'scripts/build-engine.sh'), '--weights', weights, str(target)],
+            ['bash', str(self.repo / 'scripts/build-engine.sh'), *selection, str(target)],
             env=dict(self.env, TEST_PLATFORM=platform, ZIG=str(self.bin / 'zig'), NVCC=str(self.bin / 'nvcc')),
             capture_output=True, text=True, timeout=30)
         return result, target
@@ -103,6 +104,13 @@ else:
                     expected.append('drama3-voice')
                 self.assertEqual([a for a in arguments if a in ('native', 'drama3-generate', 'drama3-voice')], expected)
                 self.assertEqual(any(a.startswith('-Dnvcc=') for a in arguments), platform == 'Linux')
+
+    def test_without_weights_the_mac_builds_the_int3_engine_and_linux_the_full_one(self):
+        for platform, selected in (('Darwin', 'metal'), ('Linux', 'full')):
+            with self.subTest(platform=platform):
+                result, target = self.build(platform, None, platform)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual([mode for mode in self.series if (target / f'applied-{mode}').exists()], [selected])
 
     def test_corrupt_cuda_patch_is_refused_before_checkout_or_build(self):
         path = self.repo / self.series['cuda'] / 'patches/0001-fixture.patch'

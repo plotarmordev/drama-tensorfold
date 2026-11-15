@@ -230,8 +230,9 @@ python3 recipe/speech_server.py speech-server.ini
 It starts `pilot_macos.py` on `engine_port` and serves `port` once the engine prints `DRAMA_PILOT_READY`;
 Ctrl-C or SIGTERM stops both. The engine runs with `--max-frames 4096` and the silence guard
 (`--silence-floor-dbfs -40 --silence-seconds 10 --silence-redraws 1`). The Metal engine has no long-form
-splitter, so an input over 500 characters, up to the GB10's 2400, is spoken in segments cut at sentence
-ends (else spaces, never inside a tag or bracketed cue) and joined into one WAV or one PCM stream. A
+splitter, so an input over 600 characters, up to the GB10's 2400, is spoken in segments cut at sentence
+ends (else spaces, never inside a tag or bracketed cue) and joined into one WAV or one PCM stream. A voice
+note (`bin/voice-note` sends at most 600) is therefore one take, with one intonation from start to end. A
 segment that ends in silence or at the frame cap does not end the reply. `X-Finish-Reason` is the last
 segment's; the reply's other engine headers come from one segment.
 

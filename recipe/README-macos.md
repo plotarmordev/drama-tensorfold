@@ -64,12 +64,14 @@ The launcher verifies the directory against the manifest of the selected quant:
 ### The 14.5 GB int3 build
 
 `--weights int3-5900` serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its codec in BF16
-and its routed experts in int3, the int3 build of [`results/smaller-builds`](../results/smaller-builds/README.md). It is
-not published, so nothing is downloaded: build it with
-[`splice_int3.py`](../results/smaller-builds/splice_int3.py) into `drama-3-trim-bf16-int3` (or pass
-`--checkpoint`). It is checked against `checksums/trim-bf16-int3.sha256` (`drama3-trim-bf16-int3-v1`) and served
-by the same `--weights nvfp4` engine build, whose Metal patch 0005 reads int3 experts. A missing or changed file is
-refused, naming `splice_int3.py`.
+and its routed experts in int3, the int3 build of [`results/smaller-builds`](../results/smaller-builds/README.md). It
+replaced the NVFP4 build in `plotarmordev/drama-3-NVFP4-Pruned-5900` (the NVFP4 build stays at revision
+`4bfe2c32`, the `nvfp4-5900` pin). The launcher never downloads it: `hf download` the repo into
+`drama-3-trim-bf16-int3` (or pass `--checkpoint`), or build it with
+[`splice_int3.py`](../results/smaller-builds/splice_int3.py). It is checked against `checksums/trim-bf16-int3.sha256`
+(weights, codec, config and tokenizer files of `drama3-trim-bf16-int3-v1`; not the card) and served by the same
+`--weights nvfp4` engine build, whose Metal patch 0005 reads int3 experts. A missing or changed file is refused,
+naming `splice_int3.py`.
 
 ### BF16 codec
 

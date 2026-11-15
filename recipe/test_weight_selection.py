@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pilot
 import pilot_macos
-import speech_server
 import weight_selection as selection
 
 GIB = 1024**3

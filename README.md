@@ -87,6 +87,17 @@ On Mac it builds [`engine/nvfp4/macos/UPSTREAM`](engine/nvfp4/macos/UPSTREAM) pl
 Metal's `--cfg-batched` pairs independent states in one command buffer, not a vectorized GEMM.
 `--weights full` builds [`engine/UPSTREAM`](engine/UPSTREAM) with the one-patch [`engine/patches`](engine/patches) series.
 
+When it prints `DRAMA_PILOT_READY`, synthesize from another terminal. The second command streams and plays as
+it arrives:
+
+```sh
+curl -sS http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/json' \
+  -d '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen."}' -o hello.wav
+curl -sSN http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/json' \
+  -d '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen.", "response_format": "pcm", "stream": true}' \
+  | aplay -q -f S16_LE -r 44100 -c 1
+```
+
 ### The int3 build on a GB10
 
 The CUDA NVFP4 engine reads the int3 build's experts and trimmed head, but only an FP32 `codec.pth`, so the launcher's
@@ -105,17 +116,6 @@ hf download plotarmordev/drama-3-NVFP4-Pruned-5900 codec.pth --revision 4bfe2c32
 (cd drama-3-trim-bf16-int3 && grep codec.pth ../recipe/checksums/nvfp4-t5900cover.sha256 | sha256sum -c)
 build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native serve drama-3-trim-bf16-int3 --name drama-3 \
   --port 18793 --cfg-gamma 1.5 --cfg-batched
-```
-
-When it prints `DRAMA_PILOT_READY`, synthesize from another terminal. The second command streams and plays as
-it arrives:
-
-```sh
-curl -sS http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/json' \
-  -d '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen."}' -o hello.wav
-curl -sSN http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/json' \
-  -d '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen.", "response_format": "pcm", "stream": true}' \
-  | aplay -q -f S16_LE -r 44100 -c 1
 ```
 
 ### A reference voice

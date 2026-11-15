@@ -50,6 +50,8 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`hub-release.json`](hub-release.json) | The published revision downloaded fresh from the Hub, checked against its `MANIFEST.sha256` and spoken on the Mac |
 | [`mac-speed.json`](mac-speed.json) | Warm real-time factor per take of `trim-bf16-int3` and `t5900` on the M5 Ultra, one engine binary, every run with the clean ones marked |
 | [`release_charts.py`](release_charts.py) | The Hugging Face card's `footprint.png`, `quality.png` and `speed.png` from `builds.json` and `mac-speed.json` |
+| [`gb10-speed-stage.sh`](gb10-speed-stage.sh) | `bottom shell`, before a window: the published int3 revision from the Hub, checked, with the pilot's FP32 codec swapped in |
+| [`gb10-speed.sh`](gb10-speed.sh), [`spark_speed.py`](spark_speed.py) | The GB10 job for the card's Spark rows: both builds, both voices, one engine binary (`engine/nvfp4`, built by [`prebuild-spark.sh`](../exl3-spark/prebuild-spark.sh) with `PIN=engine/nvfp4 OUT=drama3-nvfp4-engine`), warm p50 RTF, load and peak memory |
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
 `eq-3ref` reference voice with guidance γ 1.5 batched or the built-in voice; failed = capped, WER > 0.2 or a quiet
@@ -65,6 +67,6 @@ speaker-similarity claim; speed is `mac-speed.json`'s alone.
 revision `0a0afd5d` on 15 Nov 2026; the NVFP4 build stays at revision `4bfe2c32`, which `--weights nvfp4-5900`
 pins. On one engine binary, [`mac-speed.json`](mac-speed.json)'s clean runs (every warm take under 0.65 RTF on a
 shared machine) put the int3 build at 0.511 median warm RTF per take and `t5900` at 0.520: equally fast, the gap
-within the run-to-run spread; the three contended runs are kept in its `runs`. It has not been served on the
-Spark, and the CUDA pin `b1f4b9b` refuses its BF16 codec
-(`codec_pth.zig` reads float32 only): the card points CUDA users to the previous revision's FP32 `codec.pth`.
+within the run-to-run spread; the three contended runs are kept in its `runs`. The CUDA pin `b1f4b9b` refuses its
+BF16 codec (`codec_pth.zig` reads float32 only): the card points CUDA users to the previous revision's FP32
+`codec.pth`. It has not been served on the Spark yet: `gb10-speed.sh` is staged for the Desk's GB10 window.

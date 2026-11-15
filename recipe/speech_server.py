@@ -36,8 +36,9 @@ SPEECH = '/v1/audio/speech'
 READY = 'DRAMA_PILOT_READY'
 ENGINE_FLAGS = ('--max-frames', '4096', '--silence-floor-dbfs', '-40', '--silence-seconds', '10',
                 '--silence-redraws', '1')
-# The CUDA long-form default: a take that falls silent loses at most the rest of one segment.
-SEGMENT_CHARS = 500
+# A take that falls silent loses at most the rest of one segment. 600 is bin/voice-note's cap, so a voice note is
+# always one take: separately drawn segments restart the intonation at their join.
+SEGMENT_CHARS = 600
 # The engine's own input limit; a longer input is relayed for the engine to refuse.
 MAX_INPUT_CHARS = 4096
 WAV_HEADER = 44

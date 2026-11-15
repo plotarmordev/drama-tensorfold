@@ -39,13 +39,16 @@ import threading
 import time
 from typing import BinaryIO, Iterator
 
+from weight_selection import DEFAULT_WEIGHTS
+
 RECIPE = Path(__file__).resolve().parent
 SPEECH = '/v1/audio/speech'
 READY = 'DRAMA_PILOT_READY'
 ENGINE_FLAGS = ('--max-frames', '4096', '--silence-floor-dbfs', '-40', '--silence-seconds', '10',
                 '--silence-redraws', '1')
-# The CUDA long-form default: a take that falls silent loses at most the rest of one segment.
-SEGMENT_CHARS = 500
+# A take that falls silent loses at most the rest of one segment. 600 is bin/voice-note's cap, so a voice note is
+# always one take: separately drawn segments restart the intonation at their join.
+SEGMENT_CHARS = 600
 # A note shorter than this is one segment and goes before the next segment of a long reply.
 SHORT_CHARS = 400
 # The engine's own input limit; a longer input is relayed for the engine to refuse.
@@ -70,7 +73,7 @@ SPEAKER = re.compile(r'<\|speaker:\d+\|>')
 
 
 def read_config(path: Path) -> configparser.SectionProxy:
-    parser = configparser.ConfigParser(defaults={'weights': 'nvfp4-5900', 'host': '127.0.0.1', 'port': '18793',
+    parser = configparser.ConfigParser(defaults={'weights': DEFAULT_WEIGHTS, 'host': '127.0.0.1', 'port': '18793',
                                                  'engine_port': '18794'})
     with path.open() as config:
         parser.read_file(config)

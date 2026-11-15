@@ -1,6 +1,6 @@
 {
  "schema": "drama-backbone-attention-tiles/1",
- "scope": "Native TensorFold Drama 3 backbone before and after engine patch 0040 (full attention runs the reference's 64-key softmax tiles), against the pinned sglang-omni reference ab095ef9, checkpoint fishaudio/drama-3 e0a9218a, on our GB10. Neutralized from the oracle output; numbers unchanged.",
+ "scope": "Native TensorFold Drama 3 backbone before and after engine patch 0040 (full attention runs the reference's 64-key softmax tiles), against the pinned sglang-omni reference ab095ef9, checkpoint fishaudio/drama-3 e0a9218a, on my GB10. Neutralized from the oracle output; numbers unchanged.",
  "method": "The native backbone oracle on the GPU against the frozen reference outputs: final hidden states and semantic logits for the 182-token text fixture and a 449-row voice-reference prompt, and the full attention operator alone on the reference's own layer inputs.",
  "bars": {
   "hidden_cosine_min": 0.999,
@@ -160,7 +160,7 @@
   "evidence_valid": true
  },
  "serving": {
-  "host": "our GB10, our corpus",
+  "host": "my GB10, my corpus",
   "warm_rtf_48_request_capture": {
    "previous_engine_same_session": {
     "min": 0.642,

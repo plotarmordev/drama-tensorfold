@@ -47,7 +47,7 @@ reviewed clipped capture, and `bench/stream_check.py` passed 9/9.
 
 On the final binary of the speed work, before patch 0040, the warm RTF is 0.636, first audio arrives at 0.132 s and
 a 4.18 s utterance completes in 2.86 s. Stage 01 (the staged backbone GEMM) has no separate RTF entry. Patch 0040
-costs about 5% on our GB10, our corpus: [`backbone-attention-tiles.json`](backbone-attention-tiles.json).
+costs about 5% on my GB10, my corpus: [`backbone-attention-tiles.json`](backbone-attention-tiles.json).
 
 ## Qualification status: not achieved
 

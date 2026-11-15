@@ -45,8 +45,9 @@ def guard(weights: int, external_admission: bool) -> tuple[int | None, int | Non
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--weights', choices=tuple(weight_selection.WEIGHTS),
-                        help='Download (first run, published weights), verify and serve these pinned weights with '
-                             'the engine scripts/build-engine.sh --weights builds for them; the NVFP4 quants also '
+                        help='Download (first run, published weights), verify and serve these pinned weights '
+                             f'(default {weight_selection.DEFAULT_WEIGHTS} unless --checkpoint is given) with the '
+                             'engine scripts/build-engine.sh --weights builds for them; the NVFP4 quants also '
                              'apply their measured guidance, --cfg-gamma 1.5 --cfg-batched, unless a guidance flag '
                              'follows --')
     parser.add_argument('--backend', choices=('native', 'sglang-omni'), default='native')
@@ -81,7 +82,7 @@ def main() -> int:
     if not (math.isfinite(args.reserve_gib) and args.reserve_gib >= 0):
         parser.error('--reserve-gib must be finite and non-negative')
     if args.weights is None and args.checkpoint is None:
-        parser.error('Pass --weights nvfp4 or --weights full, or --checkpoint DIR')
+        args.weights = weight_selection.DEFAULT_WEIGHTS
     engine = args.weights and weight_selection.WEIGHTS[args.weights]['engine']
     if engine == 'nvfp4' and args.backend != 'native':
         parser.error('Only the native backend serves the NVFP4 weights')

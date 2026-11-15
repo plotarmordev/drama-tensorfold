@@ -3,11 +3,12 @@
 #
 # Usage: scripts/build-engine.sh [--weights full|nvfp4] [BUILD_DIR]
 #
-#   --weights full    (the default) upstream TensorFold at engine/UPSTREAM with the opt-in patches in
-#                     engine/patches: the native server and drama3-generate, in build/tensorfold
-#   --weights nvfp4   CUDA: engine/nvfp4/UPSTREAM plus its patches, native server.
+#   --weights full    upstream TensorFold at engine/UPSTREAM with the opt-in patches in engine/patches: the native
+#                     server and drama3-generate, in build/tensorfold
+#   --weights nvfp4   (the default) CUDA: engine/nvfp4/UPSTREAM plus its patches, native server.
 #                     Metal: engine/nvfp4/macos/UPSTREAM plus its patches, native server and voice tools.
-#                     Both use plotarmordev/drama-3-NVFP4-Pruned, in build/tensorfold-nvfp4.
+#                     It serves every quant (the launchers' --weights nvfp4, nvfp4-5900 and int3-5900, their
+#                     default), in build/tensorfold-nvfp4.
 #
 # Environment:
 #   ZIG          Zig 0.17.0 executable (default: zig on PATH)
@@ -29,7 +30,7 @@ die() {
   exit 1
 }
 
-weights=full
+weights=nvfp4
 if [[ ${1:-} == --weights ]]; then
   (($# >= 2)) || die "--weights needs full or nvfp4"
   weights=$2

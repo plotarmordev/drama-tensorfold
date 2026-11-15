@@ -1,6 +1,6 @@
 {
  "schema": "drama-native-voice-encoder/1",
- "scope": "tensorfold-native voice encode (engine patches 0051-0052) against the pinned reference encoder (sglang-omni FishReferenceEncodeHook, bfloat16 autocast), on our GB10, our test voices. Neutralized from the encoder parity run and the clone evaluation; numbers unchanged. No audio, transcripts or voice files are published.",
+ "scope": "tensorfold-native voice encode (engine patches 0051-0052) against the pinned reference encoder (sglang-omni FishReferenceEncodeHook, bfloat16 autocast), on my GB10, my test voices. Neutralized from the encoder parity run and the clone evaluation; numbers unchanged. No audio, transcripts or voice files are published.",
  "code_parity": {
   "method": "The same clip through both encoders, one fresh process per clip; the share of codes that differ, per codebook. The reference gave identical codes on two runs of the same clip.",
   "clips": [
@@ -115,7 +115,7 @@
   "limits": "One take per side, and the sampling seed comes from the prompt rows, which the codes change, so a difference cannot be credited to the codes alone. Take noise was measured on one voice only; model-invented test voice 2 scores 0.9046 reply against reply, under that voice's take minimum."
  },
  "resources": {
-  "method": "The same three clips as code_parity, one encode each on our GB10 under its GPU lock. Native peak is the engine's tracked device buffers, without the driver's context memory; reference peak is torch's.",
+  "method": "The same three clips as code_parity, one encode each on my GB10 under its GPU lock. Native peak is the engine's tracked device buffers, without the driver's context memory; reference peak is torch's.",
   "clip_s": [
    15.7,
    53.3,

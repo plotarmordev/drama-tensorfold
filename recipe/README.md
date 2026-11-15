@@ -3,37 +3,38 @@
 `pilot.py` starts one Drama 3 server, native or reference, as a transient `systemd --user` unit, and stops it
 cleanly. It needs Linux, user systemd and Python 3 (standard library only).
 
-On Apple silicon use [`pilot_macos.py`](README-macos.md), with the same explicit `--weights`
-selection and checkpoint manifests. It uses native Metal and owned process groups, not systemd.
+On Apple silicon use [`pilot_macos.py`](README-macos.md), with the same `--weights` selection, default and
+checkpoint manifests. It uses native Metal and owned process groups, not systemd.
 Its NVFP4 engine pin is separate from CUDA; the full-model pin remains unchanged.
 
 The Linux NVFP4 build applies `engine/nvfp4/patches` after its pinned base. Its long-form
 splitter keeps delivery markup intact; see [CUDA NVFP4 long speech](../README.md#cuda-nvfp4-long-speech).
 
 ```sh
-python3 recipe/pilot.py --weights nvfp4 \
+python3 recipe/pilot.py \
   --runtime-dir "$RUNTIME_DIR" \
   --gpu-lock "$GPU_LOCK" \
   --evidence-dir "$EVIDENCE_DIR"
 ```
 
-`--weights nvfp4`, `--weights nvfp4-5900` or `--weights full` picks the pinned checkpoint, `checksums/nvfp4.sha256`,
+`--weights int3-5900` (the default without `--weights` or `--checkpoint`), `--weights nvfp4`, `--weights nvfp4-5900`
+or `--weights full` picks the pinned checkpoint, `checksums/trim-bf16-int3.sha256`, `checksums/nvfp4.sha256`,
 `checksums/nvfp4-t5900cover.sha256` or `checksums/checkpoint.sha256`, and its engine build in `build/tensorfold-nvfp4`
-(both quants) or `build/tensorfold` from `scripts/build-engine.sh --weights nvfp4|full`. On first use the launcher
-downloads the checkpoint with `hf download` at the revision in `sources.json`, into `drama-3-NVFP4-Pruned/`,
-`drama-3-NVFP4-Pruned-5900/` or `drama-3/` at the repository root. Every start then
-hashes every pinned file and refuses, before it takes the GPU lock, if one is missing or changed. With either quant it adds
-`--cfg-gamma 1.5 --cfg-batched`, the guidance the quant was measured with, unless a `--cfg-gamma`,
+(every quant) or `build/tensorfold` from `scripts/build-engine.sh --weights nvfp4|full`. On first use the launcher
+downloads the checkpoint with `hf download` at the revision in `sources.json`, into `drama-3-trim-bf16-int3/`,
+`drama-3-NVFP4-Pruned/`, `drama-3-NVFP4-Pruned-5900/` or `drama-3/` at the repository root. Every start then
+hashes every pinned file and refuses, before it takes the GPU lock, if one is missing or changed. With any quant it
+adds `--cfg-gamma 1.5 --cfg-batched`, the guidance the quant was measured with, unless a `--cfg-gamma`,
 `--cfg-allow-request-gamma` or `--cfg-batched` of your own follows `--`. `--checkpoint` and `--native-bin` override
 the directory and executable, but a selected `--weights` manifest is still checked against an overridden
 checkpoint. Only an absent default checkpoint is downloaded; explicit paths and existing incomplete directories
-are refused rather than repaired. Without `--weights`, pass both paths; nothing is downloaded or added,
-and no pinned-checkpoint verification is claimed.
+are refused rather than repaired. With `--checkpoint` and no `--weights`, pass `--native-bin` too; nothing is
+downloaded or added, and no pinned-checkpoint verification is claimed.
 
-For the SGLang-Omni reference, replace `--native-bin …` with `--backend sglang-omni`. The reference also needs
-`venv/` (with `sgl-omni` installed) and an `sglang-omni/` checkout at the revision in `sources.json`, both inside
-the runtime directory. Add `--library-dir` (repeatable) when the CUDA libraries are not on the loader's search
-path. `CUDA_HOME` (default `/usr/local/cuda`) puts the toolkit's `bin/` on the server's `PATH`.
+For the SGLang-Omni reference, which serves only the full model, pass `--weights full --backend sglang-omni`. The
+reference also needs `venv/` (with `sgl-omni` installed) and an `sglang-omni/` checkout at the revision in
+`sources.json`, both inside the runtime directory. Add `--library-dir` (repeatable) when the CUDA libraries are not on
+the loader's search path. `CUDA_HOME` (default `/usr/local/cuda`) puts the toolkit's `bin/` on the server's `PATH`.
 
 | Argument | Meaning |
 |---|---|
@@ -47,7 +48,7 @@ path. `CUDA_HOME` (default `/usr/local/cuda`) puts the toolkit's `bin/` on the s
 
 | Quantity | GiB |
 |---|---:|
-| Checkpoint weights plus codec, on disk (not runtime memory): full / NVFP4 | 38.63 / 20.76 |
+| Checkpoint weights plus codec, on disk (not runtime memory): full / NVFP4 / int3 | 38.63 / 20.76 / 14.50 |
 | Unit memory cap (`MemoryMax`), swap disabled | 54 |
 | Host headroom floor | 30 |
 | Abort threshold on `MemAvailable` | 34 |
@@ -92,6 +93,10 @@ rejects a byte budget. Its 44 GiB engine allocator cap is unchanged.
 ## Files
 
 - `pilot.py`: the launcher.
+- `pilot_macos.py`: the Apple silicon launcher ([README-macos.md](README-macos.md)).
+- `weight_selection.py`: the `--weights` table, its default, the download and the manifest check both launchers share.
+- `speech_server.py`: the Mac speech server in front of `pilot_macos.py`; `speech-server.example.ini` documents its
+  settings.
 - `reference/drama3-gb10.yaml`: the sglang-omni pipeline config used for every reference measurement.
 - `checksums/checkpoint.sha256`: SHA-256 of the codec, the eight weight shards and the tokenizer at checkpoint
   revision `e0a9218a`.
@@ -99,4 +104,6 @@ rejects a byte budget. Its 44 GiB engine allocator cap is unchanged.
   tokenizer files of `plotarmordev/drama-3-NVFP4-Pruned` at revision `494db084`.
 - `checksums/nvfp4-t5900cover.sha256`: the same files of the 5,900-expert quant (`drama3-nvfp4-t5900cover-v1`),
   `plotarmordev/drama-3-NVFP4-Pruned-5900` at revision `4bfe2c32`.
+- `checksums/trim-bf16-int3.sha256`: the same files of the 14.5 GB int3 build, `plotarmordev/drama-3-NVFP4-Pruned-5900`
+  at revision `8c6c3d79`.
 - `sources.json`: the pinned reference and checkpoint revisions.

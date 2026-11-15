@@ -924,7 +924,7 @@ def diag_summary():
 
 
 def acquire_gpu():
-    # Block on the shared lock so the first release goes to us; the pause step re-checks the GPU and memory floor.
+    # Block on the shared lock so the first release goes to this run; the pause step re-checks the GPU and memory floor.
     argv = (['python3', str(Path(__file__).resolve())] + (['--diag'] if DIAG else [])
             + (['--out-dir', str(OUT)] if _argv_value('--out-dir') else []) + ['--pause-step'])
     acquire = ['flock', LOCK, '-c', shlex.join(argv)]

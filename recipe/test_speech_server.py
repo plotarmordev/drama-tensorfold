@@ -208,7 +208,8 @@ class ServerTests(unittest.TestCase):
             released = speech_server.pilot_command(speech_server.read_config(config))
             config.write_text(base.replace('checkpoint = model\n', 'weights = int3-5900\n'))
             int3 = speech_server.pilot_command(speech_server.read_config(config))
-        self.assertEqual(default[default.index('--weights') + 1], 'nvfp4-5900')
+        # a config with no weights line is checked against the default build's pins
+        self.assertEqual(default[default.index('--weights') + 1], 'int3-5900')
         self.assertEqual(default[default.index('--checkpoint') + 1], str(Path('model').resolve()))
         self.assertEqual(released[released.index('--weights') + 1], 'nvfp4')
         # without a checkpoint, the launcher serves the build's own folder
@@ -218,6 +219,15 @@ class ServerTests(unittest.TestCase):
         # a launcher flag, before the serve flags
         self.assertEqual(external, default[:default.index('--')] + ['--external-admission']
                          + default[default.index('--'):])
+
+    def test_a_voice_note_up_to_its_cap_is_one_take(self):
+        note = ' '.join(f'Line {n} of a long note, said in one breath and one tone.' for n in range(11))[:600]
+        self.start()
+        reply = self.post(input=note)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.read(), wav(note.encode()))
+        self.assertEqual([request['input'] for request in self.engine.requests], [note])
+        self.assertEqual(len(speech_server.segments(note + ' More.')), 2)
 
     def test_long_form_does_not_stop_at_a_silent_segment(self):
         self.assertEqual(len(LONG), 2400)
@@ -233,7 +243,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual([request['input'] for request in self.engine.requests], pieces)
 
     def test_long_form_stream_carries_every_segment_and_the_last_finish_reason(self):
-        self.start(reasons=['silence', 'stop', 'stop', 'stop', 'stop', 'length'])
+        self.start(reasons=['silence', 'stop', 'stop', 'stop', 'length'])
         head, _, body = self.raw_stream(input=LONG).partition(b'\r\n\r\n')
         self.assertIn(b'Transfer-Encoding: chunked', head)
         self.assertTrue(body.endswith(b'0\r\nX-Finish-Reason: length\r\n\r\n'))

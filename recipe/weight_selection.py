@@ -12,7 +12,7 @@ RECIPE = Path(__file__).resolve().parent
 REPO = RECIPE.parent
 NVFP4_SERVE = ('--cfg-gamma', '1.5', '--cfg-batched')
 # 'engine' is the scripts/build-engine.sh --weights profile that builds 'build'; the quants share one.
-# int3-5900 has no 'source': it is built on the Mac by results/smaller-builds/splice_int3.py, never downloaded.
+# int3-5900 (the default on Mac and GB10) and nvfp4-5900 are two revisions of one Hugging Face repository.
 WEIGHTS = {
     'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256',
              'engine': 'full', 'build': 'tensorfold', 'serve': ()},
@@ -21,9 +21,10 @@ WEIGHTS = {
     'nvfp4-5900': {'source': 'nvfp4_5900_checkpoint', 'dir': 'drama-3-NVFP4-Pruned-5900',
                    'pins': 'nvfp4-t5900cover.sha256',
                    'engine': 'nvfp4', 'build': 'tensorfold-nvfp4', 'serve': NVFP4_SERVE},
-    'int3-5900': {'source': None, 'dir': 'drama-3-trim-bf16-int3', 'pins': 'trim-bf16-int3.sha256',
+    'int3-5900': {'source': 'int3_5900_checkpoint', 'dir': 'drama-3-trim-bf16-int3', 'pins': 'trim-bf16-int3.sha256',
                   'engine': 'nvfp4', 'build': 'tensorfold-nvfp4', 'serve': NVFP4_SERVE},
 }
+DEFAULT_WEIGHTS = 'int3-5900'
 GUIDANCE_FLAGS = ('--cfg-gamma', '--cfg-allow-request-gamma', '--cfg-batched')
 
 
@@ -68,7 +69,7 @@ def read_pins(pins: Path) -> list[list[str]]:
 
 
 def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
-    """Verify selected pins, downloading only an absent default that has a source (never an override).
+    """Verify selected pins, downloading only an absent default folder (never an override).
 
     Explicit legacy paths have operator-owned provenance, not an implied pinned source.
     """
@@ -80,14 +81,10 @@ def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
         return provenance
     spec = WEIGHTS[choice]
     pins = RECIPE / 'checksums' / spec['pins']
-    if spec['source'] is None:
-        source = None
-        repair = 'Build it with results/smaller-builds/splice_int3.py (results/smaller-builds/README.md)'
-    else:
-        source = json.loads((RECIPE / 'sources.json').read_text())[spec['source']]
-        repair = (f'Repair it with: hf download {source["repository"]} --revision {source["revision"]} '
-                  f'--local-dir {target}, or delete it and run again')
-    if source and override is None and not target.exists() and not target.is_symlink():
+    source = json.loads((RECIPE / 'sources.json').read_text())[spec['source']]
+    repair = (f'Repair it with: hf download {source["repository"]} --revision {source["revision"]} '
+              f'--local-dir {target}, or delete it and run again')
+    if override is None and not target.exists() and not target.is_symlink():
         hf = shutil.which('hf')
         if hf is None:
             raise ValueError('the hf command is missing; install it with: python3 -m pip install -U huggingface_hub')

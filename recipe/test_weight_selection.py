@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pilot
 import pilot_macos
-import speech_server
 import weight_selection as selection
 
 GIB = 1024**3
@@ -93,11 +92,12 @@ class WeightSelectionTests(unittest.TestCase):
         self.download.assert_not_called()
         self.assertFalse((self.root / 'missing').exists())
 
-    def test_either_quant_downloads_its_own_pinned_revision_and_manifest(self):
+    def test_each_quant_downloads_its_own_pinned_revision_and_manifest(self):
         # The fixture hf moves the prepared files into its --local-dir.
         self.download.side_effect = lambda command, **_kwargs: (
             self.root / f'fixture-{Path(command[-1]).name}').rename(command[-1])
-        for mode, source in (('nvfp4', 'nvfp4_checkpoint'), ('nvfp4-5900', 'nvfp4_5900_checkpoint')):
+        for mode, source in (('nvfp4', 'nvfp4_checkpoint'), ('nvfp4-5900', 'nvfp4_5900_checkpoint'),
+                             ('int3-5900', 'int3_5900_checkpoint')):
             with self.subTest(mode=mode):
                 target = selection.checkpoint_path(mode, None)
                 target.rename(self.root / f'fixture-{target.name}')
@@ -113,23 +113,11 @@ class WeightSelectionTests(unittest.TestCase):
                 self.assertTrue(provenance['checkpoint_verified'])
 
     def test_one_quant_is_refused_against_the_other_quants_manifest(self):
-        for mode, other in (('nvfp4', 'nvfp4-5900'), ('nvfp4-5900', 'nvfp4')):
-            repository = self.sources[selection.WEIGHTS[mode]['source']]['repository']
-            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, f'hf download {repository} '):
+        for mode, other in (('nvfp4', 'nvfp4-5900'), ('nvfp4-5900', 'int3-5900'), ('int3-5900', 'nvfp4-5900')):
+            source = self.sources[selection.WEIGHTS[mode]['source']]
+            repair = f'hf download {source["repository"]} --revision {source["revision"]} '
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, repair):
                 selection.prepare_checkpoint(mode, selection.checkpoint_path(other, None))
-        self.download.assert_not_called()
-
-    def test_int3_is_never_downloaded_and_names_its_build_tool(self):
-        target = selection.checkpoint_path('int3-5900', None)
-        provenance = selection.prepare_checkpoint('int3-5900', None)
-        self.assertTrue(provenance['checkpoint_verified'])
-        self.assertIsNone(provenance['checkpoint_source'])
-        for checkpoint in (selection.checkpoint_path('nvfp4-5900', None), None):
-            if checkpoint is None:
-                target.rename(self.root / 'moved-int3')
-            with self.subTest(checkpoint=checkpoint), self.assertRaisesRegex(ValueError, 'splice_int3.py'):
-                selection.prepare_checkpoint('int3-5900', checkpoint)
-        self.assertFalse(target.exists())
         self.download.assert_not_called()
 
     def test_existing_missing_or_corrupt_input_is_not_repaired(self):
@@ -221,25 +209,21 @@ class WeightSelectionTests(unittest.TestCase):
         self.assertIsNone(completion['server_pid'])
         self.download.assert_not_called()
 
-    def test_speech_server_serves_int3_by_its_pins_with_the_nvfp4_engine(self):
-        config = self.root / 'speech-server.ini'
-        (self.root / 'gpu.lock').touch()
-        config.write_text(f'[server]\nweights = int3-5900\ngpu_lock = {self.root / "gpu.lock"}\n'
-                          f'runtime_dir = {self.root / "runtime"}\nevidence_dir = {self.root / "evidence"}\n'
-                          f'engine_port = {free_port()}\n')
-        command = speech_server.pilot_command(speech_server.read_config(config))
+    def test_mac_launcher_without_weights_serves_int3_by_its_pins_with_the_nvfp4_engine(self):
         evidence = self.root / 'evidence'
+        revision = self.sources['int3_5900_checkpoint']['revision']
         for damaged in (False, True):
             if damaged:
                 (selection.checkpoint_path('int3-5900', None) / 'config.json').write_bytes(b'other build')
-            with self.subTest(damaged=damaged), patch.object(sys, 'argv', command[1:]), \
+            arguments = self.launcher_arguments(None) + ['--port', str(free_port()), '--evidence-reuse']
+            with self.subTest(damaged=damaged), patch.object(sys, 'argv', arguments), \
                     patch.object(pilot_macos, 'memory_available', return_value=100 * GIB), \
                     patch.object(pilot_macos.subprocess, 'Popen', side_effect=Spawned) as spawn:
                 self.assertEqual(pilot_macos.main(), 1)
                 self.assertEqual(spawn.call_count, 0 if damaged else 1)
             if damaged:
                 completion = json.loads((evidence / 'completion.json').read_text())
-                self.assertIn('splice_int3.py', '\n'.join(completion['failures']))
+                self.assertIn(f'--revision {revision}', '\n'.join(completion['failures']))
                 continue
             session = json.loads((evidence / 'session.json').read_text())
             self.assertEqual(session['checkpoint_manifest'],
@@ -283,21 +267,36 @@ class WeightSelectionTests(unittest.TestCase):
         self.assertEqual(pilot.guard(70 * GIB, False), (100 * GIB, 34 * GIB))
         self.assertEqual(pilot.guard(70 * GIB, True), (None, None))
 
-    def test_linux_launcher_serves_int3_by_its_pins(self):
-        arguments = self.launcher_arguments('int3-5900') + ['--port', str(free_port())]
-        systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+    def test_linux_launcher_without_weights_downloads_and_serves_int3_with_the_nvfp4_engine(self):
+        target = selection.checkpoint_path('int3-5900', None)
+        saved = self.root / 'download-fixture'
+        target.rename(saved)
+        downloads = []
+
+        def run(command, **_kwargs):
+            if command[0] == '/fixture/hf':
+                downloads.append(command)
+                saved.rename(target)
+            return subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+
+        arguments = self.launcher_arguments(None) + ['--port', str(free_port())]
         (self.root / 'runtime').mkdir()
         with patch.object(sys, 'argv', arguments), \
+                patch.object(selection.shutil, 'which', return_value='/fixture/hf'), \
                 patch.object(pilot, 'memory_available', return_value=100 * GIB), \
-                patch.object(pilot.subprocess, 'run', return_value=systemctl), \
+                patch.object(pilot.subprocess, 'run', side_effect=run), \
                 patch.object(pilot.subprocess, 'Popen', side_effect=Spawned) as spawn, \
                 self.assertRaises(Spawned):
             pilot.main()
         spawn.assert_called_once()
+        source = self.sources['int3_5900_checkpoint']
+        self.assertEqual(downloads, [['/fixture/hf', 'download', source['repository'], '--revision',
+                                      source['revision'], '--local-dir', str(target)]])
         session = json.loads((self.root / 'evidence/session.json').read_text())
         self.assertEqual(session['checkpoint_manifest'], str(self.recipe / 'checksums' / 'trim-bf16-int3.sha256'))
         self.assertTrue(session['checkpoint_verified'])
-        self.download.assert_not_called()
+        self.assertEqual(session['server_command'][:3], [str(selection.native_path('nvfp4', None)), 'serve',
+                                                         str(target)])
 
     def test_both_launchers_admit_externally_below_the_floor(self):
         systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')

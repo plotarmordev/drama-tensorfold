@@ -3,7 +3,7 @@
 Card 35 found EXL3 at 3.0 bits 63× worse than the published NVFP4: TensorFold's `tf-exl3-encode` weighed each tile by
 H's diagonal only, with no LDLQ feedback. Here exllamav3 `bd1f519`'s own quantizer encodes card 35's six experts on a
 GB10, and EXL3 at 3.0 bits has **0.15× the `trim-bf16-int3` build's error at 0.87× its bytes**, under NVFP4's
-(0.78×). [`ldlq.patch`](ldlq.patch), our encoder with exllamav3's LDLQ, closes most of card 35's gap but is still
+(0.78×). [`ldlq.patch`](ldlq.patch), my encoder with exllamav3's LDLQ, closes most of card 35's gap but is still
 2.7× exllamav3, so the build should use exllamav3 itself.
 
 ## Result
@@ -62,8 +62,8 @@ far from the 1.1× per projection that `measure.py parity` asks of a match ([`pa
 on the same six experts at 3.0 and 2.5 bits, W rebuilt from the pilot's FP8 checkpoint and checked by sha256 against
 [`hessians/`](hessians) (`measure.py hessians`: each expert's two Hessians as float32 upper triangles, which reproduce
 `probes.json`'s NVFP4 errors to 2e-7). [`exllamav3_job.py`](exllamav3_job.py) scores exllamav3's returned Q (after
-`refit_scales`, original basis) on the undamped H in float64; `measure.py parity` divides ours by it and scores
-exllamav3 against int3 and NVFP4 on our bytes (its trellis and `su`/`sv` take the same bytes at each bitrate).
+`refit_scales`, original basis) on the undamped H in float64; `measure.py parity` divides my encoder's error by it and
+scores exllamav3 against int3 and NVFP4 on my bytes (its trellis and `su`/`sv` take the same bytes at each bitrate).
 
 The job image has no C++ compiler, so exllamav3's CUDA extension is prebuilt for sm_121 by
 [`build-exllamav3-ext.sh`](build-exllamav3-ext.sh) in `python:3.12.12-bookworm` (the image's base, with g++ 12)
@@ -111,5 +111,5 @@ All 5,900 kept experts at 3.0 bits through exllamav3 `bd1f519`'s `quantize_exl3`
    No patch in `engine/` loads EXL3 routed experts yet; that loader, and checking that it decodes exllamav3's
    trellis as exllamav3 does, is the step between the conversion and the listening test.
 
-Our encoder at Mac speed (43 experts/h with `ldlq.patch`, 5.7 days for both bitrates) is no longer the route: it
+My encoder at Mac speed (43 experts/h with `ldlq.patch`, 5.7 days for both bitrates) is no longer the route: it
 costs 2.7× the error and ~20× the time (84 s an expert at both bitrates, against 3.7 s).

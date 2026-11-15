@@ -93,12 +93,10 @@ def main() -> int:
         if args.native_bin is None and args.weights is None:
             parser.error('The native backend requires --native-bin, or --weights')
         executable = weight_selection.native_path(args.weights, args.native_bin)
-        serve_args = weight_selection.serve_arguments(args.weights, args.serve_args)
+        server_command = weight_selection.server_command(
+            executable, checkpoint, '127.0.0.1', args.port,
+            weight_selection.serve_arguments(args.weights, args.serve_args))
         working_directory = root
-        server_command = [str(executable), 'serve', str(checkpoint), '--host', '127.0.0.1',
-                          '--port', str(args.port), '--name', 'fishaudio/drama-3',
-                          '--context', '8192', '--parallel', '1', '--no-drafts',
-                          '--prompt-cache-gib', '0', '--keep-warm', '0', *serve_args]
         backend_environment = [f'TENSORFOLD_MEMORY_RESERVE_GIB={args.reserve_gib:g}',
                                'TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54',
                                *weight_selection.native_environment(args.weights)]

@@ -51,6 +51,13 @@ def serve_arguments(choice: str | None, arguments: list[str]) -> list[str]:
     return selected
 
 
+def server_command(executable: Path, checkpoint: Path, host: str, port: int, serve_args: list[str]) -> list[str]:
+    """The native server's command line, as the launchers serve it."""
+    return [str(executable), 'serve', str(checkpoint), '--host', host, '--port', str(port),
+            '--name', 'fishaudio/drama-3', '--context', '8192', '--parallel', '1', '--no-drafts',
+            '--prompt-cache-gib', '0', '--keep-warm', '0', *serve_args]
+
+
 def native_environment(choice: str | None) -> list[str]:
     # Preserve batched prefill when the pilot clears the inherited environment.
     return [] if choice and WEIGHTS[choice]['engine'] == 'nvfp4' else ['TF_DRAMA_PREFILL_ROWS=128']

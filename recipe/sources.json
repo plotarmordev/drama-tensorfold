@@ -21,6 +21,12 @@
     "weight_and_codec_bytes": 19693405440,
     "license": "Fish Audio Community License 1.0 (2026-10-13)"
   },
+  "int3_5900_checkpoint": {
+    "repository": "plotarmordev/drama-3-NVFP4-Pruned-5900",
+    "revision": "8c6c3d79577c9640a8272babea88de1b0677fee7",
+    "weight_and_codec_bytes": 15573912279,
+    "license": "Fish Audio Community License 1.0 (2026-10-13)"
+  },
   "voice": "default, without reference audio",
   "native_drama_qualified": false
 }

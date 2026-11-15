@@ -18,13 +18,20 @@
 > The [Quickstart](#quickstart) serves them with `--weights nvfp4`: it builds their engine, downloads the weights
 > on first run and applies the guidance they were measured with.
 >
-> **Smaller: the [5,900-expert quant](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900)**, `--weights
+> **Smaller: the [5,900-expert quant](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900/tree/4bfe2c32daa771566970ad385292fab43d060bb8)**, `--weights
 > nvfp4-5900`, downloaded and checked the same way. 18.34 GiB on disk against 20.76 GiB, 16.93 GiB peak GPU memory
 > against 19.35 GiB, and a cold start of 20.1 s against 26.1 s. With a reference voice it matches the 20.8 GB quant:
 > word error rate 1.50 % against 1.31 % (paired +0.19 pp [-0.02, +0.49]), 0 failed takes of 96 on either. With
 > the built-in voice it does worse: 5.85 % against 2.92 % (paired +2.93 pp [+0.43, +5.81]), 8 failed takes of 96
-> against 5. The 20.8 GB quant stays the GB10 default; on a Mac short of memory, serve the 5,900 quant
-> ([macOS](recipe/README-macos.md)). Measured on one GB10: [results/quant-15gb](results/quant-15gb/README.md).
+> against 5. The 20.8 GB quant stays the GB10 default. Measured on one GB10: [results/quant-15gb](results/quant-15gb/README.md).
+> Its repository now holds the int3 build below; `--weights nvfp4-5900` pins this quant's own revision.
+>
+> **On a Mac: the [14.5 GB int3 build](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900)**, the
+> default there (`--weights int3-5900`), downloaded and checked the same way: the 5,900-expert quant with its head
+> trimmed, its codec in BF16 and its routed experts in int3. 14.50 GiB on disk against 18.34 GiB, equally fast on an
+> M5 Ultra (0.511 against 0.520 median warm RTF), with 4 failed built-in takes of 48 against 6
+> ([results/smaller-builds](results/smaller-builds/README.md), [macOS](recipe/README-macos.md)). On a GB10 it runs
+> as fast as the 5,900 quant in 2.16 GiB less device memory ([below](#the-int3-build-on-a-gb10)).
 >
 > **Built with Fish Audio.** The quant is a modified version of
 > [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) under the Fish Audio Community License v1.0
@@ -48,8 +55,8 @@ and starts a local speech server with an OpenAI-style `/v1/audio/speech` route, 
 
 ## Quickstart
 
-Apple silicon: use the [macOS/Metal instructions](recipe/README-macos.md) for `--weights nvfp4`
-or `--weights full`. The GB10 measurements above do not qualify Mac speed or quality.
+Apple silicon: use the [macOS/Metal instructions](recipe/README-macos.md); with no `--weights`, the Mac builds and
+serves the 14.5 GB int3 build. The GB10 measurements above do not qualify Mac speed or quality.
 The Linux requirements and cgroup cap below do not apply to the Mac launcher.
 
 You need Linux with user systemd, CUDA 13, [Zig 0.17.0](https://ziglang.org/download/), the `hf` command
@@ -89,6 +96,26 @@ curl -sS http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/js
 curl -sSN http://127.0.0.1:18793/v1/audio/speech -H 'Content-Type: application/json' \
   -d '{"model": "fishaudio/drama-3", "input": "The train leaves at seven fifteen.", "response_format": "pcm", "stream": true}' \
   | aplay -q -f S16_LE -r 44100 -c 1
+```
+
+### The int3 build on a GB10
+
+The CUDA NVFP4 engine reads the int3 build's experts and trimmed head, but only an FP32 `codec.pth`, so the launcher's
+`--weights int3-5900` (which pins the BF16 codec) does not start it here. Card 47 measured it on one GB10 with the
+NVFP4 engine build above and the 5,900 quant's FP32 codec swapped in: warm p50 RTF 0.614 built-in and 0.809 reference
+voice against 0.619 and 0.831 for the 5,900 quant, 14.77 GiB peak device memory against 16.93
+([spark-speed.json](results/smaller-builds/spark-speed.json)); its quality was measured on the Mac, not the GB10. To
+serve it that way:
+
+```sh
+hf download plotarmordev/drama-3-NVFP4-Pruned-5900 --revision 8c6c3d79577c9640a8272babea88de1b0677fee7 \
+  --local-dir drama-3-trim-bf16-int3
+(cd drama-3-trim-bf16-int3 && sha256sum -c ../recipe/checksums/trim-bf16-int3.sha256)
+hf download plotarmordev/drama-3-NVFP4-Pruned-5900 codec.pth --revision 4bfe2c32daa771566970ad385292fab43d060bb8 \
+  --local-dir drama-3-trim-bf16-int3
+(cd drama-3-trim-bf16-int3 && grep codec.pth ../recipe/checksums/nvfp4-t5900cover.sha256 | sha256sum -c)
+build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native serve drama-3-trim-bf16-int3 --name drama-3 \
+  --port 18793 --cfg-gamma 1.5 --cfg-batched
 ```
 
 ### A reference voice

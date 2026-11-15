@@ -1,6 +1,6 @@
 # macOS: running the pinned recipe on Apple silicon
 
-Both `--weights full` and the quantized builds (`--weights nvfp4-5900`, `--weights int3-5900`, `--weights nvfp4`) use the native Zig/Metal engine, not Python/MLX.
+Both `--weights full` and the quantized builds (`--weights int3-5900`, the default, `--weights nvfp4-5900`, `--weights nvfp4`) use the native Zig/Metal engine, not Python/MLX.
 The full model uses the Linux recipe's pin, TensorFold v1.1.9, plus a Metal-only calibration-rows patch. NVFP4 uses the separate
 [Mac engine pin](../engine/nvfp4/macos/UPSTREAM) and patch series; the CUDA NVFP4 pin is unchanged.
 Neither path requires CUDA, `nvcc`, systemd, or `/proc`. Use `recipe/pilot_macos.py`.
@@ -23,26 +23,37 @@ application to make an admission check pass.
   python -m pip install huggingface_hub
   ```
 
-- Approximately 21 GiB for the 20.8 GB NVFP4 checkpoint, 18 GiB for the 5,900-expert one, or 39 GiB for the full checkpoint, plus
-  build/cache space and sufficient free + inactive memory. Disk size is not a resident-memory prediction.
+- Approximately 15 GiB for the default 14.5 GB int3 build, 18 GiB for the 5,900-expert NVFP4 checkpoint, 21 GiB for
+  the 20.8 GB one, or 39 GiB for the full checkpoint, plus build/cache space and sufficient free + inactive memory.
+  Disk size is not a resident-memory prediction.
 - Permission to use the checkpoint under the [pinned model license](https://huggingface.co/fishaudio/drama-3/blob/e0a9218aa48888270f06ef1ed9ea67622c0e17d2/LICENSE).
 
-From the repository root, for the 5,900-expert NVFP4 checkpoint, the one to serve on a Mac (below):
+From the repository root, build the engine; with no `--weights` the Mac builds the quants' engine, which serves the
+default 14.5 GB int3 build ([below](#the-145-gb-int3-build)):
+
+```sh
+ZIG=/absolute/path/to/zig-0.17.0/zig JOBS=2 scripts/build-engine.sh
+```
+
+The launcher ([Launch and stop](#launch-and-stop)) downloads the default build on its first start into
+`drama-3-trim-bf16-int3`, from `plotarmordev/drama-3-NVFP4-Pruned-5900` at the revision pinned in
+[`sources.json`](sources.json), and checks its fifteen files against `checksums/trim-bf16-int3.sha256` on every
+start, including an explicit `--checkpoint` override; an incomplete or changed directory is refused rather than
+repaired. To fetch and check it by hand instead:
 
 ```sh
 hf download plotarmordev/drama-3-NVFP4-Pruned-5900 \
-  --revision 4bfe2c32daa771566970ad385292fab43d060bb8 --local-dir drama-3-NVFP4-Pruned-5900
-(cd drama-3-NVFP4-Pruned-5900 && shasum -a 256 -c ../recipe/checksums/nvfp4-t5900cover.sha256)
-ZIG=/absolute/path/to/zig-0.17.0/zig JOBS=2 scripts/build-engine.sh --weights nvfp4
+  --revision 8c6c3d79577c9640a8272babea88de1b0677fee7 --local-dir drama-3-trim-bf16-int3
+(cd drama-3-trim-bf16-int3 && shasum -a 256 -c ../recipe/checksums/trim-bf16-int3.sha256)
 ```
 
-For the 20.8 GB quant, download `plotarmordev/drama-3-NVFP4-Pruned` at revision
-`494db08481db952f834b2241bce63fb3dfa72554` into `drama-3-NVFP4-Pruned` and check it against
-`checksums/nvfp4.sha256`. Both quants use the same engine build.
+The other quants are selected by name and download the same way into their own folders, with their own pins:
+`--weights nvfp4-5900`, the 5,900-expert NVFP4 build (`plotarmordev/drama-3-NVFP4-Pruned-5900` at revision
+`4bfe2c32daa771566970ad385292fab43d060bb8`, `checksums/nvfp4-t5900cover.sha256`, into `drama-3-NVFP4-Pruned-5900`),
+and `--weights nvfp4`, the 20.8 GB quant (`plotarmordev/drama-3-NVFP4-Pruned` at revision
+`494db08481db952f834b2241bce63fb3dfa72554`, `checksums/nvfp4.sha256`, into `drama-3-NVFP4-Pruned`). All three
+use the same engine build (`--weights nvfp4`, the Mac default).
 
-All fifteen checkpoint files must report `OK`. The launcher also verifies the selected manifest
-on every start, including an explicit `--checkpoint` override; an incomplete or changed directory
-is refused rather than repaired. An absent default directory can be downloaded automatically.
 The build verifies its ordered patch checksums and does not require a CUDA compiler on Darwin.
 Outputs are `build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native` and
 `build/tensorfold-nvfp4/zig-out/bin/{drama3-generate,drama3-voice}`.
@@ -52,26 +63,26 @@ Outputs are `build/tensorfold-nvfp4/zig-out/native/bin/tensorfold-native` and
 To serve a checkpoint that is already on this Mac, pass its directory; nothing is downloaded or converted:
 
 ```sh
-python3 recipe/pilot_macos.py --weights nvfp4-5900 --checkpoint /path/to/quant/model \
+python3 recipe/pilot_macos.py --weights int3-5900 --checkpoint /path/to/quant/model \
   --runtime-dir runtime --gpu-lock runtime/gpu.lock --evidence-dir runs/quant-01
 ```
 
 The launcher verifies the directory against the manifest of the selected quant:
-`checksums/nvfp4-t5900cover.sha256` for `--weights nvfp4-5900` (`drama3-nvfp4-t5900cover-v1`, published as
-`plotarmordev/drama-3-NVFP4-Pruned-5900`) or `checksums/nvfp4.sha256` for `--weights nvfp4`
-(`drama3-nvfp4-trim7369-v1`). A changed file is refused rather than repaired.
+`checksums/trim-bf16-int3.sha256` for `--weights int3-5900`, `checksums/nvfp4-t5900cover.sha256` for
+`--weights nvfp4-5900` (`drama3-nvfp4-t5900cover-v1`) or `checksums/nvfp4.sha256` for `--weights nvfp4`
+(`drama3-nvfp4-trim7369-v1`). A changed file is refused rather than repaired. `--checkpoint` without `--weights` is
+the legacy explicit mode ([Launch and stop](#launch-and-stop)), with no manifest check.
 
 ### The 14.5 GB int3 build
 
-`--weights int3-5900` serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its codec in BF16
-and its routed experts in int3, the int3 build of [`results/smaller-builds`](../results/smaller-builds/README.md). It
-replaced the NVFP4 build in `plotarmordev/drama-3-NVFP4-Pruned-5900` (the NVFP4 build stays at revision
-`4bfe2c32`, the `nvfp4-5900` pin). The launcher never downloads it: `hf download` the repo into
-`drama-3-trim-bf16-int3` (or pass `--checkpoint`), or build it with
-[`splice_int3.py`](../results/smaller-builds/splice_int3.py). It is checked against `checksums/trim-bf16-int3.sha256`
-(weights, codec, config and tokenizer files of `drama3-trim-bf16-int3-v1`; not the card) and served by the same
-`--weights nvfp4` engine build, whose Metal patch 0005 reads int3 experts. A missing or changed file is refused,
-naming `splice_int3.py`.
+`--weights int3-5900`, the Mac default, serves `trim-bf16-int3`, the 5,900-expert quant with its head trimmed, its
+codec in BF16 and its routed experts in int3, the int3 build of
+[`results/smaller-builds`](../results/smaller-builds/README.md): 14.50 GiB of weights and codec against 18.34 for
+`nvfp4-5900`, equally fast on the M5 Ultra (0.511 against 0.520 median warm RTF), with no more failed takes. It
+replaced the NVFP4 build in `plotarmordev/drama-3-NVFP4-Pruned-5900` at revision `0a0afd5d`; the launcher pins
+`8c6c3d79`, the card update after it, with the same weights. It is checked against `checksums/trim-bf16-int3.sha256`
+(weights, codec, config and tokenizer files of `drama3-trim-bf16-int3-v1`; not the card) and served by the
+`--weights nvfp4` engine build, whose Metal patch 0005 reads int3 experts.
 
 ### BF16 codec
 
@@ -94,9 +105,9 @@ see [`results/codec-bf16.json`](../results/codec-bf16.json).
 The published manifests still pin the FP32 codec. A converted directory therefore requires legacy explicit
 `--native-bin`/`--checkpoint` mode, without `--weights`; do not replace a pinned checkpoint's codec in place.
 
-[`results/macos-nvfp4-quants.json`](../results/macos-nvfp4-quants.json) records both quants on an
+[`results/macos-nvfp4-quants.json`](../results/macos-nvfp4-quants.json) records both NVFP4 quants on an
 M5 Ultra beside a resident 171 GB local model. Both load and speak (48/48 corpus requests, warm
-RTF 0.50). **Serve `drama3-nvfp4-t5900cover-v1`**: 25.0 GiB wired between requests against
+RTF 0.50). Of the two, `drama3-nvfp4-t5900cover-v1` needs less: 25.0 GiB wired between requests against
 27.5 GiB, and the host's GPU allocation rose from 195.0 to 222.2 GB with swap unchanged. Each
 quant has frame-cap takes (4096 frames) on some corpus items; quality against the full model was
 not measured.
@@ -129,20 +140,21 @@ unshared local pilot, the following creates its local runtime directory and lock
 ```sh
 mkdir -p runtime
 touch runtime/gpu.lock
-python3 recipe/pilot_macos.py --weights nvfp4-5900 \
-  --runtime-dir runtime --gpu-lock runtime/gpu.lock --evidence-dir runs/macos-pilot-01
+python3 recipe/pilot_macos.py --runtime-dir runtime --gpu-lock runtime/gpu.lock --evidence-dir runs/macos-pilot-01
 ```
 
 The default bind address is **127.0.0.1**, port **18793**; `--host` accepts numeric IPv4 addresses. An occupied port or lock is a refusal,
 not permission to displace its owner. This unauthenticated API should not be exposed casually;
 LAN placement does not exempt a hosted service from the model license.
 
-Use `--weights nvfp4` for the 20.8 GB quant and `--weights full` for the full model. Explicit `--native-bin` and `--checkpoint` remain available;
+Without `--weights` or `--checkpoint` it serves the default, `--weights int3-5900`. Use `--weights nvfp4-5900` for
+the 5,900-expert NVFP4 build, `--weights nvfp4` for the 20.8 GB quant and `--weights full` for the full model.
+Explicit `--native-bin` and `--checkpoint` remain available;
 with `--weights` the selected checkpoint manifest is still mandatory. Without `--weights`, the legacy
 explicit-binary/checkpoint mode makes no pinned-manifest verification claim. `session.json` records
 the selection, checkpoint revision, manifest, actual binary and command.
 
-NVFP4 defaults to `--cfg-gamma 1.5 --cfg-batched`. On Metal, paired guidance means two independent
+The quants default to `--cfg-gamma 1.5 --cfg-batched`. On Metal, paired guidance means two independent
 backbone states submitted in one command buffer, sharing weights; it is not a two-row/vectorized GEMM.
 Only semantic logits are guided; residual codec heads stay conditional. Builtin voices remain unguided.
 Admission conservatively budgets the additional guidance state. To replace these defaults, pass
@@ -205,10 +217,10 @@ Check the HTTP status and `X-Finish-Reason` rather than treating any saved file 
 
 `recipe/speech_server.py` runs the NVFP4 engine behind the same `/v1/audio/speech` API as the GB10
 host, from one config file. Copy [`speech-server.example.ini`](speech-server.example.ini) to
-`speech-server.ini` (git-ignored), set `weights` (`nvfp4-5900`, the default; `int3-5900` for the 14.5 GB int3 build;
-`nvfp4` for the 20.8 GB quant), `checkpoint` if it is not in that build's folder in the repository root and, for
-cloned voices, `voices` and `default_voice`, then
-create the lock file and start it from the repository root:
+`speech-server.ini` (git-ignored), set `weights` (`int3-5900` for the 14.5 GB int3 build, as the example does;
+`nvfp4-5900`, the server's default when unset; `nvfp4` for the 20.8 GB quant), `checkpoint` if it is not in that
+build's folder in the repository root and, for cloned voices, `voices` and `default_voice`, then create the lock
+file and start it from the repository root:
 
 ```sh
 mkdir -p runtime && touch runtime/gpu.lock

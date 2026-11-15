@@ -138,8 +138,9 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--backend', choices=('native', 'sglang-omni'), default='native')
     parser.add_argument('--weights', choices=tuple(weight_selection.WEIGHTS),
-                        help='Download (first run, published weights), verify and serve pinned weights; the NVFP4 '
-                             'quants add --cfg-gamma 1.5 --cfg-batched unless guidance follows --')
+                        help='Download (first run, published weights), verify and serve pinned weights (default '
+                             'int3-5900 unless --checkpoint is given); the quants add --cfg-gamma 1.5 '
+                             '--cfg-batched unless guidance follows --')
     parser.add_argument('--native-bin', type=Path,
                         help='Patched executable (default with --weights: its engine in build/)')
     parser.add_argument('--runtime-dir', type=Path, required=True,
@@ -171,7 +172,7 @@ def main() -> int:
     if not args.gpu_lock.is_file():
         parser.error('The operator-specified shared GPU lock must already exist')
     if args.weights is None and args.checkpoint is None:
-        parser.error('Pass --weights nvfp4 or --weights full, or --checkpoint DIR')
+        args.weights = 'int3-5900'
 
     root = args.runtime_dir.resolve()
     checkpoint = weight_selection.checkpoint_path(args.weights, args.checkpoint)

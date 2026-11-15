@@ -4,7 +4,8 @@
 # GPU job has neither). It takes the engine pin (TensorFold main @ 132bd123 + the EXL3 patch) from the pushed
 # drama-tensorfold commit $SHA, applies it in a clean checkout, and builds `native` inside the receipts' job image
 # with nvcc from the CUDA 13.0 mount — the same image and driver the window will run. Output:
-#   $PILOT/drama3-exl3-engine/{tensorfold-native,SHA256SUMS}   (refused if it exists)
+#   $PILOT/$OUT/{tensorfold-native,SHA256SUMS}   (OUT default drama3-exl3-engine; refused if it exists)
+# PIN (default engine/nvfp4/spark) picks another engine pin of the repo, e.g. engine/nvfp4 for the int3 speed job.
 # Usage:  SHA=<pushed sha> bash results/exl3-spark/prebuild-spark.sh
 set -euo pipefail
 
@@ -15,12 +16,12 @@ image=${IMAGE:-macbots:49eafd253777}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-out=$pilot/drama3-exl3-engine
+out=$pilot/${OUT:-drama3-exl3-engine}
 [ ! -e "$out" ] || { echo "$out exists; move it away before rebuilding" >&2; exit 1; }
 
 git clone -q "$repo" "$work/drama"
 git -C "$work/drama" checkout -q "$sha"
-pin=$work/drama/engine/nvfp4/spark
+pin=$work/drama/${PIN:-engine/nvfp4/spark}
 # shellcheck disable=SC1091
 . "$pin/UPSTREAM"
 [ -n "${TENSORFOLD_REPOSITORY:-}" ] && [ -n "${TENSORFOLD_COMMIT:-}" ] || { echo "$pin/UPSTREAM is incomplete" >&2; exit 1; }

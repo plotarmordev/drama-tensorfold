@@ -1,0 +1,62 @@
+{
+ "scope": "Warm speed, load time and peak device memory of the int3 build and t5900 on one GB10 (CUDA), one engine binary: the HF card's Spark rows. No quality claim (builds.json has it).",
+ "platform": {
+  "observed_gpu": "NVIDIA GB10",
+  "driver": "580.173.02",
+  "host": "TOP"
+ },
+ "engine": {
+  "pin": "engine/nvfp4",
+  "folder": "drama3-int3-engine",
+  "sha256sums_sha256": "d6747d56e8f9ffe00be5057062af72106867d130600cd0b4b021904b4e2a5dbf"
+ },
+ "job": {
+  "id": "top-1fa2dfce6839",
+  "repo_head": "49d4a6b3a04b18c25aa74fee99c9dd091e3d7770",
+  "script": "results/smaller-builds/gb10-speed.sh",
+  "exit": 0
+ },
+ "checkpoints": {
+  "trim-bf16-int3": "revision 0a0afd5d with the original FP32 codec.pth (sha256 74fc41c5...), checked against its SHA256SUMS",
+  "t5900": "the pilot's t5900-cover, checked against recipe/checksums/nvfp4-t5900cover.sha256"
+ },
+ "workload": "spark_speed.py: per build and voice one server, bench/corpus_capture.py --passes 2 over the 24 corpus texts one request at a time; rows are the warm pass, p50 nearest rank; every warm request returned 200",
+ "builds": [
+  {
+   "build": "trim-bf16-int3",
+   "voice": "builtin",
+   "ready_s": 7.5,
+   "peak_gib": 14.77,
+   "rtf_warm_p50": 0.614,
+   "reply_warm_p50_s": 5.16,
+   "audio_warm_s": 247.9
+  },
+  {
+   "build": "trim-bf16-int3",
+   "voice": "ref",
+   "ready_s": 7.5,
+   "peak_gib": 14.77,
+   "rtf_warm_p50": 0.809,
+   "reply_warm_p50_s": 8.49,
+   "audio_warm_s": 296.9
+  },
+  {
+   "build": "t5900",
+   "voice": "builtin",
+   "ready_s": 8.0,
+   "peak_gib": 16.93,
+   "rtf_warm_p50": 0.619,
+   "reply_warm_p50_s": 5.05,
+   "audio_warm_s": 250.5
+  },
+  {
+   "build": "t5900",
+   "voice": "ref",
+   "ready_s": 7.5,
+   "peak_gib": 16.93,
+   "rtf_warm_p50": 0.831,
+   "reply_warm_p50_s": 8.52,
+   "audio_warm_s": 309.8
+  }
+ ]
+}

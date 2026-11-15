@@ -12,7 +12,8 @@ RECIPE = Path(__file__).resolve().parent
 REPO = RECIPE.parent
 NVFP4_SERVE = ('--cfg-gamma', '1.5', '--cfg-batched')
 # 'engine' is the scripts/build-engine.sh --weights profile that builds 'build'; the quants share one.
-# int3-5900 has no 'source': it is built on the Mac by results/smaller-builds/splice_int3.py, never downloaded.
+# int3-5900 has no 'source': the launcher never downloads it. It is plotarmordev/drama-3-NVFP4-Pruned-5900 at
+# 0a0afd5d (downloaded by hand) or results/smaller-builds/splice_int3.py's output.
 WEIGHTS = {
     'full': {'source': 'checkpoint', 'dir': 'drama-3', 'pins': 'checkpoint.sha256',
              'engine': 'full', 'build': 'tensorfold', 'serve': ()},
@@ -82,7 +83,9 @@ def prepare_checkpoint(choice: str | None, override: Path | None) -> dict:
     pins = RECIPE / 'checksums' / spec['pins']
     if spec['source'] is None:
         source = None
-        repair = 'Build it with results/smaller-builds/splice_int3.py (results/smaller-builds/README.md)'
+        repair = ('Download it with: hf download plotarmordev/drama-3-NVFP4-Pruned-5900 --revision '
+                  f'0a0afd5d0825d39443e522b27aab6eb2f85287bd --local-dir {target}, or build it with '
+                  'results/smaller-builds/splice_int3.py (results/smaller-builds/README.md)')
     else:
         source = json.loads((RECIPE / 'sources.json').read_text())[spec['source']]
         repair = (f'Repair it with: hf download {source["repository"]} --revision {source["revision"]} '

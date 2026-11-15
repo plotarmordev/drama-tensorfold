@@ -71,13 +71,13 @@ class Engine(http.server.ThreadingHTTPServer):
     The first ``empty`` takes end at frame 0 with no audio: a 500 naming it, as Metal patch 0002 answers, or with
     ``empty_ok`` a clean stop, as an engine without the patch does.
 
-    As the real engine does, it answers 503 once right after a reply, before its lane is free again. With ``hold``,
-    its first take waits for that event before it speaks. Each take records whether batch work's probe of ``lock``
-    would get the GPU turn.
+    As the real engine does, it answers 503 once right after a reply, before its lane is free again. A take whose
+    input is in ``holds`` waits for that event before it speaks. Each take records whether batch work's probe of
+    ``lock`` would get the GPU turn.
     """
 
-    def __init__(self, voices: set[str], reasons: list[str], empty: int, empty_ok: bool, hold: threading.Event | None,
-                 lock: str):
+    def __init__(self, voices: set[str], reasons: list[str], empty: int, empty_ok: bool,
+                 holds: dict[str, threading.Event], lock: str):
         super().__init__(('127.0.0.1', 0), EngineHandler)
         self.voices = {'default'} | voices
         self.reasons = reasons
@@ -85,7 +85,7 @@ class Engine(http.server.ThreadingHTTPServer):
         self.empty_ok = empty_ok
         self.requests: list[dict] = []
         self.busy = False
-        self.hold = hold
+        self.holds = holds
         self.lock = lock
         self.turn_free: list[bool] = []
 
@@ -113,8 +113,8 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
             return self.refuse(503, 'speech output capacity is full')
         self.server.requests.append(request)
         self.server.turn_free.append(turn_free(self.server.lock))
-        if self.server.hold and len(self.server.requests) == 1:
-            self.server.hold.wait(10)
+        if hold := self.server.holds.get(request['input']):
+            hold.wait(10)
         if request.get('voice', 'default') not in self.server.voices:
             return self.refuse(400, 'Drama 3 request: unknown voice')
         self.server.busy = True
@@ -147,10 +147,10 @@ class EngineHandler(http.server.BaseHTTPRequestHandler):
 
 
 class ServerTests(unittest.TestCase):
-    def start(self, voices=frozenset(), reasons=(), empty=0, empty_ok=False, hold=None):
+    def start(self, voices=frozenset(), reasons=(), empty=0, empty_ok=False, holds=None):
         lock = tempfile.NamedTemporaryFile()
         self.addCleanup(lock.close)
-        self.engine = Engine(set(voices), list(reasons), empty, empty_ok, hold, lock.name)
+        self.engine = Engine(set(voices), list(reasons), empty, empty_ok, holds or {}, lock.name)
         self.proxy = speech_server.Proxy(('127.0.0.1', 0), self.engine.server_address, lock.name)
         self.proxy.RequestHandlerClass.log_message = lambda *_: None
         for server in (self.engine, self.proxy):
@@ -245,7 +245,7 @@ class ServerTests(unittest.TestCase):
         for stream in (False, True):
             with self.subTest(stream=stream):
                 hold = threading.Event()
-                self.start(hold=hold)
+                self.start(holds={pieces[0]: hold})
                 logged = []
                 self.proxy.RequestHandlerClass.log_message = lambda _, form, *args: logged.append(form % args)
                 long = []
@@ -274,24 +274,42 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual([line.rsplit(', ', 1)[1] for line in logged[1::2]],
                                  [f'{len(text.encode()) / 88200:.2f} s of audio' for _, text in order])
 
-    def test_a_short_note_finishes_while_another_gpu_job_runs(self):
+    def test_a_short_note_during_a_long_take_finishes_while_another_gpu_job_waits(self):
         note = 'The train leaves at seven fifteen.'
-        hold = threading.Event()
-        self.start(hold=hold)
+        pieces = speech_server.segments(LONG)
+        first, second = threading.Event(), threading.Event()
+        self.start(holds={pieces[0]: first, pieces[1]: second})
         job = BatchJob(self.engine.lock)
         job.start()
         self.addCleanup(job.done.set)
         self.wait_for(lambda: job.blocks)  # the job has the GPU
-        replies = []
+        long, replies = [], []
+        speaking = threading.Thread(target=lambda: long.append(self.post(input=LONG).read()))
+        speaking.start()
+        self.wait_for(lambda: job.paused)  # the long take holds the GPU turn and the job gave way
+        self.wait_for(lambda: self.engine.requests)  # its first segment is on the engine, so the note arrives mid-take
+        blocks = job.blocks
         noting = threading.Thread(target=lambda: replies.append(self.post(input=note).read()))
         noting.start()
-        self.wait_for(lambda: job.paused)  # the note is on the engine and the job gave way
-        hold.set()
+        self.wait_for(lambda: self.proxy.lane.short_waiting)
+        first.set()
+        # the long take's second segment is held until the note is back, so the note waits for one segment at most
         noting.join(10)
         self.assertEqual(replies, [wav(note.encode())])
-        self.assertEqual(self.engine.turn_free, [False])
-        blocks = job.blocks
-        self.wait_for(lambda: job.blocks > blocks)  # the job carries on once the note is done
+        self.assertEqual(job.blocks, blocks)  # no batch block ran while speech had the GPU
+        second.set()
+        speaking.join(10)
+        self.assertEqual(long, [wav(''.join(pieces).encode())])
+        self.wait_for(lambda: job.blocks > blocks)  # the job carries on once speech is done
+
+    def test_the_gpu_turn_leaves_a_symlinks_target_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target, link = Path(folder, 'private'), Path(folder, 'speech.lock')
+            target.touch(0o600)
+            link.symlink_to(target)
+            with speech_server.gpu_turn(str(link)):
+                pass
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
 
     def wait_for(self, condition, timeout=10):
         deadline = time.monotonic() + timeout

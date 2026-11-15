@@ -176,9 +176,11 @@ def joined_wav(parts: list[bytes]) -> bytes:
 @contextlib.contextmanager
 def gpu_turn(path: str) -> Iterator[None]:
     """A shared hold on ``path`` while live speech needs the GPU; batch work probes it with a nonblocking exclusive
-    flock and pauses until it is free. Read-only and best effort, as the engine's own hold is."""
+    flock and pauses until it is free. Read-only and best effort, as the engine's own hold is. A symlink at ``path``
+    is not followed, so one planted in the shared /tmp cannot have its target's mode changed; speech then goes on
+    without the hold."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o644)
+        fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
     except OSError:
         yield
         return

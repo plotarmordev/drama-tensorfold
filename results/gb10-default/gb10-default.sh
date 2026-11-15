@@ -6,19 +6,21 @@
 #   drama-3-trim-bf16-int3  hf download plotarmordev/drama-3-NVFP4-Pruned-5900 --revision <recipe/sources.json's
 #                           int3_5900_checkpoint revision> --local-dir drama-3-trim-bf16-int3
 #   tensorfold              git clone https://github.com/plotarmordev/TensorFold.git tensorfold
-#   nvcc-host               Debian bookworm arm64's g++-12, libstdc++-12-dev, libgcc-12-dev, libc6-dev,
-#                           linux-libc-dev, libgmp10, libmpfr6, libmpc3, libisl23, zlib1g and libzstd1 extracted
-#                           together; nvcc cannot parse the libc++ headers that the image's zig c++ supplies
+#   nvcc-host-bundle        nvcc-host.tar.gz: Debian bookworm arm64's g++-12, libstdc++-12-dev, libgcc-12-dev,
+#                           libc6-dev, linux-libc-dev, libgmp10, libmpfr6, libmpc3, libisl23, zlib1g and libzstd1;
+#                           nvcc cannot parse the libc++ headers that the image's zig c++ supplies
 # Prints the weights revision, the HTTP status, the seconds of audio and the time to first audio; any failure exits
 # non-zero with its error.
 set -euo pipefail
 pilot=/assets/drama3-pilot
 weights=$pilot/drama-3-trim-bf16-int3
-host=$pilot/nvcc-host
-for path in "$weights/config.json" "$pilot/tensorfold/.git" "$host/usr/bin/g++-12"; do
+bundle=$pilot/nvcc-host-bundle/nvcc-host.tar.gz
+for path in "$weights/config.json" "$pilot/tensorfold/.git" "$bundle"; do
     [ -e "$path" ] || { echo "missing $path; /assets holds:" >&2; find /assets -maxdepth 2 >&2; exit 1; }
 done
 work=$(mktemp -d)
+host=$work/nvcc-host
+tar -xzf "$bundle" -C "$work"
 # a copy the job owns: build-engine.sh checks out and patches it in place, and finds the pinned commit already there
 cp -R "$pilot/tensorfold" "$work/tensorfold"
 chmod -R u+w "$work/tensorfold"

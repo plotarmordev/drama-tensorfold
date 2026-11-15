@@ -5,5 +5,6 @@
   revision, HTTP status, seconds of audio and time to first audio.
 
 ### Changed
+- The GB10 job uses a staged GCC 12 host toolchain for nvcc: CUDA's front end cannot parse Zig 0.17.0's libc++ headers.
 - `recipe/pilot.py`, `recipe/pilot_macos.py` and the GB10 job build the native server's command line with one
   `weight_selection.server_command`.

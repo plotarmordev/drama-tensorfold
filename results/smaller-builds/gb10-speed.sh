@@ -14,7 +14,8 @@ for path in "$int3.sha256" "$engine/SHA256SUMS" "$pilot/voices-eq3ref/eq-3ref.js
     [ -e "$path" ] || { echo "missing $path; /assets holds:" >&2; find /assets -maxdepth 2 >&2; exit 1; }
 done
 (cd "$int3" && sha256sum --quiet -c "$int3.sha256")
-(cd "$t5900" && sha256sum --quiet -c "$PWD/recipe/checksums/nvfp4-t5900cover.sha256")
+pins=$PWD/recipe/checksums/nvfp4-t5900cover.sha256
+(cd "$t5900" && sha256sum --quiet -c "$pins")
 (cd "$engine" && sha256sum --quiet -c SHA256SUMS)
 echo "engine $(sha256sum < "$engine/SHA256SUMS" | cut -d' ' -f1)"
 echo "expected window: 2 builds x 2 voices x 2 passes of 24 texts, ~45 min of speech at quant-15gb's RTF + 4 loads"

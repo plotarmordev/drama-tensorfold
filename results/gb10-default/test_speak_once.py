@@ -1,4 +1,5 @@
 import socket
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -75,6 +76,27 @@ class SpeakOnceTest(unittest.TestCase):
             with mock.patch.object(speak_once, 'PORT', port):
                 with self.assertRaisesRegex(RuntimeError, f'127.0.0.1:{port} is unavailable: .*Address already in use'):
                     speak_once.serve_and_speak([sys.executable, '-c', FAKE, 'exit', str(port)])
+
+    def test_a_port_taken_between_check_and_launch_fails(self):
+        port = free_port()
+        other_servers = []
+        real_popen = subprocess.Popen
+
+        def collide(command, **kwargs):
+            if command[0] == 'lsof':
+                return real_popen(command, **kwargs)
+            other_servers.append(real_popen([sys.executable, '-c', FAKE, 'ok', str(port)]))
+            return real_popen([sys.executable, '-c', 'import time; time.sleep(30)'], **kwargs)
+
+        try:
+            with mock.patch.object(speak_once, 'PORT', port):
+                with mock.patch.object(speak_once.subprocess, 'Popen', side_effect=collide):
+                    with self.assertRaisesRegex(RuntimeError, f'port {port} is not owned by launched process'):
+                        speak_once.serve_and_speak(['ignored'], ready_timeout=30)
+        finally:
+            for server in other_servers:
+                server.terminate()
+                server.wait(30)
 
 
 if __name__ == '__main__':

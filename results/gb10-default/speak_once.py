@@ -26,6 +26,26 @@ PORT = 18798
 TEXT = 'The train leaves at seven fifteen.'
 
 
+def owns_listener(pid):
+    """Whether PID owns the loopback listener, including across the port-check/Popen race."""
+    if sys.platform.startswith('linux'):
+        with open(f'/proc/{pid}/net/tcp') as lines:
+            next(lines)
+            inodes = {fields[9] for line in lines if len(fields := line.split()) > 9
+                      and fields[1] == f'0100007F:{PORT:04X}' and fields[3] == '0A'}
+        for fd in os.listdir(f'/proc/{pid}/fd'):
+            try:
+                target = os.readlink(f'/proc/{pid}/fd/{fd}')
+            except FileNotFoundError:
+                continue
+            if target.startswith('socket:[') and target[8:-1] in inodes:
+                return True
+        return False
+    found = subprocess.run(['lsof', '-a', '-p', str(pid), '-nP', f'-iTCP@127.0.0.1:{PORT}', '-sTCP:LISTEN', '-t'],
+                           capture_output=True, text=True, check=False)
+    return str(pid) in found.stdout.splitlines()
+
+
 def wait_ready(server, timeout):
     """Polls /health until it answers 200; fails once the server exits or `timeout` seconds pass."""
     started = time.monotonic()
@@ -35,6 +55,8 @@ def wait_ready(server, timeout):
                 if reply.status == 200:
                     if server.poll() is not None:
                         raise RuntimeError(f'the server exited with status {server.returncode} after /health answered')
+                    if not owns_listener(server.pid):
+                        raise RuntimeError(f'port {PORT} is not owned by launched process {server.pid}')
                     return
         except OSError:
             pass

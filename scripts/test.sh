@@ -6,6 +6,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 python3 scripts/test_first_person.py
+python3 -m unittest discover -s bin -p 'test_*.py'
 # The macOS lifecycle smoke uses only short-lived dummy subprocesses; on Linux it skips itself.
 PILOT_MACOS_INTEGRATION=1 python3 -m unittest discover -s recipe -p 'test_*.py'
 python3 -m unittest discover -s results/smaller-builds -p 'test_*.py'

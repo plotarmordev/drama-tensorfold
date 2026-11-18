@@ -8,9 +8,10 @@
 # Installed as ~/bin/voice-note.
 set -euo pipefail
 text=${1:?usage: voice-note "<spoken text>"}
-umask 077  # personal voice notes: the folder and the audio are the invoking user's only
+umask 077  # personal voice notes: the folder (even one that exists) and the audio are the invoking user's only
 out_dir=${VOICE_NOTE_DIR:-$PWD/voice-notes}
 mkdir -p "$out_dir"
+chmod 700 "$out_dir"
 tmp=$(mktemp "$out_dir/.voice-note-$(date +%Y%m%d-%H%M%S)-XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 request=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1][:600]}))' "$text")

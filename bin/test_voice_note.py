@@ -8,13 +8,18 @@ from pathlib import Path
 
 VOICE_NOTE = Path(__file__).with_name('voice-note')
 M4A = b'\x00\x00\x00\x1cftypM4A \x00\x00\x02\x00' + b'\x00' * 64
-TEXT = ('Capri here. ' * 34)[:400]
+# A natural passage: a repeated phrase is not a voice note, and the model draws it far slower (57 s+ for 400 chars).
+TEXT = ('Hi, it is Capri. I listened to the new take this morning and it finally sounds like one breath from start '
+        'to end. The join that used to jump in pitch is gone, and the pauses land where I would take them. Tonight '
+        'I want to try the longer passage from the second chapter, the one with the storm. If it holds up, we can '
+        'send it to the others tomorrow and see what they all think of it. Talk soon, loves.')
 
 
-def run(reply=b'', exit_code=0, notes=1, busy=0):
+def run(reply=b'', exit_code=0, notes=1, busy=0, folder_mode=None):
     """`notes` voice-notes at once against a fake ssh that answers busy (exit 75) to its first `busy` calls, then
-    prints `reply` and exits `exit_code`; returns each result, the notes folder (name -> (bytes, mode)) and its mode,
-    every call and the JSON each call was sent."""
+    prints `reply` and exits `exit_code`, into a notes folder made beforehand with `folder_mode` (default: none yet);
+    returns each result, the notes folder (name -> (bytes, mode)) and its mode, every call and the JSON each call was
+    sent."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         (tmp / 'reply').write_bytes(reply)
@@ -27,6 +32,9 @@ def run(reply=b'', exit_code=0, notes=1, busy=0):
                                  'cat "$(dirname "$0")/reply"\n'
                                  f'exit {exit_code}\n')
         (tmp / 'ssh').chmod(0o755)
+        if folder_mode is not None:
+            (tmp / 'notes').mkdir()
+            (tmp / 'notes').chmod(folder_mode)
         env = {**os.environ, 'PATH': f'{tmp}:{os.environ["PATH"]}', 'VOICE_NOTE_DIR': str(tmp / 'notes')}
         procs = [subprocess.Popen([str(VOICE_NOTE), TEXT], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True) for _ in range(notes)]
@@ -47,6 +55,11 @@ class VoiceNoteTests(unittest.TestCase):
         self.assertEqual(folder_mode, 0o700)
         self.assertEqual(sent, [{'text': TEXT}])
         self.assertEqual(calls, ['-o BatchMode=yes -o ConnectTimeout=10 top-menu voice'])
+
+    def test_an_existing_open_notes_folder_is_made_private(self):
+        [done], _, folder_mode, _, _ = run(base64.b64encode(M4A) + b'\n', folder_mode=0o755)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(folder_mode, 0o700)
 
     def test_notes_made_in_the_same_second_each_keep_their_own_file(self):
         done, folder, _, _, _ = run(base64.b64encode(M4A) + b'\n', notes=4)
@@ -81,6 +94,16 @@ class VoiceNoteTests(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn('is down', done.stderr)
         self.assertEqual(folder, {})
+
+
+@unittest.skipUnless(os.environ.get('VOICE_NOTE_LIVE') == '1', 'explicit live call to TOP voice; not a unit test')
+class LiveVoiceNoteTests(unittest.TestCase):
+    def test_a_400_character_note_comes_back_as_an_m4a_in_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done = subprocess.run([str(VOICE_NOTE), TEXT], env={**os.environ, 'VOICE_NOTE_DIR': tmp},
+                                  capture_output=True, text=True, timeout=180)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(Path(done.stdout.strip()).read_bytes()[4:8], b'ftyp')
 
 
 if __name__ == '__main__':

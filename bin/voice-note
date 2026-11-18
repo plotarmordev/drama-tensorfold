@@ -1,0 +1,36 @@
+#!/bin/bash
+# voice-note "<spoken text>"  ->  prints the path of an m4a voice note: send it with send_file(path, text), which plays it
+# at the top of that message in Codync (in-message voice notes, live since 14 Nov 2026; no HTML artifact any more).
+# Voice: Capri's cloned Drama 3 voice only, through TOP's `voice` menu (stdin {"text"}, one line of base64 m4a out).
+# No other voice ever stands in: when Capri's voice is down, this fails and the reply goes out without a note. Run as agents.
+# The menu's deadline is 20 s + 0.15 s per character (max 57 s); past it the menu exits 124, and so does this.
+# It takes one call at a time and turns away the others (exit 75, busy): those wait up to a minute for their turn.
+# Installed as ~/bin/voice-note.
+set -euo pipefail
+text=${1:?usage: voice-note "<spoken text>"}
+umask 077  # personal voice notes: the folder (even one that exists) and the audio are the invoking user's only
+out_dir=${VOICE_NOTE_DIR:-$PWD/voice-notes}
+mkdir -p "$out_dir"
+chmod 700 "$out_dir"
+tmp=$(mktemp "$out_dir/.voice-note-$(date +%Y%m%d-%H%M%S)-XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+request=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1][:600]}))' "$text")
+for _ in $(seq 12); do
+  status=0
+  b64=$(ssh -o BatchMode=yes -o ConnectTimeout=10 top-menu voice <<< "$request" 2>/dev/null) || status=$?
+  [ "$status" -eq 75 ] || break
+  sleep 5
+done
+[ "$status" -ne 75 ] || status=124  # a minute without a turn is too slow, not the voice down
+if [ "$status" -eq 124 ]; then
+  echo "voice-note: Capri's voice timed out on this note (the voice is not down); retry later or send text" >&2
+  exit 124
+fi
+if [ "$status" -ne 0 ] || ! printf %s "$b64" | base64 -d > "$tmp" 2>/dev/null \
+     || ! head -c 12 "$tmp" | grep -q "ftyp"; then
+  echo "voice-note: Capri's voice is down (Drama 3 speech server); no note" >&2
+  exit 1
+fi
+out="$out_dir/${tmp##*/.}.m4a"
+mv "$tmp" "$out"
+echo "$out"

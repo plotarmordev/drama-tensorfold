@@ -8,7 +8,7 @@ from pathlib import Path
 
 VOICE_NOTE = Path(__file__).with_name('voice-note')
 M4A = b'\x00\x00\x00\x1cftypM4A \x00\x00\x02\x00' + b'\x00' * 64
-# A natural passage: a repeated phrase is not a voice note, and the model draws it far slower (57 s+ for 400 chars).
+# A natural passage, as Capri's notes are; the repeated phrase that used to fail has its own live test.
 TEXT = ('Hi, it is Capri. I listened to the new take this morning and it finally sounds like one breath from start '
         'to end. The join that used to jump in pitch is gone, and the pauses land where I would take them. Tonight '
         'I want to try the longer passage from the second chapter, the one with the storm. If it holds up, we can '
@@ -98,12 +98,22 @@ class VoiceNoteTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('VOICE_NOTE_LIVE') == '1', 'explicit live call to TOP voice; not a unit test')
 class LiveVoiceNoteTests(unittest.TestCase):
-    def test_a_400_character_note_comes_back_as_an_m4a_in_time(self):
+    def note(self, text):
         with tempfile.TemporaryDirectory() as tmp:
-            done = subprocess.run([str(VOICE_NOTE), TEXT], env={**os.environ, 'VOICE_NOTE_DIR': tmp},
+            done = subprocess.run([str(VOICE_NOTE), text], env={**os.environ, 'VOICE_NOTE_DIR': tmp},
                                   capture_output=True, text=True, timeout=180)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(Path(done.stdout.strip()).read_bytes()[4:8], b'ftyp')
+            return done, done.returncode == 0 and Path(done.stdout.strip()).read_bytes()[4:8] == b'ftyp'
+
+    def test_a_400_character_note_comes_back_as_an_m4a_in_time(self):
+        done, m4a = self.note(TEXT)
+        self.assertTrue(m4a, done.stderr)
+
+    def test_the_repeated_phrase_that_used_to_fail_is_an_m4a_or_a_timeout_never_voice_down(self):
+        # The model draws this stress text slowly, near TOP's 57 s cap (set in TOP's voice shim, not here).
+        done, m4a = self.note('Capri here. ' * 33)
+        if not m4a:
+            self.assertEqual(done.returncode, 124, done.stderr)
+            self.assertIn('timed out', done.stderr)
 
 
 if __name__ == '__main__':

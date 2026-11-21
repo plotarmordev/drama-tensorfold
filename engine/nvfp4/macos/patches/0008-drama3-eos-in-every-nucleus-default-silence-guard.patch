@@ -1,0 +1,846 @@
+From 5bc16fe108ce9266e132a1f6c4a997cc698e5768 Mon Sep 17 00:00:00 2001
+From: drama-agent <agent@plotarmor.dev>
+Date: Sat, 21 Nov 2026 12:58:16 +0800
+Subject: [PATCH] drama3 metal: eos in every nucleus, a serve silence default
+ and a redraw of a silenced take
+
+After the speech the model wants to end, one token can hold ~96.6% of the
+candidate mass with eos rank 1 at 2-22%, so eos's cumulative probability
+exceeds both top_p cutoffs (0.9 request draw, 0.95 RAS redraw) and both
+truncated draws exclude the stop every frame; the take runs to the frame
+cap. Keep the eos candidate slot in every nucleus of both main-token draws
+(test-drama-sampler-device runs the shader's rule on the GPU) and fill an
+unset Drama guard at -40 dBFS / 3.5 s, validated after the fill, to end the
+trailing quiet the same collapse produces; --silence-seconds 0 disables it.
+
+On the int3 build that collapse can also come mid-text: the pause token
+takes the mass after a sentence and the take ends in silence with the rest
+unspoken. It is a per-seed degeneracy (5 of 8 medium-05 seeds speak the
+whole text and stop), so serve redraws a silenced Drama take up to twice
+with the next prompt-derived seed; --silence-redraws 0 keeps the first
+take. Takes the guard never trips are untouched, byte for byte. Streamed
+audio cannot be taken back, so with redraws on a stream is held until its
+take is chosen and then sent as one chunk under that take's trailer.
+
+drama3-generate --logits-out FILE dumps each frame's candidate-head logits
+for results/smaller-builds/trace_eos.py.
+---
+ README.md                                 |  2 +-
+ docs/speech-redraws.md                    | 20 ++++----
+ zig/build/drama3_host.zig                 |  2 +-
+ zig/build/drama3_metal.zig                |  2 +
+ zig/kernels/metal/drama3/sample.metal     | 20 ++++----
+ zig/src/core/speech_guard.zig             | 19 ++++++++
+ zig/src/families/drama3/generate.zig      | 40 +++++++++++++++-
+ zig/src/families/drama3/metal/engine.zig  |  7 +--
+ zig/src/families/drama3/metal/forward.zig |  2 +-
+ zig/src/families/drama3/metal/kernels.zig | 56 +++++++++++++++++++++--
+ zig/src/families/drama3/replay.zig        |  4 +-
+ zig/src/families/drama3/shards.zig        | 28 ++++++++++++
+ zig/src/native/drama_host.zig             | 35 ++++++++++++--
+ zig/src/server/cli.zig                    |  9 ++--
+ zig/src/server/cli_test.zig               |  6 ++-
+ zig/src/server/serve.zig                  |  9 ++--
+ zig/src/server/speech.zig                 | 10 ++--
+ zig/src/server/speech_redraw.zig          | 25 ++++++++++
+ zig/src/server/speech_redraw_test.zig     | 25 ++++++++--
+ zig/src/server/speech_sampling_test.zig   |  6 +--
+ zig/src/server/speech_stream.zig          | 32 +++++++++++--
+ zig/tests/drama_compile.zig               |  2 +-
+ 22 files changed, 300 insertions(+), 61 deletions(-)
+
+diff --git a/README.md b/README.md
+index d16bea4ec..e95d2235b 100644
+--- a/README.md
++++ b/README.md
+@@ -334,7 +334,7 @@ The binary's `capabilities --json` response lists its supported flags and platfo
+ | `--silence-onset-voiced-s SECONDS` | Drama speech only: the voiced seconds below which `--silence-onset-s` applies; required with it, with no default. Calibrate on public or built-in speech. |
+ | `--silence-mid-s SECONDS` | Drama speech only: with the silence guard on, finish as `silence` when end of speech falls in a run this long below the floor, after the explicit voiced minimum. Whole replies carry the decimal `X-Silence-Mid-Trips` count, including zero. Must be below `--silence-seconds` and paired with `--silence-mid-min-voiced-s`. Unset by default: off. |
+ | `--silence-mid-min-voiced-s SECONDS` | Required with `--silence-mid-s`: positive finite cumulative voiced duration before the mid rule applies, including equality. No default; calibrate with the other silence thresholds. |
+-| `--silence-redraws N` | Drama speech only: draw a whole reply the silence guard ended again, up to N times, as seed salt + k or explicit request seed + k; N of 1 or more needs the guard. Unset by default: off, as is 0; streams are never redrawn. See [speech redraws](docs/speech-redraws.md). |
++| `--silence-redraws N` | Drama speech only: draw a whole reply the silence guard ended again, up to N times, as seed salt + k or explicit request seed + k; N of 1 or more needs the guard. Unset by default: off, as is 0; with N of 1 or more a stream is held whole until its take is chosen. See [speech redraws](docs/speech-redraws.md). |
+ | `--silence-redraw-budget-s SECONDS` | Start a redraw only while elapsed time plus the last take's duration fits; a request's `X-Deadline-S` can lower it. No default budget. |
+ | `--silence-redraw-controls LIST` | Redraws speak the input filtered to the listed controls, as `--allowed-controls` filters; an empty list removes every control. |
+ | `--short-reply-ratio R` | Also redraw a whole reply that finished `stop` with less audio than R (above 0, below 1) of its text's expected length; needs `--silence-redraws` and `--short-reply-chars-per-s`. No default. |
+diff --git a/docs/speech-redraws.md b/docs/speech-redraws.md
+index 73c855fc1..ccfe73703 100644
+--- a/docs/speech-redraws.md
++++ b/docs/speech-redraws.md
+@@ -31,9 +31,9 @@ tensorfold serve DRAMA3_DIR --silence-floor-dbfs=-30 --silence-seconds=4 \
+   --silence-redraws=3 --silence-redraw-budget-s=90
+ ```
+ 
+-A floor of -30 dBFS also catches the hum. Streams are not redrawn (see
+-[Streams](#streams)): a stalled stream ends early, with the rest of the text
+-unspoken.
++A floor of -30 dBFS also catches the hum. With redraws on, a stream is held until
++its take is chosen (see [Streams](#streams)), so a stalled take is redrawn rather
++than streamed with the rest of the text unspoken.
+ 
+ Two more flags cut a reply that never really starts. With `--silence-onset-s S` and `--silence-onset-voiced-s V`
+ (both required together, and both need the floor and `--silence-seconds`; S must be above 0 and below the
+@@ -194,9 +194,11 @@ them on the voice you serve:
+ 
+ ## Streams
+ 
+-Streams are never redrawn or measured. A stream sends each decoded prefix as the
+-engine publishes it, so audio may already have reached the client when a guard
+-trips, and replacing it would mean buffering the stream and changing its semantics.
+-A stream the guard ends finishes with the `silence` trailer exactly as without
+-redraws. With redraws enabled, its initial headers include `X-Silence-Redraws: 0`;
+-this is not a trailer. Its `X-Deadline-S` is validated even though streams never redraw.
++With `--silence-redraws` of 1 or more, a stream is held: audio already sent cannot
++be replaced, so the engine draws each take whole, the silence redraws run exactly as
++for a whole reply, and the chosen take is then sent as one chunk, ending as a live
++stream ends: the plain terminating chunk after `stop`, else the `X-Finish-Reason`
++trailer (`silence` once redraws run out). Its headers carry `X-Silence-Redraws`;
++first audio waits for the whole take. Without silence redraws a stream sends each
++decoded prefix as the engine publishes it and is never redrawn or measured,
++register redraws included.
+diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
+index 52e892fb1..eafabbcd2 100644
+--- a/zig/build/drama3_host.zig
++++ b/zig/build/drama3_host.zig
+@@ -51,7 +51,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
+     native(b, step, family, core, api, null, "drama_metal_native_host");
+     const quant = b.addRunArtifact(b.addTest(.{
+         .root_module = family,
+-        .filters = &.{ "NVFP4", "expert metadata", "compact head", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
++        .filters = &.{ "NVFP4", "expert metadata", "compact head", "eosCandidate", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
+     }));
+     b.step("test-drama-metal-quant-host", "Packed expert formats, pruning and CFG state without GPU execution").dependOn(&quant.step);
+ }
+diff --git a/zig/build/drama3_metal.zig b/zig/build/drama3_metal.zig
+index 26090aee5..fc8415a76 100644
+--- a/zig/build/drama3_metal.zig
++++ b/zig/build/drama3_metal.zig
+@@ -97,4 +97,6 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
+     b.installArtifact(exe);
+     b.step("drama3-generate", "Fish Audio Drama 3 text to speech on Metal").dependOn(&b.addInstallArtifact(exe, .{}).step);
+     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = family })).step);
++    const sampler = b.addRunArtifact(b.addTest(.{ .root_module = family, .filters = &.{"d3_sample_main on the device"} }));
++    b.step("test-drama-sampler-device", "The main-token sampler's eos keep rule on the GPU: one short Metal run").dependOn(&sampler.step);
+ }
+diff --git a/zig/kernels/metal/drama3/sample.metal b/zig/kernels/metal/drama3/sample.metal
+index 835459d43..1421f61ec 100644
+--- a/zig/kernels/metal/drama3/sample.metal
++++ b/zig/kernels/metal/drama3/sample.metal
+@@ -175,9 +175,10 @@ inline float softmax_sum(device const float* logits, uint count, float temp, flo
+   return group_sum(s, scratch, sg, lane, nt / 32);
+ }
+ 
+-// One draw among sorted candidates: kept = rank 0, or rank < top_k with cumulative p <= top_p; race w / Exp(1).
++// One draw among sorted candidates: rank 0, the eos slot and any rank < top_k with cumulative p <= top_p race w / Exp(1);
++// the eos slot is exempt from the truncation, or a silence-dominant distribution can never stop.
+ inline int draw_top(threadgroup const ulong* cand, int n, float temperature, int top_k, float top_p, float sum,
+-                    ulong seed, ulong step, int stream, threadgroup float* wsum, threadgroup float* bbest,
++                    ulong seed, ulong step, int stream, int eos, threadgroup float* wsum, threadgroup float* bbest,
+                     threadgroup int* brank, threadgroup int* chosen, uint i, uint nt, uint w, uint lane) {
+   const float temp = max(temperature, 1e-5f);
+   const float mx = key_score(cand[0]) / temp;
+@@ -191,7 +192,7 @@ inline int draw_top(threadgroup const ulong* cand, int n, float temperature, int
+   const float cum = (before + incl) / sum;
+   float best = -1.0f;
+   int rank = 0x7FFFFFFF;
+-  if (int(i) < n && (i == 0 || (int(i) < top_k && cum <= top_p))) {
++  if (int(i) < n && (i == 0 || key_index(cand[i]) == eos || (int(i) < top_k && cum <= top_p))) {
+     best = wv / exp_noise(seed, step, 0, stream, key_index(cand[i]));
+     rank = int(i);
+   }
+@@ -226,6 +227,7 @@ struct SampleArgs {
+   D3Sampling sp;
+   uint count;
+   int stream, sem_begin, cb;
++  int eos; // candidate slot always kept in the nucleus: the stop token, or -1 for code heads
+ };
+ 
+ #define D3_SAMPLER_SCRATCH                    \
+@@ -249,10 +251,10 @@ struct SampleArgs {
+   const float zt = softmax_sum(logits, a.count, temp, top / temp, scratch, t, nt, sg, lane);
+   const float z1 = softmax_sum(logits, a.count, 1.0f, top, scratch, t, nt, sg, lane);
+   const ulong step = *step_ptr;
+-  const int first = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, zt, a.sp.seed, step, 0, wsum, bbest,
+-                             brank, &chosen, t, nt, sg, lane);
+-  const int ras = draw_top(cand, n, 1.0f, 30, 0.95f, z1, a.sp.seed, step, 1, wsum, bbest, brank, &chosen, t, nt, sg,
+-                           lane);
++  const int first = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, zt, a.sp.seed, step, 0, a.eos, wsum,
++                             bbest, brank, &chosen, t, nt, sg, lane);
++  const int ras = draw_top(cand, n, 1.0f, 30, 0.95f, z1, a.sp.seed, step, 1, a.eos, wsum, bbest, brank, &chosen, t,
++                           nt, sg, lane);
+   if (t == 0) {
+     const int ft = cand_ids[first], rt = cand_ids[ras];
+     bool repeat = false;
+@@ -273,8 +275,8 @@ struct SampleArgs {
+   const int n = select_top(logits, a.count, a.sp.top_k, cand, hist, st, &sn, t, nt);
+   const float temp = max(a.sp.temperature, 1e-5f);
+   const float z = softmax_sum(logits, a.count, temp, key_score(cand[0]) / temp, scratch, t, nt, sg, lane);
+-  const int c = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, z, a.sp.seed, *step_ptr, a.stream, wsum,
+-                         bbest, brank, &chosen, t, nt, sg, lane);
++  const int c = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, z, a.sp.seed, *step_ptr, a.stream, -1,
++                         wsum, bbest, brank, &chosen, t, nt, sg, lane);
+   if (t == 0) *out = c;
+ }
+ 
+diff --git a/zig/src/core/speech_guard.zig b/zig/src/core/speech_guard.zig
+index 37e7b9f24..877f843ce 100644
+--- a/zig/src/core/speech_guard.zig
++++ b/zig/src/core/speech_guard.zig
+@@ -46,6 +46,25 @@ pub const Config = struct {
+     }
+ };
+ 
++/// Drama's serving default: a reply ends after 3.5 s below -40 dBFS. A silence-dominant distribution — one token
++/// near the whole nucleus mass with eos second — leaves the take trailing quiet around a late eos draw: the frame
++/// cap, or a long murmur tail below the floor. 3.5 s clears the longest quiet stretch inside any passing take
++/// (2.06 s built-in, 1.43 s reference), so a trip never cuts speech the take goes on to speak. Every field stays
++/// overridable; --silence-seconds 0 disables it.
++pub const drama_default: Config = .{ .floor_dbfs = -40, .seconds = 3.5 };
++
++/// Unset guard fields fall back to `drama_default`, so `--silence-floor-dbfs` alone keeps the default seconds.
++pub fn fill(c: Config) Config {
++    return .{
++        .floor_dbfs = c.floor_dbfs orelse drama_default.floor_dbfs,
++        .seconds = c.seconds orelse drama_default.seconds,
++        .onset_seconds = c.onset_seconds,
++        .onset_voiced_seconds = c.onset_voiced_seconds,
++        .mid_seconds = c.mid_seconds,
++        .mid_min_voiced_s = c.mid_min_voiced_s,
++    };
++}
++
+ pub const Guard = struct {
+     floor_power: f64 = 0,
+     limit: f64 = 0,
+diff --git a/zig/src/families/drama3/generate.zig b/zig/src/families/drama3/generate.zig
+index 3e38a5a05..48e13928b 100644
+--- a/zig/src/families/drama3/generate.zig
++++ b/zig/src/families/drama3/generate.zig
+@@ -24,6 +24,7 @@ pub const Args = struct {
+     opts: d3.Options = .{ .max_rows = d3.common.single_row, .attn_chunk = d3.common.single_row },
+     replay: bool = false,
+     speed_probe: bool = false,
++    logits_out: ?[]const u8 = null,
+     repeat: usize = 1,
+     codec: ?[]const u8 = null,
+     codec_check: ?[]const u8 = null,
+@@ -54,6 +55,7 @@ const usage =
+     \\--check honors --max-rows for prompt probes; compare the same oracle vectors at 1 and N rows.
+     \\--speed-probe 1 compares the staged CUDA GEMV candidate; it never promotes a serving kernel.
+     \\--rows: prompt rows int32 [n, 11]; --ref-codes and --encode: int32 [frames, 10]; --out: frames int32 [n, 11].
++    \\--logits-out FILE appends each frame's candidate-head logits, fp32 [frame, n_cand], for the trace tools.
+     \\The last stderr line is "RESULT drama3 OK ..." with the frame count, timings and frames a second.
+     \\
+ ;
+@@ -78,7 +80,7 @@ pub fn main(init: std.process.Init) !u8 {
+         }
+         const v = argv[i + 1];
+         i += 1;
+-        if (std.mem.eql(u8, k, "--replay")) a.replay = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--speed-probe")) a.speed_probe = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--model")) a.model = v else if (std.mem.eql(u8, k, "--text")) a.text = v else if (std.mem.eql(u8, k, "--ref-text")) a.ref_text = v else if (std.mem.eql(u8, k, "--ref-codes")) a.ref_codes = v else if (std.mem.eql(u8, k, "--rows")) a.rows = v else if (std.mem.eql(u8, k, "--rows-out")) a.rows_out = v else if (std.mem.eql(u8, k, "--out")) a.out = v else if (std.mem.eql(u8, k, "--check")) a.check = v else if (std.mem.eql(u8, k, "--check-frames")) a.check_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--temperature")) a.smp.temperature = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--top-k")) a.smp.top_k = try std.fmt.parseInt(i32, v, 10) else if (std.mem.eql(u8, k, "--top-p")) a.smp.top_p = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--seed")) a.smp.seed = try std.fmt.parseInt(u64, v, 10) else if (std.mem.eql(u8, k, "--max-frames")) a.max_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--graphs")) a.graphs = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--sync-every")) a.sync_every = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-ctx")) a.opts.max_ctx = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-rows")) {
++        if (std.mem.eql(u8, k, "--logits-out")) a.logits_out = v else if (std.mem.eql(u8, k, "--replay")) a.replay = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--speed-probe")) a.speed_probe = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--model")) a.model = v else if (std.mem.eql(u8, k, "--text")) a.text = v else if (std.mem.eql(u8, k, "--ref-text")) a.ref_text = v else if (std.mem.eql(u8, k, "--ref-codes")) a.ref_codes = v else if (std.mem.eql(u8, k, "--rows")) a.rows = v else if (std.mem.eql(u8, k, "--rows-out")) a.rows_out = v else if (std.mem.eql(u8, k, "--out")) a.out = v else if (std.mem.eql(u8, k, "--check")) a.check = v else if (std.mem.eql(u8, k, "--check-frames")) a.check_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--temperature")) a.smp.temperature = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--top-k")) a.smp.top_k = try std.fmt.parseInt(i32, v, 10) else if (std.mem.eql(u8, k, "--top-p")) a.smp.top_p = try std.fmt.parseFloat(f32, v) else if (std.mem.eql(u8, k, "--seed")) a.smp.seed = try std.fmt.parseInt(u64, v, 10) else if (std.mem.eql(u8, k, "--max-frames")) a.max_frames = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--graphs")) a.graphs = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--sync-every")) a.sync_every = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-ctx")) a.opts.max_ctx = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--max-rows")) {
+             a.opts.max_rows = try std.fmt.parseInt(usize, v, 10);
+             a.opts.attn_chunk = @min(a.opts.max_rows, 1024);
+         } else if (std.mem.eql(u8, k, "--threads")) a.opts.threads = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--repeat")) a.repeat = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--wav")) a.wav = v else if (std.mem.eql(u8, k, "--pcm-out")) a.pcm = v else if (std.mem.eql(u8, k, "--encode")) a.encode_out = v else if (std.mem.eql(u8, k, "--chunk")) a.chunk = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--chunks-log")) a.verbose_chunks = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--codec")) a.codec = v else if (std.mem.eql(u8, k, "--codec-check")) a.codec_check = v else if (std.mem.eql(u8, k, "--frames")) a.frames = v else if (std.mem.eql(u8, k, "--ref-audio")) a.ref_audio = v else if (std.mem.eql(u8, k, "--first-chunk")) a.first_chunk = try std.fmt.parseInt(usize, v, 10) else if (std.mem.eql(u8, k, "--pdl")) a.opts.pdl = !std.mem.eql(u8, v, "0") else if (std.mem.eql(u8, k, "--split")) a.opts.split = !std.mem.eql(u8, v, "0") else {
+@@ -275,7 +277,10 @@ fn runRequest(gpa: std.mem.Allocator, io: std.Io, a: Args, e: *d3.Engine, tts: ?
+         frames = r.frames;
+         st = r.stats;
+     } else {
+-        const res = try e.generate(io, rows, q.smp, q.max_frames, a.graphs, a.sync_every);
++        var trace: ?LogitsTrace = null;
++        if (a.logits_out) |p| trace = try LogitsTrace.open(ar, e, p);
++        defer if (trace) |*t| t.close();
++        const res = try e.generate(io, rows, q.smp, q.max_frames, a.graphs, a.sync_every, if (trace) |*t| t.probe() else null);
+         frames = res.frames;
+         st = .{ .frames = res.frames.len, .eos = res.eos, .prompt_rows = rows.len, .prefill_ms = res.prefill_ms, .first_audio_ms = 0, .total_ms = res.prefill_ms + res.decode_ms, .audio_s = @as(f64, @floatFromInt(res.frames.len)) * 2048.0 / 44100.0 };
+     }
+@@ -294,3 +299,34 @@ pub fn readCodes(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]const
+     }
+     return error.NpyCodesUnsupported; // --encode writes the raw form
+ }
++
++/// `--logits-out FILE`: every frame's candidate-head logits, fp32 `[frame, n_cand]`, appended as the frame is
++/// drawn — the raw record `results/smaller-builds/trace_eos.py` derives its per-frame tables from.
++const LogitsTrace = struct {
++    f: *anyopaque,
++    e: *d3.Engine,
++    buf: []f32,
++
++    fn open(ar: std.mem.Allocator, e: *d3.Engine, path: []const u8) !LogitsTrace {
++        const z = try ar.dupeSentinel(u8, path, 0);
++        const n = e.w.n_cand;
++        return .{ .f = fopen(z.ptr, "wb") orelse return error.LogitsOpen, .e = e, .buf = try ar.alloc(f32, n) };
++    }
++
++    fn probe(t: *LogitsTrace) d3.engine.Probe {
++        return .{ .ctx = t, .f = put };
++    }
++
++    fn put(ctx: *anyopaque, name: []const u8, ptr: u64, rows: usize, width: usize, is_f32: bool) anyerror!void {
++        _ = rows;
++        const t: *LogitsTrace = @ptrCast(@alignCast(ctx));
++        if (!is_f32 or !std.mem.eql(u8, name, "tower_decode0.candidate_logits")) return;
++        if (width != t.buf.len) return error.BadProbeRows;
++        try t.e.download(ptr, std.mem.sliceAsBytes(t.buf));
++        try writeAll(t.f, std.mem.sliceAsBytes(t.buf));
++    }
++
++    fn close(t: *LogitsTrace) void {
++        _ = fclose(t.f);
++    }
++};
+diff --git a/zig/src/families/drama3/metal/engine.zig b/zig/src/families/drama3/metal/engine.zig
+index 471015982..c160f4e24 100644
+--- a/zig/src/families/drama3/metal/engine.zig
++++ b/zig/src/families/drama3/metal/engine.zig
+@@ -385,8 +385,9 @@ pub const Engine = struct {
+         decode_ms: f64,
+     };
+ 
+-    /// Generate up to max_frames frames after the prompt rows, stopping at the end-of-speech frame.
+-    pub fn generate(e: *Engine, io: std.Io, rows: []const [W]i32, smp: Sampling, max_frames: usize, graphs: bool, sync_every: usize) !Result {
++    /// Generate up to max_frames frames after the prompt rows, stopping at the end-of-speech frame. `probe`
++    /// sees every frame step's tensors (the candidate-head logits included) when tracing.
++    pub fn generate(e: *Engine, io: std.Io, rows: []const [W]i32, smp: Sampling, max_frames: usize, graphs: bool, sync_every: usize, probe: ?Probe) !Result {
+         const t0 = nowNs(io);
+         try e.prefill(rows, null);
+         try e.flush();
+@@ -401,7 +402,7 @@ pub const Engine = struct {
+         var checked: usize = 0;
+         while (made < limit and !eos) {
+             const burst = @min(if (made == 0) 1 else every, limit - made);
+-            for (0..burst) |_| try e.frameStep(smp, graphs, null);
++            for (0..burst) |_| try e.frameStep(smp, graphs, probe);
+             made += burst;
+             try e.download(e.frames_out + checked * W * 4, std.mem.sliceAsBytes(host[checked..made]));
+             if (checked == 0) first_ms = ms(t0, nowNs(io));
+diff --git a/zig/src/families/drama3/metal/forward.zig b/zig/src/families/drama3/metal/forward.zig
+index cbecdd10e..9980862ea 100644
+--- a/zig/src/families/drama3/metal/forward.zig
++++ b/zig/src/families/drama3/metal/forward.zig
+@@ -135,7 +135,7 @@ pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engi
+     } else if (greedy) {
+         k.argmax(g, e.cand_logits, e.w.n_cand, e.w.cand_ids, e.frame, sem_begin, cfg.codebook_size);
+     } else {
+-        k.sampleMain(g, e.cand_logits, e.w.n_cand, e.w.cand_ids, e.window, sp, e.step, e.frame, sem_begin, cfg.codebook_size);
++        k.sampleMain(g, e.cand_logits, e.w.n_cand, e.w.cand_ids, e.window, sp, e.step, e.frame, sem_begin, cfg.codebook_size, @import("../shards.zig").eosCandidate(e.c, e.w.n_cand));
+     }
+     var hin = e.hlast;
+     for (0..cfg.tower_layers) |ti| {
+diff --git a/zig/src/families/drama3/metal/kernels.zig b/zig/src/families/drama3/metal/kernels.zig
+index 0b5814de5..5f513ae5f 100644
+--- a/zig/src/families/drama3/metal/kernels.zig
++++ b/zig/src/families/drama3/metal/kernels.zig
+@@ -133,14 +133,14 @@ pub fn argmax(g: *Gpu, logits: u64, count: usize, cand_ids: u64, frame: u64, sem
+     g.go(.d3_argmax, .{ 1, 1, 1 }, 1024, &.{ logits, ids, frame }, A{ .count = u(count), .ids = @intFromBool(cand_ids != 0), .sb = sem_begin, .cb = cb });
+ }
+ 
+-const SampleArgs = extern struct { sp: Sampling, count: u32, stream: i32, sb: i32, cb: i32 };
++const SampleArgs = extern struct { sp: Sampling, count: u32, stream: i32, sb: i32, cb: i32, eos: i32 };
+ 
+-pub fn sampleMain(g: *Gpu, logits: u64, count: usize, cand_ids: u64, window: u64, sp: Sampling, step: u64, frame: u64, sem_begin: i32, cb: i32) void {
+-    g.go(.d3_sample_main, .{ 1, 1, 1 }, 256, &.{ logits, cand_ids, window, step, frame }, SampleArgs{ .sp = sp, .count = u(count), .stream = 0, .sb = sem_begin, .cb = cb });
++pub fn sampleMain(g: *Gpu, logits: u64, count: usize, cand_ids: u64, window: u64, sp: Sampling, step: u64, frame: u64, sem_begin: i32, cb: i32, eos_cand: i32) void {
++    g.go(.d3_sample_main, .{ 1, 1, 1 }, 256, &.{ logits, cand_ids, window, step, frame }, SampleArgs{ .sp = sp, .count = u(count), .stream = 0, .sb = sem_begin, .cb = cb, .eos = eos_cand });
+ }
+ 
+ pub fn sampleCode(g: *Gpu, logits: u64, count: usize, sp: Sampling, step: u64, stream: i32, out: u64) void {
+-    g.go(.d3_sample_code, .{ 1, 1, 1 }, 256, &.{ logits, step, out }, SampleArgs{ .sp = sp, .count = u(count), .stream = stream, .sb = 0, .cb = 0 });
++    g.go(.d3_sample_code, .{ 1, 1, 1 }, 256, &.{ logits, step, out }, SampleArgs{ .sp = sp, .count = u(count), .stream = stream, .sb = 0, .cb = 0, .eos = -1 });
+ }
+ 
+ pub fn finishFrame(g: *Gpu, frame: u64, frames_out: u64, next_input: u64, window: u64, pos: u64, step: u64, count: u64) void {
+@@ -155,7 +155,53 @@ pub fn copyI32(g: *Gpu, src: u64, dst: u64, n: usize) void {
+     g.go(.d3_copy_i32, .{ 1, 1, 1 }, 64, &.{ src, dst }, @as(u32, u(n)));
+ }
+ 
++test "d3_sample_main on the device draws eos past both nuclei" {
++    // `draw_top` exempts the eos slot from truncation: eos second by logit, outside the request (top_p 0.9) and RAS
++    // (top_p 0.95) nuclei — cum(rank 0) = 0.953 — is still drawn sometimes, and always wins at rank 0. A shader
++    // that truncates eos like any other token never draws it in the first half (0 of 200) and the test fails; the
++    // draws are Philox-deterministic under the fixed seed and steps.
++    const lib = @import("drama3_metallib").bytes;
++    if (lib.len == 0) return error.SkipZigTest; // builds without Metal embed an empty library
++    const eos: i32 = 248046;
++    const sem_begin: i32 = 248099;
++    const cb: i32 = 4097;
++    const g = try @import("gpu.zig").Gpu.open(std.testing.allocator, lib);
++    defer g.close();
++    const logits = try g.alloc(4 * 3);
++    const ids_addr = try g.alloc(4 * 3);
++    const window = try g.alloc(4 * 16);
++    const step = try g.alloc(8);
++    const frame = try g.alloc(4 * 11);
++    const frames = try g.alloc(4 * 11 * 200);
++    const next = try g.alloc(4 * 11);
++    const pos = try g.alloc(4);
++    const count = try g.alloc(4);
++    try g.put(ids_addr, std.mem.sliceAsBytes(&[_]i32{ eos, sem_begin, sem_begin + 1 }));
++    const repeat_window: [16]i32 = @splat(sem_begin); // every draw of the dominant token repeats
++    try g.put(window, std.mem.sliceAsBytes(&repeat_window));
++    const sp: Sampling = .{ .temperature = 1.0, .top_k = 30, .top_p = 0.9, .seed = 0x6469_6e6f };
++    var all: [200 * 11]i32 = undefined;
++    for ([_][3]f32{ .{ 17.0, 20.0, 5.0 }, .{ 25.0, 20.0, 5.0 } }) |logits_for| {
++        try g.put(logits, std.mem.sliceAsBytes(&logits_for));
++        try g.put(step, std.mem.sliceAsBytes(&[_]u64{1}));
++        try g.put(count, std.mem.sliceAsBytes(&[_]i32{0}));
++        for (0..200) |_| {
++            sampleMain(g, logits, 3, ids_addr, window, sp, step, frame, sem_begin, cb, 0);
++            finishFrame(g, frame, frames, next, window, pos, step, count);
++        }
++        try g.get(frames, std.mem.sliceAsBytes(&all));
++        var drawn: usize = 0;
++        for (0..200) |n| drawn += @intFromBool(all[n * 11] == eos);
++        if (logits_for[0] == 25.0) {
++            try std.testing.expectEqual(@as(usize, 200), drawn); // rank 0: eos dominates the race outright
++        } else {
++            // ~9 of 200 expected at p_eos = e^-3; a truncating shader draws 0.
++            try std.testing.expect(drawn > 0 and drawn < 200);
++        }
++    }
++}
++
+ test "argument structs match the kernels' layouts" {
+     try std.testing.expectEqual(@as(usize, 24), @sizeOf(Sampling));
+-    try std.testing.expectEqual(@as(usize, 40), @sizeOf(SampleArgs));
++    try std.testing.expectEqual(@as(usize, 44), @sizeOf(SampleArgs));
+ }
+diff --git a/zig/src/families/drama3/replay.zig b/zig/src/families/drama3/replay.zig
+index 44520d988..7fdeb0292 100644
+--- a/zig/src/families/drama3/replay.zig
++++ b/zig/src/families/drama3/replay.zig
+@@ -62,7 +62,7 @@ pub fn Replay(comptime d3: type) type {
+             report: bool,
+         ) !void {
+             if (t.max_chunk < 16) return error.ReplayCodecCapacity;
+-            const baseline = try e.generate(io, rows, smp, 17, false, 1);
++            const baseline = try e.generate(io, rows, smp, 17, false, 1, null);
+             defer gpa.free(baseline.frames);
+             if (baseline.frames.len != 17) return error.ShortReplayFixture;
+             for (baseline.frames) |frame| if (frame[0] == e.c.ids.eos) return error.ShortReplayFixture;
+@@ -73,7 +73,7 @@ pub fn Replay(comptime d3: type) type {
+             try audio(t, pcm, baseline.frames.len, 1, report);
+             try e.poison();
+             try t.c.poison();
+-            const replay = try e.generate(io, rows, smp, 17, true, 1);
++            const replay = try e.generate(io, rows, smp, 17, true, 1, null);
+             defer gpa.free(replay.frames);
+             try equal(std.mem.sliceAsBytes(baseline.frames), std.mem.sliceAsBytes(replay.frames));
+             for ([_]usize{ 1, 4, 16 }) |chunk| {
+diff --git a/zig/src/families/drama3/shards.zig b/zig/src/families/drama3/shards.zig
+index 6e3475f72..be1acbcc3 100644
+--- a/zig/src/families/drama3/shards.zig
++++ b/zig/src/families/drama3/shards.zig
+@@ -94,3 +94,31 @@ pub fn candidateIds(gpa: std.mem.Allocator, c: cfg.Config) ![]i32 {
+     if (c.ids.eos > c.ids.sem_end) ids[n - 1] = c.ids.eos;
+     return ids;
+ }
++/// The candidate list slot holding eos (first below the band, last above it), or -1 when eos sits inside it:
++/// the sampler keeps that slot in every nucleus so a stop the model asks for cannot be truncated away.
++pub fn eosCandidate(c: cfg.Config, n_cand: usize) i32 {
++    if (c.ids.eos < c.ids.sem_begin) return 0;
++    if (c.ids.eos > c.ids.sem_end) return @intCast(n_cand - 1);
++    return -1;
++}
++
++test "eosCandidate mirrors candidateIds" {
++    const a = std.testing.allocator;
++    const none = [_]bool{false}**cfg.layers;
++    const idses = [_]cfg.Ids{
++        .{ .eos = 100, .pad = 0, .sem_begin = 200, .sem_end = 300, .audio_pad = 0 },
++        .{ .eos = 400, .pad = 0, .sem_begin = 200, .sem_end = 300, .audio_pad = 0 },
++    };
++    for (idses) |ids| {
++        const c = cfg.Config{ .ids = ids, .full_attention = none };
++        const got = eosCandidate(c, c.candidates());
++        const list = try candidateIds(a, c);
++        defer a.free(list);
++        try std.testing.expectEqual(c.ids.eos, list[@intCast(got)]);
++    }
++    const inside = cfg.Config{
++        .ids = .{ .eos = 250, .pad = 0, .sem_begin = 200, .sem_end = 300, .audio_pad = 0 },
++        .full_attention = none,
++    };
++    try std.testing.expectEqual(@as(i32, -1), eosCandidate(inside, inside.candidates()));
++}
+diff --git a/zig/src/native/drama_host.zig b/zig/src/native/drama_host.zig
+index 6c2177874..436ba5803 100644
+--- a/zig/src/native/drama_host.zig
++++ b/zig/src/native/drama_host.zig
+@@ -42,7 +42,7 @@ pub const Options = struct {
+     context: u32 = 8192,
+     device: u32 = 0,
+     lanes: u32 = 2,
+-    silence: api.speech_guard.Config = .{},
++    silence: api.speech_guard.Config = api.speech_guard.drama_default,
+     max_frames: ?u32 = null,
+     prefill_rows: u32 = @intCast(d3.common.single_row), // rows a prompt chunk: one row until a caller opts in
+     reference_entries: u32 = @import("drama_reference.zig").default_entries, // CUDA, TF_DRAMA_REFERENCE_CACHE; 0: off
+@@ -353,7 +353,8 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+     const budget = try @import("drama_budget.zig").budget(o.context, o.max_frames);
+     try (d3.Options{ .max_rows = @intCast(o.prefill_rows), .attn_chunk = @intCast(o.prefill_rows) }).validatePrefill();
+     if (!is_cuda) try d3.load_limit.admitStates(gpa, io, dir, o.context, o.lanes * (1 + @as(u32, @intFromBool(o.cfg_enabled))));
+-    try o.silence.validate();
++    const silence = api.speech_guard.fill(o.silence);
++    try silence.validate();
+     const h = try gpa.create(Host);
+     errdefer gpa.destroy(h);
+     h.* = .{
+@@ -362,7 +363,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+         .limit = undefined,
+         .queue = try rounds.Queue.init(o.lanes),
+         .info_ = .{},
+-        .silence = o.silence,
++        .silence = silence,
+     };
+     if (is_cuda) h.refs = .{ .gpa = gpa, .capacity = o.reference_entries };
+     try h.limit.init(gpa, io, o.device);
+@@ -407,7 +408,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+     if (!is_cuda) try h.warm.hold(h.sessions[0].e.g, io);
+     errdefer if (!is_cuda) h.warm.drop(h.sessions[0].e.g);
+     h.worker = try std.Thread.spawn(.{}, Host.run, .{h});
+-    if (o.silence.enabled()) std.log.info("drama3: silence guard on: {f}", .{o.silence});
++    if (silence.enabled()) std.log.info("drama3: silence guard on: {f}", .{silence});
+     if (o.cfg_enabled) std.log.info("drama3: semantic CFG enabled; shared weights, independent states; {s}", .{
+         if (o.cfg_batched) "paired command-buffer submission (not vectorized GEMM)" else "separate sequence submissions",
+     });
+@@ -483,6 +484,32 @@ test "native silence guard: onset silence cuts whole and stream at one frame; sp
+     }
+ }
+ 
++test "native silence guard: the engine default ends a quiet tail instead of running to the cap" {
++    const word = [_]f32{ 0.25, -0.25 };
++    var pcm: [2 + 40]f32 = undefined;
++    @memcpy(pcm[0..2], &word);
++    @memset(pcm[2..], 0);
++    for ([_]bool{ false, true }) |stream| {
++        var codec: FakeCodec = .{ .pcm = &pcm };
++        var out: [pcm.len]f32 = undefined;
++        const samples, const tripped = try codec.run((Options{}).silence, stream, &out);
++        try std.testing.expectEqual(@as(usize, 2 + 28), samples); // the word, then the default 3.5 s of quiet (rate 8)
++        try std.testing.expect(tripped);
++    }
++}
++
++test "native silence guard: speech_guard.fill defaults unset fields and keeps an explicit disable" {
++    const filled = api.speech_guard.fill(.{});
++    try std.testing.expect(filled.onset_seconds == null and filled.mid_seconds == null);
++    try std.testing.expectEqual(api.speech_guard.drama_default.floor_dbfs, filled.floor_dbfs);
++    try std.testing.expectEqual(api.speech_guard.drama_default.seconds, filled.seconds);
++    const floor_only = api.speech_guard.fill(.{ .floor_dbfs = -60 });
++    try std.testing.expectEqual(@as(?f64, -60), floor_only.floor_dbfs);
++    try std.testing.expectEqual(api.speech_guard.drama_default.seconds, floor_only.seconds);
++    const off = api.speech_guard.fill(.{ .seconds = 0 });
++    try std.testing.expect(!off.enabled());
++}
++
+ test "native silence guard: a finished job publishes its reason and mid trip alike in whole and stream" {
+     if (!is_cuda) return error.SkipZigTest;
+     const Fake = struct {
+diff --git a/zig/src/server/cli.zig b/zig/src/server/cli.zig
+index ceadd0d68..ec1a04b86 100644
+--- a/zig/src/server/cli.zig
++++ b/zig/src/server/cli.zig
+@@ -325,9 +325,12 @@ pub fn parse(a: Allocator, argv: []const []const u8, u: *Usage) error{ Usage, Ou
+     out.model = model orelse return fail(u, a, "the following arguments are required: model", .{});
+     if ((out.cfg.batched or out.cfg.force_guided) and out.cfg.options() == null) return fail(u, a, "--cfg-batched and --cfg-force-guided need --cfg-gamma or --cfg-allow-request-gamma", .{});
+     try ranks(u, a, out);
+-    out.silence.validate() catch |err|
++    // The guard flags are Drama-only (refused for other models in main), so they validate filled with the engine's
++    // default: --silence-seconds 5 alone keeps the default floor, --silence-redraws 1 the default guard.
++    const silence = api.speech_guard.fill(out.silence);
++    silence.validate() catch |err|
+         return fail(u, a, "invalid silence guard configuration: {s}", .{@errorName(err)});
+-    out.redraw.validate(out.silence) catch |err| return fail(u, a, "invalid redraw configuration: {s}", .{@errorName(err)});
++    out.redraw.validate(silence) catch |err| return fail(u, a, "invalid redraw configuration: {s}", .{@errorName(err)});
+     if (out.vision_urls and !out.vision) return fail(u, a, "--vision-urls needs --vision", .{});
+     if (out.vision_pdf and !out.vision) return fail(u, a, "--vision-pdf needs --vision", .{});
+     if (out.idle_unload < 0 or out.idle_unload > std.math.maxInt(i64) / std.time.ns_per_s) return fail(u, a, "argument --idle-unload: expected a seconds count from 0 (off) under {d}: '{d}'", .{ std.math.maxInt(i64) / std.time.ns_per_s, out.idle_unload });
+@@ -522,7 +525,7 @@ pub fn request(a: Allocator, dir: []const u8, model_type: []const u8, args: Args
+         .model_type = model_type,
+         .context = args.context,
+         .max_frames = args.max_frames,
+-        .silence = args.silence,
++        .silence = if (std.mem.eql(u8, model_type, "fish_omni")) api.speech_guard.fill(args.silence) else args.silence,
+         .lanes = parallel(args.parallel) orelse 8,
+         .lanes_fixed = parallelFixed(args.parallel),
+         .drafts = !args.no_drafts,
+diff --git a/zig/src/server/cli_test.zig b/zig/src/server/cli_test.zig
+index db4cadfa8..0c38cb730 100644
+--- a/zig/src/server/cli_test.zig
++++ b/zig/src/server/cli_test.zig
+@@ -190,8 +190,9 @@ test "silence redraw flags are opt-in and need a redraw count and the guard" {
+     const zero = try parse(a, &.{ "m", "--silence-redraws=0" }, &u);
+     try std.testing.expect(zero.redraw.refusal("nemotron_h") != null);
+     try std.testing.expect(zero.redraw.refusal("fish_omni") == null);
++    const bare = try parse(a, &.{ "m", "--silence-redraws", "1" }, &u);
++    try std.testing.expectEqual(@as(?u8, 1), bare.redraw.max);
+     for ([_][]const []const u8{
+-        &.{ "m", "--silence-redraws", "1" },
+         &(guard ++ .{ "--silence-redraw-budget-s", "30" }),
+         &(guard ++ .{ "--silence-redraw-controls", "sighs" }),
+         &(guard ++ .{ "--silence-redraws", "256" }),
+@@ -433,7 +434,8 @@ test "silence guard flags are opt-in and reach native open options" {
+     const opened = try request(a, "m", "drama3", args);
+     try std.testing.expectEqual(args.silence, opened.silence);
+     try std.testing.expect(opened.silence.enabled());
+-    try std.testing.expectError(error.Usage, parse(a, &.{ "m", "--silence-seconds", "1" }, &usage));
++    // Seconds alone take Drama's default floor, as the engine fills it.
++    try std.testing.expectEqual(@as(?f64, 1), (try parse(a, &.{ "m", "--silence-seconds", "1" }, &usage)).silence.seconds);
+     try std.testing.expectError(error.Usage, parse(a, &.{ "m", "--silence-seconds", "nan" }, &usage));
+     const onset = try parse(a, &.{ "m", "--silence-floor-dbfs=-80", "--silence-seconds", "2", "--silence-onset-s", "1", "--silence-onset-voiced-s", "0.5" }, &usage);
+     try std.testing.expectEqual(api.speech_guard.Config{ .floor_dbfs = -80, .seconds = 2, .onset_seconds = 1, .onset_voiced_seconds = 0.5 }, (try request(a, "m", "drama3", onset)).silence);
+diff --git a/zig/src/server/serve.zig b/zig/src/server/serve.zig
+index 3ceda496e..432f159e9 100644
+--- a/zig/src/server/serve.zig
++++ b/zig/src/server/serve.zig
+@@ -178,10 +178,13 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
+         std.debug.print("tensorfold: TENSORFOLD_WIRE: expected spark or native\n", .{});
+         return 1;
+     };
++    // Drama speech gets the engine's guard defaults filled here too, so the server's guard and redraw flags agree
++    // with what the engine enforces, and an unset redraw count becomes `default_redraws` redraws of a silenced take.
++    const silence = if (std.mem.eql(u8, s.model_type, "fish_omni")) api.speech_guard.fill(args.silence) else args.silence;
+     const config: server_mod.Config = .{
+         .browser = .{ .allowed_hosts = args.allowed_host, .allowed_origins = args.allowed_origin },
+         .allowed_controls = args.allowed_controls,
+-        .redraw = args.redraw,
++        .redraw = @import("speech_redraw.zig").fill(args.redraw, silence, s.model_type),
+         .served_name = s.served,
+         .model_dir = s.model_dir,
+         .voices_dir = args.voices,
+@@ -204,8 +207,8 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
+         .vision_urls = args.vision_urls,
+         .vision_pdf = args.vision_pdf,
+         .seed_salt = salt,
+-        .silence_mid = args.silence.mid_seconds != null,
+-        .silence_guard = args.silence.enabled(),
++        .silence_mid = silence.mid_seconds != null,
++        .silence_guard = silence.enabled(),
+         .cfg = args.cfg.options(),
+         .prompt_seed = args.prompt_seed,
+         .sse_keepalive_s = keepalive_s,
+diff --git a/zig/src/server/speech.zig b/zig/src/server/speech.zig
+index 238da015f..287c93925 100644
+--- a/zig/src/server/speech.zig
++++ b/zig/src/server/speech.zig
+@@ -50,7 +50,7 @@ pub const Format = enum {
+ pub const Plan = struct { input: []const u8, prompt: []const u32, frames: ?[]const [11]i32 = null, refs: []const @import("drama_prompt").Reference = &.{}, reference_rows: u32 = 0, sampling: speech_sampling.Options, format: Format, stream: bool, budget_s: ?f64 = null };
+ 
+ /// One whole take: its audio, why it ended, and whether it ended in a mid-utterance silence.
+-const Take = struct { pcm: []f32, reason: api.Reason, silence_mid: bool = false, trip: bool = false, jump: ?f64 = null };
++pub const Take = struct { pcm: []f32, reason: api.Reason, silence_mid: bool = false, trip: bool = false, jump: ?f64 = null };
+ 
+ const Metadata = @import("speech_metadata.zig").Metadata;
+ 
+@@ -192,6 +192,8 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         releaseLane(srv, &lane_released);
+         return fail(c, cx, id, metadata.*, .server, "the tokenizer cannot encode the unconditional prompt");
+     };
++    // Streamed audio cannot be taken back, so a stream that may be redrawn is held whole until the redraw decision.
++    const live = plan.stream and srv.config.redraw.count() == 0;
+     const request: api.SpeechRequest = .{
+         .prompt = plan.prompt,
+         .frames = frames,
+@@ -202,7 +204,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         .temperature = plan.sampling.temperature,
+         .top_p = plan.sampling.top_p,
+         .top_k = plan.sampling.top_k,
+-        .stream = plan.stream,
++        .stream = live,
+         .reference_rows = plan.reference_rows,
+         .unconditioned = guided.rows,
+         .cfg_gamma = guided.gamma,
+@@ -226,7 +228,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         };
+     };
+     // The engine holds request, prompt, pcm and result until finished; no path below returns before that.
+-    if (plan.stream) return streaming.streamReply(srv, c, cx, id, sp, plan, received, &box, engine_id, pcm, &result, metadata.*, &lane_released);
++    if (live) return streaming.streamReply(srv, c, cx, id, sp, plan, received, &box, engine_id, pcm, &result, metadata.*, &lane_released);
+     if (streaming.settle(srv, c, &box, engine_id, null) == null) return streaming.left(srv, c, id, plan.prompt.len, received);
+     if (streaming.why(&box, result.samples, pcm.len)) |message| {
+         releaseLane(srv, &lane_released);
+@@ -237,7 +239,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+     defer srv.gpa.free(spare);
+     const sent = redraw(srv, c, cx, id, sp, plan, received, request, started, take, &spare, metadata) orelse return;
+     releaseLane(srv, &lane_released);
+-    reply(srv, c, cx, id, sp, plan, received, sent, metadata.*);
++    if (plan.stream) streaming.sendTake(srv, c, cx, id, sp, plan, received, sent, metadata.*) else reply(srv, c, cx, id, sp, plan, received, sent, metadata.*);
+ }
+ 
+ fn redraw(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, plan: Plan, received: i96, first: api.SpeechRequest, started: i96, drawn: Take, spare: *[]f32, metadata: *Metadata) ?Take {
+diff --git a/zig/src/server/speech_redraw.zig b/zig/src/server/speech_redraw.zig
+index 629bea931..1f7111c8c 100644
+--- a/zig/src/server/speech_redraw.zig
++++ b/zig/src/server/speech_redraw.zig
+@@ -55,6 +55,22 @@ pub const Policy = struct {
+ /// Inputs of fewer characters are never judged short: a fixed lead-in and tail dominate their duration.
+ pub const short_min_chars = 200;
+ 
++/// serve's default: two redraws of a take the silence guard ended. On the int3 build a collapsed take is
++/// a per-seed degeneracy — medium-05's seeds split 5-of-8 speaking the whole text and stopping naturally — so the
++/// next prompt-derived seed usually speaks where the first fell into the pause token; its salt-0 seed needs the
++/// second (the first redraw collapses too). `--silence-redraws 0` keeps every first take and live streaming; with
++/// redraws a stream is held until its take is chosen, and a redraw only runs while every take so far tripped.
++pub const default_redraws: u8 = 2;
++
++/// An unset redraw count defaults to `default_redraws` when Drama speech is served behind the (filled) silence
++/// guard; with the guard off there is no silence reason to redraw, so the default stays off.
++pub fn fill(p: Policy, silence: api.speech_guard.Config, model_type: []const u8) Policy {
++    if (p.max != null or !std.mem.eql(u8, model_type, "fish_omni")) return p;
++    var out = p;
++    out.max = if (silence.enabled()) default_redraws else 0;
++    return out;
++}
++
+ /// The lower of the server budget and a request's X-Deadline-S, a positive finite number of seconds.
+ pub fn budget(server_s: ?f64, header: ?[]const u8) error{BadDeadline}!?f64 {
+     const text = std.mem.trim(u8, header orelse return server_s, " \t");
+@@ -90,6 +106,15 @@ test "redraw policy is off by default; redraws need the guard, a budget redraws
+     try std.testing.expectError(error.BadShortReplyRatio, (Policy{ .max = 1, .short_ratio = 1, .short_chars_per_s = 10 }).validate(guard));
+ }
+ 
++test "serve fills the default silence redraws for Drama behind the filled guard; explicit counts and others stay" {
++    const guard = api.speech_guard.fill(.{});
++    try std.testing.expectEqual(@as(?u8, 2), fill(.{}, guard, "fish_omni").max);
++    try std.testing.expectEqual(@as(?u8, 0), fill(.{}, .{ .seconds = 0 }, "fish_omni").max);
++    try std.testing.expectEqual(@as(?u8, 0), fill(.{ .max = 0 }, guard, "fish_omni").max);
++    try std.testing.expectEqual(@as(?u8, 3), fill(.{ .max = 3 }, guard, "fish_omni").max);
++    try std.testing.expectEqual(@as(?u8, null), fill(.{}, guard, "nemotron_h").max);
++}
++
+ test "a stop of enough characters trips only under the ratio of its expected length; silence always trips" {
+     const p: Policy = .{ .max = 1, .short_ratio = 0.25, .short_chars_per_s = 10 };
+     // 200 characters at 10 a second are 20 s expected: under a ratio of 0.25, a stop under 5 s of audio is short
+diff --git a/zig/src/server/speech_redraw_test.zig b/zig/src/server/speech_redraw_test.zig
+index cf45aaca8..a0e07f267 100644
+--- a/zig/src/server/speech_redraw_test.zig
++++ b/zig/src/server/speech_redraw_test.zig
+@@ -169,16 +169,33 @@ test "an empty redraw list seeds the reference plain text" {
+     try std.testing.expectEqual(try seed("hello", 1), script.seeds[1]);
+ }
+ 
+-test "streams are never redrawn and report zero redraws" {
+-    var script: Script = .{ .steps = &.{frame}, .reasons = &.{ .silence, .stop }, .inline_ = true };
++test "a stream with redraws is held until its take ends and sends the redrawn take, never the silenced one" {
++    var script: Script = .{ .steps = &.{frame}, .reasons = &.{ .silence, .silence, .stop }, .inline_ = true };
+     var s: Served = undefined;
+     try start(&s, &script, .{ .max = 2 }, "X-Deadline-S: 60\r\n", harness.stream_body);
+     defer s.deinit();
+     const reply = try finish(&s, &script);
+     try expectHeader(reply.head, "HTTP/1.1 200");
+-    try expectHeader(reply.head, "X-Silence-Redraws: 0\r\n");
++    try expectHeader(reply.head, "Transfer-Encoding: chunked\r\n");
++    try expectHeader(reply.head, "X-Silence-Redraws: 2\r\n");
++    try std.testing.expectEqual(@as(usize, 3), script.takes);
++    for (script.seeds[0..3], 0..) |got, k| try std.testing.expectEqual(try seed("hi", @intCast(k)), got);
++    var size: [8]u8 = undefined;
++    const head = try std.fmt.bufPrint(&size, "{x}\r\n", .{2 * frame});
++    try std.testing.expect(std.mem.startsWith(u8, reply.body, head));
++    try expectTake(reply.body[head.len..][0 .. 2 * frame], 2);
++    try std.testing.expectEqualStrings("\r\n0\r\n\r\n", reply.body[head.len + 2 * frame ..]);
++}
++
++test "a stream whose redraws run out ends under the silence trailer" {
++    var script: Script = .{ .steps = &.{frame}, .reason = .silence, .inline_ = true };
++    var s: Served = undefined;
++    try start(&s, &script, .{ .max = 1 }, "", harness.stream_body);
++    defer s.deinit();
++    const reply = try finish(&s, &script);
++    try expectHeader(reply.head, "X-Silence-Redraws: 1\r\n");
+     try std.testing.expect(std.mem.endsWith(u8, reply.body, "\r\n0\r\nX-Finish-Reason: silence\r\n\r\n"));
+-    try std.testing.expectEqual(@as(usize, 1), script.takes);
++    try std.testing.expectEqual(@as(usize, 2), script.takes);
+ }
+ 
+ test "stream deadlines are checked only with redraws enabled" {
+diff --git a/zig/src/server/speech_sampling_test.zig b/zig/src/server/speech_sampling_test.zig
+index 1af8b63d0..4a3881aae 100644
+--- a/zig/src/server/speech_sampling_test.zig
++++ b/zig/src/server/speech_sampling_test.zig
+@@ -140,7 +140,7 @@ test "speech sampling: no seed keeps prompt-keyed redraws after stripping contro
+     try expectDraw(&script, 1, sampling, try promptSeed("hi [sighs] there", 1));
+ }
+ 
+-test "speech sampling: a silenced stream retains controls and does not redraw" {
++test "speech sampling: a silenced stream retains controls through its redraws" {
+     var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true, .reason = .silence };
+     var cfg = config;
+     cfg.redraw = .{ .max = 2 };
+@@ -148,6 +148,6 @@ test "speech sampling: a silenced stream retains controls and does not redraw" {
+     defer gpa.free(reply);
+     try harness.expectHeader(reply, "HTTP/1.1 200");
+     try harness.expectHeader(reply, "X-Finish-Reason: silence");
+-    try std.testing.expectEqual(@as(usize, 1), script.takes);
+-    try expectDraw(&script, 0, .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, 2);
++    try std.testing.expectEqual(@as(usize, 3), script.takes);
++    for (0..3) |k| try expectDraw(&script, k, .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, 2 + k);
+ }
+diff --git a/zig/src/server/speech_stream.zig b/zig/src/server/speech_stream.zig
+index f6837ab7f..526753b60 100644
+--- a/zig/src/server/speech_stream.zig
++++ b/zig/src/server/speech_stream.zig
+@@ -47,7 +47,7 @@ pub fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.Spee
+         log.line("speech {s} stream ended incomplete after samples={d}: {s}", .{ id, sent.samples, message });
+         return;
+     }
+-    c.writeAll(if (box.reason == .silence) silence_chunk else if (box.reason == .length) length_chunk else last_chunk) catch {
++    c.writeAll(terminator(box.reason)) catch {
+         c.close = true;
+         return;
+     };
+@@ -57,6 +57,26 @@ pub fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.Spee
+     });
+ }
+ 
++/// A held stream's chosen take: one chunk of all its audio, then the terminator of its finish reason.
++pub fn sendTake(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, plan: Plan, received: i96, take: speech.Take, metadata: Metadata) void {
++    const bytes = quantizeInPlace(take.pcm) catch return fail(c, cx, id, metadata, .server, "the synthesized audio has non-finite samples");
++    writeTake(c, sp.sample_rate, bytes, take.reason, metadata) catch {
++        c.close = true; // a head already started or a client gone: nothing more can be sent on this connection
++        return;
++    };
++    log.line("speech {s} prompt={d} samples={d} format=pcm stream=held finish={s} seconds={d:.2}", .{ id, plan.prompt.len, take.pcm.len, @tagName(take.reason), clock.seconds(clock.nowNs(srv.io) - received) });
++}
++
++fn writeTake(c: *Conn, sample_rate: u32, bytes: []const u8, reason: api.Reason, metadata: Metadata) error{Closed}!void {
++    var size: [20]u8 = undefined;
++    try startStream(c, sample_rate, metadata);
++    try c.writeAll(std.fmt.bufPrint(&size, "{x}\r\n", .{bytes.len}) catch unreachable);
++    try c.writeAll(bytes);
++    try c.writeAll("\r\n");
++    try c.writeAll(terminator(reason));
++    c.response_complete = true;
++}
++
+ /// What a stream sent, when this thread first saw published audio, and when frame 0's own bytes reached the socket.
+ const Sent = struct { samples: usize = 0, first_ready: i96 = 0, first_written: i96 = 0 };
+ 
+@@ -138,6 +158,10 @@ fn startStream(c: *Conn, sample_rate: u32, metadata: Metadata) error{Closed}!voi
+ }
+ 
+ /// Ends a complete stream; length and silence use an X-Finish-Reason trailer instead.
+-const last_chunk = "0\r\n\r\n";
+-const length_chunk = "0\r\nX-Finish-Reason: length\r\n\r\n";
+-const silence_chunk = "0\r\nX-Finish-Reason: silence\r\n\r\n";
++fn terminator(reason: api.Reason) []const u8 {
++    return switch (reason) {
++        .silence => "0\r\nX-Finish-Reason: silence\r\n\r\n",
++        .length => "0\r\nX-Finish-Reason: length\r\n\r\n",
++        else => "0\r\n\r\n",
++    };
++}
+diff --git a/zig/tests/drama_compile.zig b/zig/tests/drama_compile.zig
+index 91fdacebd..c9a051b92 100644
+--- a/zig/tests/drama_compile.zig
++++ b/zig/tests/drama_compile.zig
+@@ -15,7 +15,7 @@ export fn dramaCompile(io: *const std.Io, model: [*:0]const u8, codec: [*:0]cons
+     defer a.free(result.frames);
+     d3.replay.verify(a, io.*, e, t, &rows, .{}, true) catch {};
+     if (@hasDecl(d3, "speed_probe")) d3.speed_probe.verify(e) catch {};
+-    const frames = e.generate(io.*, &rows, .{}, 4, false, 1) catch return;
++    const frames = e.generate(io.*, &rows, .{}, 4, false, 1, null) catch return;
+     defer a.free(frames.frames);
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,4 +1,4 @@
-From f35f140fb556ee6d4ae23b88391fcd9c9997a7d3 Mon Sep 17 00:00:00 2001
+From 5bc16fe108ce9266e132a1f6c4a997cc698e5768 Mon Sep 17 00:00:00 2001
 From: drama-agent <agent@plotarmor.dev>
 Date: Sat, 21 Nov 2026 12:58:16 +0800
 Subject: [PATCH] drama3 metal: eos in every nucleus, a serve silence default
@@ -16,13 +16,17 @@ trailing quiet the same collapse produces; --silence-seconds 0 disables it.
 On the int3 build that collapse can also come mid-text: the pause token
 takes the mass after a sentence and the take ends in silence with the rest
 unspoken. It is a per-seed degeneracy (5 of 8 medium-05 seeds speak the
-whole text and stop), so serve redraws a silenced buffered Drama take up
-to twice with the next prompt-derived seed; --silence-redraws 0 keeps the
-first take. Takes the guard never trips are untouched, byte for byte.
+whole text and stop), so serve redraws a silenced Drama take up to twice
+with the next prompt-derived seed; --silence-redraws 0 keeps the first
+take. Takes the guard never trips are untouched, byte for byte. Streamed
+audio cannot be taken back, so with redraws on a stream is held until its
+take is chosen and then sent as one chunk under that take's trailer.
 
 drama3-generate --logits-out FILE dumps each frame's candidate-head logits
 for results/smaller-builds/trace_eos.py.
 ---
+ README.md                                 |  2 +-
+ docs/speech-redraws.md                    | 20 ++++----
  zig/build/drama3_host.zig                 |  2 +-
  zig/build/drama3_metal.zig                |  2 +
  zig/kernels/metal/drama3/sample.metal     | 20 ++++----
@@ -37,10 +41,62 @@ for results/smaller-builds/trace_eos.py.
  zig/src/server/cli.zig                    |  9 ++--
  zig/src/server/cli_test.zig               |  6 ++-
  zig/src/server/serve.zig                  |  9 ++--
+ zig/src/server/speech.zig                 | 10 ++--
  zig/src/server/speech_redraw.zig          | 25 ++++++++++
+ zig/src/server/speech_redraw_test.zig     | 25 ++++++++--
+ zig/src/server/speech_sampling_test.zig   |  6 +--
+ zig/src/server/speech_stream.zig          | 32 +++++++++++--
  zig/tests/drama_compile.zig               |  2 +-
- 16 files changed, 230 insertions(+), 36 deletions(-)
+ 22 files changed, 300 insertions(+), 61 deletions(-)
 
+diff --git a/README.md b/README.md
+index d16bea4ec..e95d2235b 100644
+--- a/README.md
++++ b/README.md
+@@ -334,7 +334,7 @@ The binary's `capabilities --json` response lists its supported flags and platfo
+ | `--silence-onset-voiced-s SECONDS` | Drama speech only: the voiced seconds below which `--silence-onset-s` applies; required with it, with no default. Calibrate on public or built-in speech. |
+ | `--silence-mid-s SECONDS` | Drama speech only: with the silence guard on, finish as `silence` when end of speech falls in a run this long below the floor, after the explicit voiced minimum. Whole replies carry the decimal `X-Silence-Mid-Trips` count, including zero. Must be below `--silence-seconds` and paired with `--silence-mid-min-voiced-s`. Unset by default: off. |
+ | `--silence-mid-min-voiced-s SECONDS` | Required with `--silence-mid-s`: positive finite cumulative voiced duration before the mid rule applies, including equality. No default; calibrate with the other silence thresholds. |
+-| `--silence-redraws N` | Drama speech only: draw a whole reply the silence guard ended again, up to N times, as seed salt + k or explicit request seed + k; N of 1 or more needs the guard. Unset by default: off, as is 0; streams are never redrawn. See [speech redraws](docs/speech-redraws.md). |
++| `--silence-redraws N` | Drama speech only: draw a whole reply the silence guard ended again, up to N times, as seed salt + k or explicit request seed + k; N of 1 or more needs the guard. Unset by default: off, as is 0; with N of 1 or more a stream is held whole until its take is chosen. See [speech redraws](docs/speech-redraws.md). |
+ | `--silence-redraw-budget-s SECONDS` | Start a redraw only while elapsed time plus the last take's duration fits; a request's `X-Deadline-S` can lower it. No default budget. |
+ | `--silence-redraw-controls LIST` | Redraws speak the input filtered to the listed controls, as `--allowed-controls` filters; an empty list removes every control. |
+ | `--short-reply-ratio R` | Also redraw a whole reply that finished `stop` with less audio than R (above 0, below 1) of its text's expected length; needs `--silence-redraws` and `--short-reply-chars-per-s`. No default. |
+diff --git a/docs/speech-redraws.md b/docs/speech-redraws.md
+index 73c855fc1..ccfe73703 100644
+--- a/docs/speech-redraws.md
++++ b/docs/speech-redraws.md
+@@ -31,9 +31,9 @@ tensorfold serve DRAMA3_DIR --silence-floor-dbfs=-30 --silence-seconds=4 \
+   --silence-redraws=3 --silence-redraw-budget-s=90
+ ```
+ 
+-A floor of -30 dBFS also catches the hum. Streams are not redrawn (see
+-[Streams](#streams)): a stalled stream ends early, with the rest of the text
+-unspoken.
++A floor of -30 dBFS also catches the hum. With redraws on, a stream is held until
++its take is chosen (see [Streams](#streams)), so a stalled take is redrawn rather
++than streamed with the rest of the text unspoken.
+ 
+ Two more flags cut a reply that never really starts. With `--silence-onset-s S` and `--silence-onset-voiced-s V`
+ (both required together, and both need the floor and `--silence-seconds`; S must be above 0 and below the
+@@ -194,9 +194,11 @@ them on the voice you serve:
+ 
+ ## Streams
+ 
+-Streams are never redrawn or measured. A stream sends each decoded prefix as the
+-engine publishes it, so audio may already have reached the client when a guard
+-trips, and replacing it would mean buffering the stream and changing its semantics.
+-A stream the guard ends finishes with the `silence` trailer exactly as without
+-redraws. With redraws enabled, its initial headers include `X-Silence-Redraws: 0`;
+-this is not a trailer. Its `X-Deadline-S` is validated even though streams never redraw.
++With `--silence-redraws` of 1 or more, a stream is held: audio already sent cannot
++be replaced, so the engine draws each take whole, the silence redraws run exactly as
++for a whole reply, and the chosen take is then sent as one chunk, ending as a live
++stream ends: the plain terminating chunk after `stop`, else the `X-Finish-Reason`
++trailer (`silence` once redraws run out). Its headers carry `X-Silence-Redraws`;
++first audio waits for the whole take. Without silence redraws a stream sends each
++decoded prefix as the engine publishes it and is never redrawn or measured,
++register redraws included.
 diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
 index 52e892fb1..eafabbcd2 100644
 --- a/zig/build/drama3_host.zig
@@ -533,7 +589,7 @@ index db4cadfa8..0c38cb730 100644
      const onset = try parse(a, &.{ "m", "--silence-floor-dbfs=-80", "--silence-seconds", "2", "--silence-onset-s", "1", "--silence-onset-voiced-s", "0.5" }, &usage);
      try std.testing.expectEqual(api.speech_guard.Config{ .floor_dbfs = -80, .seconds = 2, .onset_seconds = 1, .onset_voiced_seconds = 0.5 }, (try request(a, "m", "drama3", onset)).silence);
 diff --git a/zig/src/server/serve.zig b/zig/src/server/serve.zig
-index 3ceda496e..12633ac03 100644
+index 3ceda496e..432f159e9 100644
 --- a/zig/src/server/serve.zig
 +++ b/zig/src/server/serve.zig
 @@ -178,10 +178,13 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
@@ -541,7 +597,7 @@ index 3ceda496e..12633ac03 100644
          return 1;
      };
 +    // Drama speech gets the engine's guard defaults filled here too, so the server's guard and redraw flags agree
-+    // with what the engine enforces, and an unset redraw count turns into one retry of a silenced buffered take.
++    // with what the engine enforces, and an unset redraw count becomes `default_redraws` redraws of a silenced take.
 +    const silence = if (std.mem.eql(u8, s.model_type, "fish_omni")) api.speech_guard.fill(args.silence) else args.silence;
      const config: server_mod.Config = .{
          .browser = .{ .allowed_hosts = args.allowed_host, .allowed_origins = args.allowed_origin },
@@ -562,19 +618,68 @@ index 3ceda496e..12633ac03 100644
          .cfg = args.cfg.options(),
          .prompt_seed = args.prompt_seed,
          .sse_keepalive_s = keepalive_s,
+diff --git a/zig/src/server/speech.zig b/zig/src/server/speech.zig
+index 238da015f..287c93925 100644
+--- a/zig/src/server/speech.zig
++++ b/zig/src/server/speech.zig
+@@ -50,7 +50,7 @@ pub const Format = enum {
+ pub const Plan = struct { input: []const u8, prompt: []const u32, frames: ?[]const [11]i32 = null, refs: []const @import("drama_prompt").Reference = &.{}, reference_rows: u32 = 0, sampling: speech_sampling.Options, format: Format, stream: bool, budget_s: ?f64 = null };
+ 
+ /// One whole take: its audio, why it ended, and whether it ended in a mid-utterance silence.
+-const Take = struct { pcm: []f32, reason: api.Reason, silence_mid: bool = false, trip: bool = false, jump: ?f64 = null };
++pub const Take = struct { pcm: []f32, reason: api.Reason, silence_mid: bool = false, trip: bool = false, jump: ?f64 = null };
+ 
+ const Metadata = @import("speech_metadata.zig").Metadata;
+ 
+@@ -192,6 +192,8 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         releaseLane(srv, &lane_released);
+         return fail(c, cx, id, metadata.*, .server, "the tokenizer cannot encode the unconditional prompt");
+     };
++    // Streamed audio cannot be taken back, so a stream that may be redrawn is held whole until the redraw decision.
++    const live = plan.stream and srv.config.redraw.count() == 0;
+     const request: api.SpeechRequest = .{
+         .prompt = plan.prompt,
+         .frames = frames,
+@@ -202,7 +204,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         .temperature = plan.sampling.temperature,
+         .top_p = plan.sampling.top_p,
+         .top_k = plan.sampling.top_k,
+-        .stream = plan.stream,
++        .stream = live,
+         .reference_rows = plan.reference_rows,
+         .unconditioned = guided.rows,
+         .cfg_gamma = guided.gamma,
+@@ -226,7 +228,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+         };
+     };
+     // The engine holds request, prompt, pcm and result until finished; no path below returns before that.
+-    if (plan.stream) return streaming.streamReply(srv, c, cx, id, sp, plan, received, &box, engine_id, pcm, &result, metadata.*, &lane_released);
++    if (live) return streaming.streamReply(srv, c, cx, id, sp, plan, received, &box, engine_id, pcm, &result, metadata.*, &lane_released);
+     if (streaming.settle(srv, c, &box, engine_id, null) == null) return streaming.left(srv, c, id, plan.prompt.len, received);
+     if (streaming.why(&box, result.samples, pcm.len)) |message| {
+         releaseLane(srv, &lane_released);
+@@ -237,7 +239,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
+     defer srv.gpa.free(spare);
+     const sent = redraw(srv, c, cx, id, sp, plan, received, request, started, take, &spare, metadata) orelse return;
+     releaseLane(srv, &lane_released);
+-    reply(srv, c, cx, id, sp, plan, received, sent, metadata.*);
++    if (plan.stream) streaming.sendTake(srv, c, cx, id, sp, plan, received, sent, metadata.*) else reply(srv, c, cx, id, sp, plan, received, sent, metadata.*);
+ }
+ 
+ fn redraw(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, plan: Plan, received: i96, first: api.SpeechRequest, started: i96, drawn: Take, spare: *[]f32, metadata: *Metadata) ?Take {
 diff --git a/zig/src/server/speech_redraw.zig b/zig/src/server/speech_redraw.zig
-index 629bea931..d6e601571 100644
+index 629bea931..1f7111c8c 100644
 --- a/zig/src/server/speech_redraw.zig
 +++ b/zig/src/server/speech_redraw.zig
 @@ -55,6 +55,22 @@ pub const Policy = struct {
  /// Inputs of fewer characters are never judged short: a fixed lead-in and tail dominate their duration.
  pub const short_min_chars = 200;
  
-+/// serve's default: two redraws of a buffered take the silence guard ended. On the int3 build a collapsed take is
++/// serve's default: two redraws of a take the silence guard ended. On the int3 build a collapsed take is
 +/// a per-seed degeneracy — medium-05's seeds split 5-of-8 speaking the whole text and stopping naturally — so the
 +/// next prompt-derived seed usually speaks where the first fell into the pause token; its salt-0 seed needs the
-+/// second (the first redraw collapses too). `--silence-redraws 0` keeps every first take; streamed replies never
-+/// redraw, and a redraw only runs while every take so far tripped, so a speaking take costs nothing extra.
++/// second (the first redraw collapses too). `--silence-redraws 0` keeps every first take and live streaming; with
++/// redraws a stream is held until its take is chosen, and a redraw only runs while every take so far tripped.
 +pub const default_redraws: u8 = 2;
 +
 +/// An unset redraw count defaults to `default_redraws` when Drama speech is served behind the (filled) silence
@@ -605,6 +710,124 @@ index 629bea931..d6e601571 100644
  test "a stop of enough characters trips only under the ratio of its expected length; silence always trips" {
      const p: Policy = .{ .max = 1, .short_ratio = 0.25, .short_chars_per_s = 10 };
      // 200 characters at 10 a second are 20 s expected: under a ratio of 0.25, a stop under 5 s of audio is short
+diff --git a/zig/src/server/speech_redraw_test.zig b/zig/src/server/speech_redraw_test.zig
+index cf45aaca8..a0e07f267 100644
+--- a/zig/src/server/speech_redraw_test.zig
++++ b/zig/src/server/speech_redraw_test.zig
+@@ -169,16 +169,33 @@ test "an empty redraw list seeds the reference plain text" {
+     try std.testing.expectEqual(try seed("hello", 1), script.seeds[1]);
+ }
+ 
+-test "streams are never redrawn and report zero redraws" {
+-    var script: Script = .{ .steps = &.{frame}, .reasons = &.{ .silence, .stop }, .inline_ = true };
++test "a stream with redraws is held until its take ends and sends the redrawn take, never the silenced one" {
++    var script: Script = .{ .steps = &.{frame}, .reasons = &.{ .silence, .silence, .stop }, .inline_ = true };
+     var s: Served = undefined;
+     try start(&s, &script, .{ .max = 2 }, "X-Deadline-S: 60\r\n", harness.stream_body);
+     defer s.deinit();
+     const reply = try finish(&s, &script);
+     try expectHeader(reply.head, "HTTP/1.1 200");
+-    try expectHeader(reply.head, "X-Silence-Redraws: 0\r\n");
++    try expectHeader(reply.head, "Transfer-Encoding: chunked\r\n");
++    try expectHeader(reply.head, "X-Silence-Redraws: 2\r\n");
++    try std.testing.expectEqual(@as(usize, 3), script.takes);
++    for (script.seeds[0..3], 0..) |got, k| try std.testing.expectEqual(try seed("hi", @intCast(k)), got);
++    var size: [8]u8 = undefined;
++    const head = try std.fmt.bufPrint(&size, "{x}\r\n", .{2 * frame});
++    try std.testing.expect(std.mem.startsWith(u8, reply.body, head));
++    try expectTake(reply.body[head.len..][0 .. 2 * frame], 2);
++    try std.testing.expectEqualStrings("\r\n0\r\n\r\n", reply.body[head.len + 2 * frame ..]);
++}
++
++test "a stream whose redraws run out ends under the silence trailer" {
++    var script: Script = .{ .steps = &.{frame}, .reason = .silence, .inline_ = true };
++    var s: Served = undefined;
++    try start(&s, &script, .{ .max = 1 }, "", harness.stream_body);
++    defer s.deinit();
++    const reply = try finish(&s, &script);
++    try expectHeader(reply.head, "X-Silence-Redraws: 1\r\n");
+     try std.testing.expect(std.mem.endsWith(u8, reply.body, "\r\n0\r\nX-Finish-Reason: silence\r\n\r\n"));
+-    try std.testing.expectEqual(@as(usize, 1), script.takes);
++    try std.testing.expectEqual(@as(usize, 2), script.takes);
+ }
+ 
+ test "stream deadlines are checked only with redraws enabled" {
+diff --git a/zig/src/server/speech_sampling_test.zig b/zig/src/server/speech_sampling_test.zig
+index 1af8b63d0..4a3881aae 100644
+--- a/zig/src/server/speech_sampling_test.zig
++++ b/zig/src/server/speech_sampling_test.zig
+@@ -140,7 +140,7 @@ test "speech sampling: no seed keeps prompt-keyed redraws after stripping contro
+     try expectDraw(&script, 1, sampling, try promptSeed("hi [sighs] there", 1));
+ }
+ 
+-test "speech sampling: a silenced stream retains controls and does not redraw" {
++test "speech sampling: a silenced stream retains controls through its redraws" {
+     var script: harness.Script = .{ .steps = &.{harness.frame}, .inline_ = true, .reason = .silence };
+     var cfg = config;
+     cfg.redraw = .{ .max = 2 };
+@@ -148,6 +148,6 @@ test "speech sampling: a silenced stream retains controls and does not redraw" {
+     defer gpa.free(reply);
+     try harness.expectHeader(reply, "HTTP/1.1 200");
+     try harness.expectHeader(reply, "X-Finish-Reason: silence");
+-    try std.testing.expectEqual(@as(usize, 1), script.takes);
+-    try expectDraw(&script, 0, .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, 2);
++    try std.testing.expectEqual(@as(usize, 3), script.takes);
++    for (0..3) |k| try expectDraw(&script, k, .{ .temperature = 0.5, .top_p = 0.9, .top_k = 30 }, 2 + k);
+ }
+diff --git a/zig/src/server/speech_stream.zig b/zig/src/server/speech_stream.zig
+index f6837ab7f..526753b60 100644
+--- a/zig/src/server/speech_stream.zig
++++ b/zig/src/server/speech_stream.zig
+@@ -47,7 +47,7 @@ pub fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.Spee
+         log.line("speech {s} stream ended incomplete after samples={d}: {s}", .{ id, sent.samples, message });
+         return;
+     }
+-    c.writeAll(if (box.reason == .silence) silence_chunk else if (box.reason == .length) length_chunk else last_chunk) catch {
++    c.writeAll(terminator(box.reason)) catch {
+         c.close = true;
+         return;
+     };
+@@ -57,6 +57,26 @@ pub fn streamReply(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.Spee
+     });
+ }
+ 
++/// A held stream's chosen take: one chunk of all its audio, then the terminator of its finish reason.
++pub fn sendTake(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInfo, plan: Plan, received: i96, take: speech.Take, metadata: Metadata) void {
++    const bytes = quantizeInPlace(take.pcm) catch return fail(c, cx, id, metadata, .server, "the synthesized audio has non-finite samples");
++    writeTake(c, sp.sample_rate, bytes, take.reason, metadata) catch {
++        c.close = true; // a head already started or a client gone: nothing more can be sent on this connection
++        return;
++    };
++    log.line("speech {s} prompt={d} samples={d} format=pcm stream=held finish={s} seconds={d:.2}", .{ id, plan.prompt.len, take.pcm.len, @tagName(take.reason), clock.seconds(clock.nowNs(srv.io) - received) });
++}
++
++fn writeTake(c: *Conn, sample_rate: u32, bytes: []const u8, reason: api.Reason, metadata: Metadata) error{Closed}!void {
++    var size: [20]u8 = undefined;
++    try startStream(c, sample_rate, metadata);
++    try c.writeAll(std.fmt.bufPrint(&size, "{x}\r\n", .{bytes.len}) catch unreachable);
++    try c.writeAll(bytes);
++    try c.writeAll("\r\n");
++    try c.writeAll(terminator(reason));
++    c.response_complete = true;
++}
++
+ /// What a stream sent, when this thread first saw published audio, and when frame 0's own bytes reached the socket.
+ const Sent = struct { samples: usize = 0, first_ready: i96 = 0, first_written: i96 = 0 };
+ 
+@@ -138,6 +158,10 @@ fn startStream(c: *Conn, sample_rate: u32, metadata: Metadata) error{Closed}!voi
+ }
+ 
+ /// Ends a complete stream; length and silence use an X-Finish-Reason trailer instead.
+-const last_chunk = "0\r\n\r\n";
+-const length_chunk = "0\r\nX-Finish-Reason: length\r\n\r\n";
+-const silence_chunk = "0\r\nX-Finish-Reason: silence\r\n\r\n";
++fn terminator(reason: api.Reason) []const u8 {
++    return switch (reason) {
++        .silence => "0\r\nX-Finish-Reason: silence\r\n\r\n",
++        .length => "0\r\nX-Finish-Reason: length\r\n\r\n",
++        else => "0\r\n\r\n",
++    };
++}
 diff --git a/zig/tests/drama_compile.zig b/zig/tests/drama_compile.zig
 index 91fdacebd..c9a051b92 100644
 --- a/zig/tests/drama_compile.zig

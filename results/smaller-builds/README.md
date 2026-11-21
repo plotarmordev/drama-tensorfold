@@ -34,13 +34,19 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 - The three NVFP4 builds fail the same six built-in takes. `trim-bf16-int3` fails two of them (`short-01` s0,
   `long-01` s1) and one text of its own: built-in `medium-05` runs to the 1024-frame cap (47.55 s) on both salts,
   speaking only its first sentence (WER 0.68), where the NVFP4 builds say it all in about 8 s.
-- Patch 0008 fixes both: eos stays in every nucleus (both truncated draws excluded it under a silence-dominant
-  distribution, so the stop could not be drawn), serve fills an unset guard at −40 dBFS / 3.5 s, and a take the
-  guard silenced is redrawn with the next prompt-derived seed (the int3 collapse after a sentence is per-seed: 5
-  of 8 `medium-05` seeds speak the whole text). After it, [`stop-decision-20261121.json`](stop-decision-20261121.json):
-  built-in failed takes 4 → 1 of 48 (`long-01` s1's 3.1 s stall inside speech stays, byte-identical), no take
-  caps, `medium-05` and `short-01` s0 speak the whole text and end on eos, the 44 untouched built-in takes and 47
-  of 48 reference takes are byte-identical, and the reference holds 0 failed and 1.78 % / 0.97 %.
+- `trim-bf16-exl3-3.0` keeps int3's `medium-05` runaway on both salts (same first sentence, WER 0.68) and adds
+  `medium-02` s1 to the cap; `short-01` fails on both salts, `long-06` s1 drops words. The rule counts failed
+  takes, not which ones; with two salts, half the four of [`quant-15gb`](../quant-15gb/README.md), those runaways
+  are the thing to hear before shipping.
+- Metal patch 0008 fixes `trim-bf16-int3`'s built-in `medium-05` runaway on both salts and its `short-01` s0
+  failure (exl3 is not re-measured): eos stays in every nucleus (both truncated draws excluded it under a
+  silence-dominant distribution, so the stop could not be drawn), serve fills an unset guard at −40 dBFS / 3.5 s,
+  and a take the guard silenced, whole or streamed, is redrawn with the next prompt-derived seed (the int3
+  collapse after a sentence is per-seed: 5 of 8 `medium-05` seeds speak the whole text). After it on int3,
+  [`stop-decision-20261121.json`](stop-decision-20261121.json): built-in failed takes 4 → 1 of 48 (`long-01` s1's
+  3.1 s stall inside speech stays, byte-identical), no take caps, `medium-05` and `short-01` s0 speak the whole
+  text and end on eos, the 44 untouched built-in takes and 47 of 48 reference takes are byte-identical, and the
+  reference holds 0 failed and 1.78 % / 0.97 %.
 
 | File | What it holds |
 |---|---|

@@ -4,17 +4,15 @@
 The tracer dumps, per frame of a take: the 253k candidate logits (`--logits-out`),
 the 11 chosen columns (`--out …frames`: main token, 9 codebook codes, speaker) and
 the prompt rows (`--rows-out`). `derive` turns a trace into the compact columnar
-table `stop-decision-20261121.json` cites — eos's rank, probability and cumulative
-probability, the top candidate's share, whether each truncated nucleus (request
-top_p 0.9, RAS top_p 0.95) keeps eos, and the drawn main token — without the 16 MiB
-logits. `analyze` additionally replays the kernel's draws (the Philox port below)
-to check the table against the recorded frames.
+table `stop-decision-20261121.json` cites — eos's logit, rank, probability and
+cumulative probability, the top-8 candidates' logits, the top candidate's share,
+whether each truncated nucleus (request top_p 0.9, RAS top_p 0.95) keeps eos, and
+the drawn main token — without the 16 MiB logits. `analyze` additionally replays
+the kernel's draws (the Philox port below) to check the table against the frames.
 
 Usage: trace_eos.py derive PREFIX OUT.json | analyze PREFIX SEED
 """
-import hashlib
 import json
-import struct
 import sys
 
 import numpy as np
@@ -74,11 +72,6 @@ def draw(logits, temperature, top_k, top_p, seed, step, stream, eos=-1):
     return int(order[brank])
 
 
-def seed_for(ids, salt):
-    h = hashlib.sha256((",".join(str(int(t)) for t in ids) + f"|{salt}").encode()).digest()
-    return struct.unpack("<Q", h[:8])[0] & ((1 << 63) - 1)
-
-
 def rows_of(prefix):
     return np.fromfile(prefix + ".rows", dtype=np.int32).reshape(-1, 11).tolist()
 
@@ -113,6 +106,12 @@ def keeps_eos(logits, top_k, top_p):
     return False
 
 
+def top8(logits):
+    """The top-8 candidates as (slot, logit): what holds the mass while eos waits."""
+    order = np.argsort(-logits, kind="stable")[:8]
+    return [[int(i), round(float(logits[i]), 4)] for i in order]
+
+
 def derive(prefix, out):
     lg = np.fromfile(prefix + ".logits", dtype=np.float32).reshape(-1, NCAND)
     fr = np.fromfile(prefix + ".frames", dtype=np.int32).reshape(-1, 11)
@@ -122,7 +121,7 @@ def derive(prefix, out):
         "eos_rank": [], "eos_p": [], "eos_cum": [],
         "top1_cand": [], "top1_p": [],
         "eos_kept_request": [], "eos_kept_ras": [],
-        "drawn_main": [],
+        "drawn_main": [], "eos_logit": [], "top8": [],
     }
     for f in range(len(fr)):
         logits = lg[f]
@@ -135,27 +134,32 @@ def derive(prefix, out):
         doc["eos_kept_request"].append(bool(keeps_eos(logits, **REQUEST)))
         doc["eos_kept_ras"].append(bool(keeps_eos(logits, **RAS)))
         doc["drawn_main"].append(int(fr[f][0]))
+        doc["eos_logit"].append(round(float(logits[0]), 4))
+        doc["top8"].append(top8(logits))
     with open(out, "w") as fh:
         json.dump(doc, fh, separators=(",", ":"))
     print(f"{prefix}: {len(fr)} frames -> {out}")
 
 
 def analyze(prefix, seed):
-    """Replay the pre-patch draws (eos not exempt) and check them against the frames."""
+    """Replay the draws and check them against the frames: the pre-patch rule (eos not exempt)
+    for traces that end at the frame cap, the patched rule (eos exempt) for ones that drew eos."""
     lg = np.fromfile(prefix + ".logits", dtype=np.float32).reshape(-1, NCAND)
     fr = np.fromfile(prefix + ".frames", dtype=np.int32).reshape(-1, 11)
+    eos = 0 if len(fr) and int(fr[-1][0]) == EOS else -1
+    rule = "patched rule, eos exempt" if eos == 0 else "pre-patch rule, eos truncated"
     window, matched = [-1] * 16, 0
     for f in range(len(fr)):
         logits = lg[f]
-        first = draw(logits, 1.0, REQUEST["top_k"], REQUEST["top_p"], seed, f + 1, 0)
-        ras = draw(logits, 1.0, RAS["top_k"], RAS["top_p"], seed, f + 1, 1)
+        first = draw(logits, 1.0, REQUEST["top_k"], REQUEST["top_p"], seed, f + 1, 0, eos)
+        ras = draw(logits, 1.0, RAS["top_k"], RAS["top_p"], seed, f + 1, 1, eos)
         tok = lambda i: EOS if i == 0 else SEM_BEGIN + i - 1
         ft, rt = tok(first), tok(ras)
         repeat = ft in window
         expect = rt if (repeat and ft >= SEM_BEGIN) else ft
         matched += expect == int(fr[f][0])
         window = window[1:] + [int(fr[f][0])]
-    print(f"{prefix}: draws match {matched}/{len(fr)} frames (pre-patch rule)")
+    print(f"{prefix}: draws match {matched}/{len(fr)} frames ({rule})")
 
 
 if __name__ == "__main__":

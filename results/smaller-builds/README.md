@@ -34,12 +34,13 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 - The three NVFP4 builds fail the same six built-in takes. `trim-bf16-int3` fails two of them (`short-01` s0,
   `long-01` s1) and one text of its own: built-in `medium-05` runs to the 1024-frame cap (47.55 s) on both salts,
   speaking only its first sentence (WER 0.68), where the NVFP4 builds say it all in about 8 s.
-- Patch 0008 fixed the stopping itself: eos stays in every nucleus (both truncated draws excluded it under a
-  silence-dominant distribution, so the stop could not be drawn) and serve fills an unset guard at −40 dBFS /
-  3.5 s. After it, [`stop-decision-20261121.json`](stop-decision-20261121.json): no take caps, `medium-05` ends
-  naturally on both salts, all 44 passing built-in takes and 47 of 48 reference takes are byte-identical, the
-  reference holds 0 failed and 1.78 % / 0.97 %; the 4 built-in failures stay (two speak partial text, one stalls
-  3.1 s inside speech) — model quality, per-frame traces in `trace-20261121/`.
+- Patch 0008 fixes both: eos stays in every nucleus (both truncated draws excluded it under a silence-dominant
+  distribution, so the stop could not be drawn), serve fills an unset guard at −40 dBFS / 3.5 s, and a take the
+  guard silenced is redrawn with the next prompt-derived seed (the int3 collapse after a sentence is per-seed: 5
+  of 8 `medium-05` seeds speak the whole text). After it, [`stop-decision-20261121.json`](stop-decision-20261121.json):
+  built-in failed takes 4 → 1 of 48 (`long-01` s1's 3.1 s stall inside speech stays, byte-identical), no take
+  caps, `medium-05` and `short-01` s0 speak the whole text and end on eos, the 44 untouched built-in takes and 47
+  of 48 reference takes are byte-identical, and the reference holds 0 failed and 1.78 % / 0.97 %.
 
 | File | What it holds |
 |---|---|

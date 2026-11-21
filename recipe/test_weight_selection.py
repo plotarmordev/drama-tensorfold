@@ -48,8 +48,11 @@ class WeightSelectionTests(unittest.TestCase):
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_bytes(b'not an executable model')
             executable.chmod(0o700)
+        self.real_sizing = pilot.sizing
         self.download = self.stack.enter_context(
             patch.object(selection.subprocess, 'run', side_effect=AssertionError('unexpected download')))
+        # These launchers run on a GB10 unless a test fakes another machine.
+        self.stack.enter_context(patch.object(pilot, 'sizing', return_value=pilot.GB10_SIZING))
 
 
     def test_guidance_override_replaces_all_defaults(self):
@@ -263,9 +266,38 @@ class WeightSelectionTests(unittest.TestCase):
         self.assertIn("is not this launcher's parent", errors.getvalue())
 
     def test_linux_guard_is_the_documented_floor_unless_admission_is_external(self):
-        self.assertEqual(pilot.guard(20 * GIB, False), (88 * GIB, 34 * GIB))
-        self.assertEqual(pilot.guard(70 * GIB, False), (100 * GIB, 34 * GIB))
-        self.assertEqual(pilot.guard(70 * GIB, True), (None, None))
+        self.assertEqual(pilot.guard(20 * GIB, pilot.GB10_SIZING, False), (88 * GIB, 34 * GIB))
+        self.assertEqual(pilot.guard(70 * GIB, pilot.GB10_SIZING, False), (100 * GIB, 34 * GIB))
+        self.assertEqual(pilot.guard(70 * GIB, pilot.GB10_SIZING, True), (None, None))
+
+    def test_a_discrete_card_sizes_the_launch_from_gpu_and_host_memory(self):
+        meminfo = self.root / 'meminfo'
+        meminfo.write_text('MemTotal: 33554432 kB\n')
+        systemctl = subprocess.CompletedProcess([], 0, 'LoadState=not-found\nActiveState=inactive\n')
+
+        def run(command, **kwargs):
+            if command[0] == 'nvidia-smi':
+                return subprocess.CompletedProcess(command, 0, 'NVIDIA GeForce RTX 5060 Ti, 16380\n')
+            return systemctl
+
+        arguments = self.launcher_arguments('int3-5900') + ['--port', str(free_port())]
+        (self.root / 'runtime').mkdir()
+        with patch.object(sys, 'argv', arguments), \
+                patch.object(pilot, 'sizing', self.real_sizing), \
+                patch.object(pilot, 'MEMINFO', meminfo), \
+                patch.object(pilot, 'memory_available', return_value=30 * GIB), \
+                patch.object(pilot.subprocess, 'run', side_effect=run), \
+                patch.object(pilot.subprocess, 'Popen', side_effect=Spawned) as spawn, \
+                self.assertRaises(Spawned):
+            pilot.main()
+        command = spawn.call_args.args[0]
+        self.assertIn('TENSORFOLD_MEMORY_RESERVE_GIB=0.5', command)
+        self.assertIn(f'TENSORFOLD_CUDA_MEMORY_LIMIT_GB={(16380 * 1024**2 - GIB) / GIB:g}', command)
+        self.assertIn(f'--property=MemoryMax={8 * GIB}', command)
+        session = json.loads((self.root / 'evidence/session.json').read_text())
+        self.assertEqual(session['engine_memory_reserve_gib'], 0.5)
+        self.assertEqual(session['required_memavailable_bytes'], 14 * GIB)
+        self.assertEqual(session['cgroup_memory_max_bytes'], 8 * GIB)
 
     def test_linux_launcher_without_weights_downloads_and_serves_int3_with_the_nvfp4_engine(self):
         target = selection.checkpoint_path('int3-5900', None)

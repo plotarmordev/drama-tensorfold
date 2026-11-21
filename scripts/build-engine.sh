@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the TensorFold engine for the chosen Drama 3 weights.
 #
-# Usage: scripts/build-engine.sh [--weights full|nvfp4] [BUILD_DIR]
+# Usage: scripts/build-engine.sh [--weights full|nvfp4] [--sm SM] [BUILD_DIR]
 #
 #   --weights full    upstream TensorFold at engine/UPSTREAM with the opt-in patches in engine/patches: the native
 #                     server and drama3-generate, in build/tensorfold
@@ -9,6 +9,9 @@
 #                     Metal: engine/nvfp4/macos/UPSTREAM plus its patches, native server and voice tools.
 #                     It serves every quant (the launchers' --weights nvfp4, nvfp4-5900 and int3-5900, their
 #                     default), in build/tensorfold-nvfp4.
+#   --sm SM           SASS targets for the CUDA engine, comma separated (default: GPU 0's compute capability from
+#                     nvidia-smi, e.g. 121 on a GB10 and 120 on an RTX 5060 Ti). CUDA builds only; the Metal engine
+#                     has no SASS targets.
 #
 # Environment:
 #   ZIG          Zig 0.17.0 executable (default: zig on PATH)
@@ -30,25 +33,50 @@ die() {
   exit 1
 }
 
+usage="usage: scripts/build-engine.sh [--weights full|nvfp4] [--sm SM] [BUILD_DIR]"
 weights=nvfp4
-if [[ ${1:-} == --weights ]]; then
-  (($# >= 2)) || die "--weights needs full or nvfp4"
-  weights=$2
-  shift 2
-elif [[ ${1:-} == --weights=* ]]; then
-  weights=${1#--weights=}
-  shift
-fi
-(($# <= 1)) || die "usage: scripts/build-engine.sh [--weights full|nvfp4] [BUILD_DIR]"
+sm=
+build=
+while (($#)); do
+  case $1 in
+    --weights)
+      (($# >= 2)) || die "--weights needs full or nvfp4"
+      weights=$2
+      shift 2
+      ;;
+    --weights=*)
+      weights=${1#--weights=}
+      shift
+      ;;
+    --sm)
+      (($# >= 2)) || die "--sm needs a compute capability such as 120"
+      sm=$2
+      shift 2
+      ;;
+    --sm=*)
+      sm=${1#--sm=}
+      shift
+      ;;
+    -*)
+      die "unknown option $1"
+      ;;
+    *)
+      (($# == 1)) || die "$usage"
+      build=$1
+      shift
+      ;;
+  esac
+done
+[[ -z $sm || $sm =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--sm must be comma-separated compute capabilities such as 120 or 121"
 patch_dir=
 case $weights in
   full)
-    pin=$repo/engine/UPSTREAM build=${1:-$repo/build/tensorfold}
+    pin=$repo/engine/UPSTREAM build=${build:-$repo/build/tensorfold}
     patch_dir=$repo/engine/patches
     targets=(native drama3-generate)
     ;;
   nvfp4)
-    pin=$repo/engine/nvfp4/UPSTREAM build=${1:-$repo/build/tensorfold-nvfp4}
+    pin=$repo/engine/nvfp4/UPSTREAM build=${build:-$repo/build/tensorfold-nvfp4}
     patch_dir=$repo/engine/nvfp4/patches
     targets=(native)
     if [[ $platform == Darwin ]]; then
@@ -98,13 +126,22 @@ command -v git >/dev/null || die "git not found"
 zig=$(command -v "$zig") || die "Zig not found; set ZIG"
 # macOS builds the Metal engine without requiring a CUDA compiler.
 if [[ $platform == Darwin ]]; then
+  [[ -z $sm ]] || die "--sm applies to CUDA builds; the Metal engine has no SASS targets"
   build_args=()
   if [[ $weights == nvfp4 ]]; then
     build_args=(-Dcpu=apple_m1)
   fi
 else
   nvcc=$(command -v "$nvcc") || die "nvcc not found; set NVCC"
-  build_args=(-Dnvcc="$nvcc")
+  if [[ -z $sm ]]; then
+    command -v nvidia-smi >/dev/null || die "nvidia-smi not found; pass --sm with GPU 0's compute capability"
+    capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits -i 0 2>/dev/null || true)
+    capability=${capability//[[:space:]]/}
+    [[ $capability =~ ^[0-9]+\.[0-9]+$ ]] || die "nvidia-smi did not report GPU 0's compute capability; pass --sm"
+    sm=${capability/./}
+  fi
+  # 121 is the engine's own default, so a GB10 build passes it unchanged.
+  build_args=(-Dnvcc="$nvcc" -Dsm="$sm")
 fi
 
 if [[ -e $build ]]; then

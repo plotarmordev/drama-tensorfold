@@ -46,19 +46,28 @@ the loader's search path. `CUDA_HOME` (default `/usr/local/cuda`) puts the toolk
 
 ## The guard
 
-| Quantity | GiB |
-|---|---:|
-| Checkpoint weights plus codec, on disk (not runtime memory): full / NVFP4 / int3 | 38.63 / 20.76 / 14.50 |
-| Unit memory cap (`MemoryMax`), swap disabled | 54 |
-| Host headroom floor | 30 |
-| Abort threshold on `MemAvailable` | 34 |
-| `MemAvailable` required before loading | 88 |
+| Quantity | GB10 (128 GB unified) | A discrete card |
+|---|---:|---:|
+| Checkpoint weights plus codec, on disk (not runtime memory): full / NVFP4 / int3 | 38.63 / 20.76 / 14.50 GiB | same |
+| Unit memory cap (`MemoryMax`), swap disabled | 54 GiB | a quarter of host RAM, at least 8 GiB |
+| Host headroom floor | 30 GiB | 4 GiB |
+| Abort threshold on `MemAvailable` | 34 GiB | 6 GiB |
+| `MemAvailable` required before loading | 88 GiB | the cap plus 6 GiB |
+| `TENSORFOLD_MEMORY_RESERVE_GIB` | 34 | 0.5 |
+| CUDA allocator cap (`TENSORFOLD_CUDA_MEMORY_LIMIT_GB`) | 54 GiB | the card's memory less 1 GiB |
+
+`recipe/pilot.py` reads GPU 0's name and memory from `nvidia-smi` and the host's `MemTotal` from `/proc/meminfo` to
+pick the column: a GB10's pool is shared with the host, so its weights count against the host floor; a discrete card
+holds the weights itself, so the floor covers the pinned buffers and page cache and the CUDA cap covers the card.
+The GB10's figures are the ones measured for it and are unchanged; on a 16 GB card the 0.5 GiB reserve loaded the
+14.5 GB int3 build ([#68](https://github.com/plotarmordev/drama-tensorfold/issues/68)).
 
 The launcher:
 
 - takes the shared lock without blocking and refuses to start if another job holds it;
 - refuses to start below the admission figure or on an occupied port;
-- samples `MemAvailable` every 100 ms and kills the whole unit if it falls below 34 GiB;
+- samples `MemAvailable` every 100 ms and kills the whole unit if it falls below the machine's abort threshold
+  (34 GiB on a GB10, 6 GiB on a discrete card);
 - on exit, keeps the lock until systemd confirms the unit is inactive.
 
 A supervisor that starts the launcher can pass `--parent-pid` with its own PID: the launcher stops the unit, as for
@@ -66,14 +75,16 @@ SIGTERM, once that process is gone, and refuses a PID that is not its parent. Th
 a parent-death signal on the launcher; one that can need not pass it.
 
 When a supervisor that budgets host memory itself starts the launcher (one service running several models from one
-memory budget), `--external-admission` skips the `MemAvailable` admission and the 34 GiB abort: the supervisor has
-already reserved the room. The unit's 54 GiB cap, the allocator cap and the lock stay. `--reserve-gib` (default 34)
-sets the engine's `TENSORFOLD_MEMORY_RESERVE_GIB`: the engine budgets free memory less this reserve and refuses
-weights that do not fit, so a supervisor that admits loads with less free memory passes a smaller reserve.
+memory budget), `--external-admission` skips the `MemAvailable` admission and the abort threshold: the supervisor has
+already reserved the room. The unit's cgroup cap, the allocator cap and the lock stay. `--reserve-gib` (default: the
+machine's, 34 GiB on a GB10 and 0.5 GiB on a discrete card) sets the engine's `TENSORFOLD_MEMORY_RESERVE_GIB`: the
+engine budgets free memory less this reserve and refuses weights that do not fit, so a supervisor that admits loads
+with less free memory passes a smaller reserve.
 
-The native server caps tracked CUDA and pinned-host buffers together at 54 GiB
+On a GB10 the native server caps tracked CUDA and pinned-host buffers together at 54 GiB
 (`TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54`) and keeps 34 GiB of host headroom at admission
-(`TENSORFOLD_MEMORY_RESERVE_GIB=34`). The reference's PyTorch allocator budgets are 4 GiB for preprocessing,
+(`TENSORFOLD_MEMORY_RESERVE_GIB=34`). On a discrete card the same cap is the card's memory less 1 GiB for the driver
+and its libraries, and the reserve is 0.5 GiB. The reference's PyTorch allocator budgets are 4 GiB for preprocessing,
 44 GiB for the engine and 6 GiB for the vocoder (`reference/drama3-gb10.yaml`). Neither the caps nor the cgroup
 count every driver or library allocation, which is why the launcher also watches `MemAvailable`.
 

@@ -3,7 +3,7 @@
 [![weights: 14.5 GB int3 recommended](https://img.shields.io/badge/weights-14.5_GB_int3_recommended-76b900?style=flat-square)](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900)
 [![code: Apache-2.0](https://img.shields.io/badge/code-Apache--2.0-0969da?style=flat-square)](LICENSE)
 [![model: FACL v1.0](https://img.shields.io/badge/model-FACL_v1.0-8250df?style=flat-square)](https://huggingface.co/fishaudio/drama-3/blob/e0a9218aa48888270f06ef1ed9ea67622c0e17d2/LICENSE)
-[![GPU: GB10 sm_121](https://img.shields.io/badge/GPU-GB10_sm__121-76b900?style=flat-square)](#quickstart)
+[![GPU: CUDA sm_120/sm_121](https://img.shields.io/badge/GPU-CUDA_sm__120%2Fsm__121-76b900?style=flat-square)](#quickstart)
 [![Apple silicon: Metal](https://img.shields.io/badge/Apple_silicon-Metal-555555?style=flat-square)](recipe/README-macos.md)
 [![CUDA 13](https://img.shields.io/badge/CUDA-13-76b900?style=flat-square)](#quickstart)
 [![status: not yet compared](https://img.shields.io/badge/status-not_yet_compared-a16207?style=flat-square)](#the-patches)
@@ -38,7 +38,7 @@
 > [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) under the Fish Audio Community License v1.0
 > ([License](#license)). `--weights full` serves the full model.
 
-**Fish Audio's Drama 3 text-to-speech on NVIDIA GB10 (native Zig/CUDA) or Apple silicon (native Zig/Metal).**
+**Fish Audio's Drama 3 text-to-speech on NVIDIA GB10 and 16 GB cards (native Zig/CUDA) or Apple silicon (native Zig/Metal).**
 
 [TensorFold](https://github.com/ashhart/TensorFold) runs Drama 3 natively since v1.1.0. This repository pins
 TensorFold v1.1.9 for the full model, which now carries every feature the old patch series added. NVFP4 retains its
@@ -60,7 +60,18 @@ Apple silicon: use the [macOS/Metal instructions](recipe/README-macos.md); with 
 serves the 14.5 GB int3 build too. The Linux requirements and cgroup cap below do not apply to the Mac launcher.
 
 You need Linux with user systemd, CUDA 13, [Zig 0.17.0](https://ziglang.org/download/), the `hf` command
-(`python3 -m pip install -U huggingface_hub`) and 88 GiB of free memory at load (the server is capped at 54 GiB).
+(`python3 -m pip install -U huggingface_hub`) and enough memory for the build and the load. `scripts/build-engine.sh`
+builds GPU 0's compute capability as the CUDA engine's SASS target, read from `nvidia-smi`; `--sm` overrides it, and
+a build machine without a GPU needs `--sm`.
+
+| NVIDIA card | Build | Load |
+|---|---|---|
+| GB10, 128 GB unified (sm_121) | sm_121 | 88 GiB free host memory; the server is capped at 54 GiB and reserves 34 GiB |
+| RTX 5060 Ti 16 GB (sm_120) | sm_120 | the int3 build peaks at 14.77 GiB of the card ([#68](https://github.com/plotarmordev/drama-tensorfold/issues/68)); host floor a quarter of RAM (at least 8 GiB) plus 6 GiB, reserve 0.5 GiB |
+
+`recipe/pilot.py` sizes those figures from the machine: on a GB10's unified memory it keeps the measured 88 GiB floor,
+34 GiB reserve and 54 GiB cgroup and CUDA caps; on a discrete card the host floor comes from RAM and the CUDA cap from
+the card's memory less 1 GiB for the driver and its libraries.
 The int3 build takes about 15 GiB of disk, the 20.8 GB quant about 21 GiB and the full model about 39 GiB; the engine
 checkout, build and runtime caches need more.
 

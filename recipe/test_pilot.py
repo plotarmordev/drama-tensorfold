@@ -22,16 +22,17 @@ class SizingTests(unittest.TestCase):
         self.bin = self.root / 'bin'
         self.bin.mkdir()
 
-    def machine(self, host_gib: int, name: str, device_mib: int) -> pilot.Sizing:
+    def machine(self, host_gib: int, name: str, device: str) -> pilot.Sizing:
         self.meminfo.write_text(f'MemTotal: {host_gib * 1024**2} kB\nMemAvailable: {host_gib * 1024**2} kB\n')
         smi = self.bin / 'nvidia-smi'
-        smi.write_text(f'#!/bin/sh\nprintf "%s\\n" "{name}, {device_mib}"\n')
+        smi.write_text(f'#!/bin/sh\nprintf "%s\\n" "{name}, {device}"\n')
         smi.chmod(0o755)
         with patch.object(pilot, 'MEMINFO', self.meminfo), patch.dict(os.environ, {'PATH': str(self.bin)}):
             return pilot.sizing()
 
     def test_a_gb10_keeps_its_measured_figures(self):
-        machine = self.machine(128, 'NVIDIA GB10', 122880)
+        # A GB10's NVML reports no memory.total, only the name identifies the machine.
+        machine = self.machine(128, 'NVIDIA GB10', '[N/A]')
         self.assertTrue(machine.unified)
         self.assertEqual((machine.cgroup_cap, machine.headroom, machine.admission_floor, machine.abort_below),
                          (54 * GIB, 30 * GIB, 88 * GIB, 34 * GIB))
@@ -39,7 +40,7 @@ class SizingTests(unittest.TestCase):
         self.assertEqual(pilot.guard(INT3_WEIGHTS, machine, False), (88 * GIB, 34 * GIB))
 
     def test_a_16_gb_discrete_card_loads_the_int3_build(self):
-        machine = self.machine(32, 'NVIDIA GeForce RTX 5060 Ti', 16380)
+        machine = self.machine(32, 'NVIDIA GeForce RTX 5060 Ti', '16380')
         self.assertFalse(machine.unified)
         self.assertEqual(machine.reserve_gib, 0.5)
         self.assertEqual(machine.cuda_limit_gib, (16380 * 1024**2 - GIB) / GIB)
@@ -53,7 +54,7 @@ class SizingTests(unittest.TestCase):
         self.assertLessEqual(pilot.guard(INT3_WEIGHTS, machine, False)[0], 32 * GIB)
 
     def test_the_host_floor_follows_host_ram(self):
-        machine = self.machine(64, 'NVIDIA GeForce RTX 4090', 24576)
+        machine = self.machine(64, 'NVIDIA GeForce RTX 4090', '24576')
         self.assertEqual((machine.cgroup_cap, machine.admission_floor, machine.abort_below),
                          (16 * GIB, 22 * GIB, 6 * GIB))
         self.assertEqual(machine.cuda_limit_gib, 23)

@@ -67,7 +67,7 @@ a build machine without a GPU needs `--sm`.
 | NVIDIA card | Build | Load |
 |---|---|---|
 | GB10, 128 GB unified (sm_121) | sm_121 | 88 GiB free host memory; the server is capped at 54 GiB and reserves 34 GiB |
-| RTX 5060 Ti 16 GB (sm_120) | sm_120 | the int3 build peaks at 14.77 GiB of the card ([#68](https://github.com/plotarmordev/drama-tensorfold/issues/68)); host floor a quarter of RAM plus 6 GiB, reserve 0.5 GiB |
+| RTX 5060 Ti 16 GB (sm_120) | sm_120 | the int3 build peaks at 14.77 GiB of the card ([#68](https://github.com/plotarmordev/drama-tensorfold/issues/68)); host floor a quarter of RAM (at least 8 GiB) plus 6 GiB, reserve 0.5 GiB |
 
 `recipe/pilot.py` sizes those figures from the machine: on a GB10's unified memory it keeps the measured 88 GiB floor,
 34 GiB reserve and 54 GiB cgroup and CUDA caps; on a discrete card the host floor comes from RAM and the CUDA cap from

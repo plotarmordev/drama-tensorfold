@@ -68,8 +68,8 @@ def memory_available() -> int:
     return meminfo('MemAvailable')
 
 
-def gpu() -> tuple[str, int]:
-    """GPU 0's name and device memory, as nvidia-smi reports them."""
+def gpu() -> tuple[str, str]:
+    """GPU 0's name and memory.total, as nvidia-smi prints them."""
     try:
         query = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits',
                                 '-i', '0'], capture_output=True, text=True, timeout=30)
@@ -77,16 +77,21 @@ def gpu() -> tuple[str, int]:
         raise RuntimeError(f'nvidia-smi is unavailable or did not answer, so the launcher cannot size memory: '
                            f'{exc}') from exc
     name, comma, total = query.stdout.partition('\n')[0].rpartition(',')
-    if query.returncode != 0 or not comma or not total.strip().isdigit():
+    if query.returncode != 0 or not comma:
         raise RuntimeError('nvidia-smi did not report GPU 0\'s name and memory')
-    return name.strip(), int(total) * 1024**2
+    return name.strip(), total.strip()
 
 
 def sizing() -> Sizing:
     """The machine's memory figures: a GB10's unified pool, or a discrete card's device memory and the host's RAM."""
-    name, device_memory = gpu()
+    name, total = gpu()
     if 'GB10' in name.upper():
+        # The GB10's unified pool is sized by the measured GB10_SIZING, not by a device figure: its NVML reports
+        # memory.total as [N/A] (Syllo/nvtop#531).
         return GB10_SIZING
+    if not total.isdigit():
+        raise RuntimeError(f'nvidia-smi did not report {name}\'s device memory')
+    device_memory = int(total) * 1024**2
     cuda_limit = device_memory - DISCRETE_DRIVER_RESERVE
     if cuda_limit <= 0:
         raise RuntimeError(f'{name} reports {device_memory / GIB:.2f} GiB of device memory, '

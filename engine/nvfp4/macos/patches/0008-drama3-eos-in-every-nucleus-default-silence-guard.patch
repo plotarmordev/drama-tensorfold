@@ -1,0 +1,242 @@
+diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
+index 52e892fb1..eafabbcd2 100644
+--- a/zig/build/drama3_host.zig
++++ b/zig/build/drama3_host.zig
+@@ -51,7 +51,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
+     native(b, step, family, core, api, null, "drama_metal_native_host");
+     const quant = b.addRunArtifact(b.addTest(.{
+         .root_module = family,
+-        .filters = &.{ "NVFP4", "expert metadata", "compact head", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
++        .filters = &.{ "NVFP4", "expert metadata", "compact head", "eosCandidate", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
+     }));
+     b.step("test-drama-metal-quant-host", "Packed expert formats, pruning and CFG state without GPU execution").dependOn(&quant.step);
+ }
+diff --git a/zig/kernels/metal/drama3/sample.metal b/zig/kernels/metal/drama3/sample.metal
+index 835459d43..1421f61ec 100644
+--- a/zig/kernels/metal/drama3/sample.metal
++++ b/zig/kernels/metal/drama3/sample.metal
+@@ -175,9 +175,10 @@ inline float softmax_sum(device const float* logits, uint count, float temp, flo
+   return group_sum(s, scratch, sg, lane, nt / 32);
+ }
+ 
+-// One draw among sorted candidates: kept = rank 0, or rank < top_k with cumulative p <= top_p; race w / Exp(1).
++// One draw among sorted candidates: rank 0, the eos slot and any rank < top_k with cumulative p <= top_p race w / Exp(1);
++// the eos slot is exempt from the truncation, or a silence-dominant distribution can never stop.
+ inline int draw_top(threadgroup const ulong* cand, int n, float temperature, int top_k, float top_p, float sum,
+-                    ulong seed, ulong step, int stream, threadgroup float* wsum, threadgroup float* bbest,
++                    ulong seed, ulong step, int stream, int eos, threadgroup float* wsum, threadgroup float* bbest,
+                     threadgroup int* brank, threadgroup int* chosen, uint i, uint nt, uint w, uint lane) {
+   const float temp = max(temperature, 1e-5f);
+   const float mx = key_score(cand[0]) / temp;
+@@ -191,7 +192,7 @@ inline int draw_top(threadgroup const ulong* cand, int n, float temperature, int
+   const float cum = (before + incl) / sum;
+   float best = -1.0f;
+   int rank = 0x7FFFFFFF;
+-  if (int(i) < n && (i == 0 || (int(i) < top_k && cum <= top_p))) {
++  if (int(i) < n && (i == 0 || key_index(cand[i]) == eos || (int(i) < top_k && cum <= top_p))) {
+     best = wv / exp_noise(seed, step, 0, stream, key_index(cand[i]));
+     rank = int(i);
+   }
+@@ -226,6 +227,7 @@ struct SampleArgs {
+   D3Sampling sp;
+   uint count;
+   int stream, sem_begin, cb;
++  int eos; // candidate slot always kept in the nucleus: the stop token, or -1 for code heads
+ };
+ 
+ #define D3_SAMPLER_SCRATCH                    \
+@@ -249,10 +251,10 @@ struct SampleArgs {
+   const float zt = softmax_sum(logits, a.count, temp, top / temp, scratch, t, nt, sg, lane);
+   const float z1 = softmax_sum(logits, a.count, 1.0f, top, scratch, t, nt, sg, lane);
+   const ulong step = *step_ptr;
+-  const int first = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, zt, a.sp.seed, step, 0, wsum, bbest,
+-                             brank, &chosen, t, nt, sg, lane);
+-  const int ras = draw_top(cand, n, 1.0f, 30, 0.95f, z1, a.sp.seed, step, 1, wsum, bbest, brank, &chosen, t, nt, sg,
+-                           lane);
++  const int first = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, zt, a.sp.seed, step, 0, a.eos, wsum,
++                             bbest, brank, &chosen, t, nt, sg, lane);
++  const int ras = draw_top(cand, n, 1.0f, 30, 0.95f, z1, a.sp.seed, step, 1, a.eos, wsum, bbest, brank, &chosen, t,
++                           nt, sg, lane);
+   if (t == 0) {
+     const int ft = cand_ids[first], rt = cand_ids[ras];
+     bool repeat = false;
+@@ -273,8 +275,8 @@ struct SampleArgs {
+   const int n = select_top(logits, a.count, a.sp.top_k, cand, hist, st, &sn, t, nt);
+   const float temp = max(a.sp.temperature, 1e-5f);
+   const float z = softmax_sum(logits, a.count, temp, key_score(cand[0]) / temp, scratch, t, nt, sg, lane);
+-  const int c = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, z, a.sp.seed, *step_ptr, a.stream, wsum,
+-                         bbest, brank, &chosen, t, nt, sg, lane);
++  const int c = draw_top(cand, n, a.sp.temperature, a.sp.top_k, a.sp.top_p, z, a.sp.seed, *step_ptr, a.stream, -1,
++                         wsum, bbest, brank, &chosen, t, nt, sg, lane);
+   if (t == 0) *out = c;
+ }
+ 
+diff --git a/zig/src/families/drama3/metal/forward.zig b/zig/src/families/drama3/metal/forward.zig
+index cbecdd10e..9980862ea 100644
+--- a/zig/src/families/drama3/metal/forward.zig
++++ b/zig/src/families/drama3/metal/forward.zig
+@@ -135,7 +135,7 @@ pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engi
+     } else if (greedy) {
+         k.argmax(g, e.cand_logits, e.w.n_cand, e.w.cand_ids, e.frame, sem_begin, cfg.codebook_size);
+     } else {
+-        k.sampleMain(g, e.cand_logits, e.w.n_cand, e.w.cand_ids, e.window, sp, e.step, e.frame, sem_begin, cfg.codebook_size);
++        k.sampleMain(g, e.cand_logits, e.w.n_cand, e.w.cand_ids, e.window, sp, e.step, e.frame, sem_begin, cfg.codebook_size, @import("../shards.zig").eosCandidate(e.c, e.w.n_cand));
+     }
+     var hin = e.hlast;
+     for (0..cfg.tower_layers) |ti| {
+diff --git a/zig/src/families/drama3/metal/kernels.zig b/zig/src/families/drama3/metal/kernels.zig
+index 0b5814de5..04cfe8f25 100644
+--- a/zig/src/families/drama3/metal/kernels.zig
++++ b/zig/src/families/drama3/metal/kernels.zig
+@@ -133,14 +133,14 @@ pub fn argmax(g: *Gpu, logits: u64, count: usize, cand_ids: u64, frame: u64, sem
+     g.go(.d3_argmax, .{ 1, 1, 1 }, 1024, &.{ logits, ids, frame }, A{ .count = u(count), .ids = @intFromBool(cand_ids != 0), .sb = sem_begin, .cb = cb });
+ }
+ 
+-const SampleArgs = extern struct { sp: Sampling, count: u32, stream: i32, sb: i32, cb: i32 };
++const SampleArgs = extern struct { sp: Sampling, count: u32, stream: i32, sb: i32, cb: i32, eos: i32 };
+ 
+-pub fn sampleMain(g: *Gpu, logits: u64, count: usize, cand_ids: u64, window: u64, sp: Sampling, step: u64, frame: u64, sem_begin: i32, cb: i32) void {
+-    g.go(.d3_sample_main, .{ 1, 1, 1 }, 256, &.{ logits, cand_ids, window, step, frame }, SampleArgs{ .sp = sp, .count = u(count), .stream = 0, .sb = sem_begin, .cb = cb });
++pub fn sampleMain(g: *Gpu, logits: u64, count: usize, cand_ids: u64, window: u64, sp: Sampling, step: u64, frame: u64, sem_begin: i32, cb: i32, eos_cand: i32) void {
++    g.go(.d3_sample_main, .{ 1, 1, 1 }, 256, &.{ logits, cand_ids, window, step, frame }, SampleArgs{ .sp = sp, .count = u(count), .stream = 0, .sb = sem_begin, .cb = cb, .eos = eos_cand });
+ }
+ 
+ pub fn sampleCode(g: *Gpu, logits: u64, count: usize, sp: Sampling, step: u64, stream: i32, out: u64) void {
+-    g.go(.d3_sample_code, .{ 1, 1, 1 }, 256, &.{ logits, step, out }, SampleArgs{ .sp = sp, .count = u(count), .stream = stream, .sb = 0, .cb = 0 });
++    g.go(.d3_sample_code, .{ 1, 1, 1 }, 256, &.{ logits, step, out }, SampleArgs{ .sp = sp, .count = u(count), .stream = stream, .sb = 0, .cb = 0, .eos = -1 });
+ }
+ 
+ pub fn finishFrame(g: *Gpu, frame: u64, frames_out: u64, next_input: u64, window: u64, pos: u64, step: u64, count: u64) void {
+@@ -157,5 +157,5 @@ pub fn copyI32(g: *Gpu, src: u64, dst: u64, n: usize) void {
+ 
+ test "argument structs match the kernels' layouts" {
+     try std.testing.expectEqual(@as(usize, 24), @sizeOf(Sampling));
+-    try std.testing.expectEqual(@as(usize, 40), @sizeOf(SampleArgs));
++    try std.testing.expectEqual(@as(usize, 44), @sizeOf(SampleArgs));
+ }
+diff --git a/zig/src/families/drama3/shards.zig b/zig/src/families/drama3/shards.zig
+index 6e3475f72..be1acbcc3 100644
+--- a/zig/src/families/drama3/shards.zig
++++ b/zig/src/families/drama3/shards.zig
+@@ -94,3 +94,31 @@ pub fn candidateIds(gpa: std.mem.Allocator, c: cfg.Config) ![]i32 {
+     if (c.ids.eos > c.ids.sem_end) ids[n - 1] = c.ids.eos;
+     return ids;
+ }
++/// The candidate list slot holding eos (first below the band, last above it), or -1 when eos sits inside it:
++/// the sampler keeps that slot in every nucleus so a stop the model asks for cannot be truncated away.
++pub fn eosCandidate(c: cfg.Config, n_cand: usize) i32 {
++    if (c.ids.eos < c.ids.sem_begin) return 0;
++    if (c.ids.eos > c.ids.sem_end) return @intCast(n_cand - 1);
++    return -1;
++}
++
++test "eosCandidate mirrors candidateIds" {
++    const a = std.testing.allocator;
++    const none = [_]bool{false}**cfg.layers;
++    const idses = [_]cfg.Ids{
++        .{ .eos = 100, .pad = 0, .sem_begin = 200, .sem_end = 300, .audio_pad = 0 },
++        .{ .eos = 400, .pad = 0, .sem_begin = 200, .sem_end = 300, .audio_pad = 0 },
++    };
++    for (idses) |ids| {
++        const c = cfg.Config{ .ids = ids, .full_attention = none };
++        const got = eosCandidate(c, c.candidates());
++        const list = try candidateIds(a, c);
++        defer a.free(list);
++        try std.testing.expectEqual(c.ids.eos, list[@intCast(got)]);
++    }
++    const inside = cfg.Config{
++        .ids = .{ .eos = 250, .pad = 0, .sem_begin = 200, .sem_end = 300, .audio_pad = 0 },
++        .full_attention = none,
++    };
++    try std.testing.expectEqual(@as(i32, -1), eosCandidate(inside, inside.candidates()));
++}
+diff --git a/zig/src/native/drama_host.zig b/zig/src/native/drama_host.zig
+index 6c2177874..b337717ce 100644
+--- a/zig/src/native/drama_host.zig
++++ b/zig/src/native/drama_host.zig
+@@ -42,7 +42,7 @@ pub const Options = struct {
+     context: u32 = 8192,
+     device: u32 = 0,
+     lanes: u32 = 2,
+-    silence: api.speech_guard.Config = .{},
++    silence: api.speech_guard.Config = default_silence,
+     max_frames: ?u32 = null,
+     prefill_rows: u32 = @intCast(d3.common.single_row), // rows a prompt chunk: one row until a caller opts in
+     reference_entries: u32 = @import("drama_reference.zig").default_entries, // CUDA, TF_DRAMA_REFERENCE_CACHE; 0: off
+@@ -50,6 +50,25 @@ pub const Options = struct {
+     cfg_batched: bool = false,
+ };
+ 
++/// Drama's default guard: a reply ends after 3.5 s below -40 dBFS. A silence-dominant distribution — one token
++/// near the whole nucleus mass with eos second — leaves the take trailing quiet around a late eos draw: the frame
++/// cap, or a long murmur tail below the floor. 3.5 s clears the longest quiet stretch inside any passing take
++/// (2.06 s built-in, 1.43 s reference), so a trip never cuts speech the take goes on to speak. Every field stays
++/// overridable; --silence-seconds 0 disables it.
++pub const default_silence: api.speech_guard.Config = .{ .floor_dbfs = -40, .seconds = 3.5 };
++
++/// Unset guard fields fall back to `default_silence`, so `--silence-floor-dbfs` alone keeps the default seconds.
++pub fn fillSilence(c: api.speech_guard.Config) api.speech_guard.Config {
++    return .{
++        .floor_dbfs = c.floor_dbfs orelse default_silence.floor_dbfs,
++        .seconds = c.seconds orelse default_silence.seconds,
++        .onset_seconds = c.onset_seconds,
++        .onset_voiced_seconds = c.onset_voiced_seconds,
++        .mid_seconds = c.mid_seconds,
++        .mid_min_voiced_s = c.mid_min_voiced_s,
++    };
++}
++
+ const Host = struct {
+     gpa: std.mem.Allocator,
+     io: std.Io,
+@@ -354,6 +373,8 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+     try (d3.Options{ .max_rows = @intCast(o.prefill_rows), .attn_chunk = @intCast(o.prefill_rows) }).validatePrefill();
+     if (!is_cuda) try d3.load_limit.admitStates(gpa, io, dir, o.context, o.lanes * (1 + @as(u32, @intFromBool(o.cfg_enabled))));
+     try o.silence.validate();
++    const silence = fillSilence(o.silence);
++    try silence.validate();
+     const h = try gpa.create(Host);
+     errdefer gpa.destroy(h);
+     h.* = .{
+@@ -362,7 +383,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+         .limit = undefined,
+         .queue = try rounds.Queue.init(o.lanes),
+         .info_ = .{},
+-        .silence = o.silence,
++        .silence = silence,
+     };
+     if (is_cuda) h.refs = .{ .gpa = gpa, .capacity = o.reference_entries };
+     try h.limit.init(gpa, io, o.device);
+@@ -483,6 +504,32 @@ test "native silence guard: onset silence cuts whole and stream at one frame; sp
+     }
+ }
+ 
++test "native silence guard: the engine default ends a quiet tail instead of running to the cap" {
++    const word = [_]f32{ 0.25, -0.25 };
++    var pcm: [2 + 40]f32 = undefined;
++    @memcpy(pcm[0..2], &word);
++    @memset(pcm[2..], 0);
++    for ([_]bool{ false, true }) |stream| {
++        var codec: FakeCodec = .{ .pcm = &pcm };
++        var out: [pcm.len]f32 = undefined;
++        const samples, const tripped = try codec.run((Options{}).silence, stream, &out);
++        try std.testing.expectEqual(@as(usize, 2 + 28), samples); // the word, then the default 3.5 s of quiet (rate 8)
++        try std.testing.expect(tripped);
++    }
++}
++
++test "native silence guard: fillSilence defaults unset fields and keeps an explicit disable" {
++    const filled = fillSilence(.{});
++    try std.testing.expect(filled.onset_seconds == null and filled.mid_seconds == null);
++    try std.testing.expectEqual(default_silence.floor_dbfs, filled.floor_dbfs);
++    try std.testing.expectEqual(default_silence.seconds, filled.seconds);
++    const floor_only = fillSilence(.{ .floor_dbfs = -60 });
++    try std.testing.expectEqual(@as(?f64, -60), floor_only.floor_dbfs);
++    try std.testing.expectEqual(default_silence.seconds, floor_only.seconds);
++    const off = fillSilence(.{ .seconds = 0 });
++    try std.testing.expect(!off.enabled());
++}
++
+ test "native silence guard: a finished job publishes its reason and mid trip alike in whole and stream" {
+     if (!is_cuda) return error.SkipZigTest;
+     const Fake = struct {

@@ -34,10 +34,12 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 - The three NVFP4 builds fail the same six built-in takes. `trim-bf16-int3` fails two of them (`short-01` s0,
   `long-01` s1) and one text of its own: built-in `medium-05` runs to the 1024-frame cap (47.55 s) on both salts,
   speaking only its first sentence (WER 0.68), where the NVFP4 builds say it all in about 8 s.
-- `trim-bf16-exl3-3.0` keeps int3's `medium-05` runaway on both salts (same first sentence, WER 0.68) and adds
-  `medium-02` s1 to the cap; `short-01` fails on both salts, `long-06` s1 drops words. The rule counts failed
-  takes, not which ones; with two salts, half the four of [`quant-15gb`](../quant-15gb/README.md), those runaways
-  are the thing to hear before shipping.
+- Patch 0008 fixed the stopping itself: eos stays in every nucleus (both truncated draws excluded it under a
+  silence-dominant distribution, so the stop could not be drawn) and serve fills an unset guard at −40 dBFS /
+  3.5 s. After it, [`stop-decision-20261121.json`](stop-decision-20261121.json): no take caps, `medium-05` ends
+  naturally on both salts, all 44 passing built-in takes and 47 of 48 reference takes are byte-identical, the
+  reference holds 0 failed and 1.78 % / 0.97 %; the 4 built-in failures stay (two speak partial text, one stalls
+  3.1 s inside speech) — model quality, with per-frame traces in the JSON.
 
 | File | What it holds |
 |---|---|
@@ -53,6 +55,7 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`gb10-speed-stage.sh`](gb10-speed-stage.sh) | `bottom shell`: the published int3 revision from the Hub, checked, with the pilot's FP32 codec swapped in and its `SHA256SUMS` |
 | [`gb10-speed.sh`](gb10-speed.sh), [`spark_speed.py`](spark_speed.py) | The GB10 job for the card's Spark rows: both builds, both voices, one engine binary (`engine/nvfp4`, built by [`prebuild-spark.sh`](../exl3-spark/prebuild-spark.sh) with `PIN=engine/nvfp4 OUT=drama3-int3-engine`), warm p50 RTF, load and peak memory |
 | [`spark-speed.json`](spark-speed.json) | Its run on TOP (job `top-1fa2dfce6839`): the four rows and what was checked |
+| [`stop-decision-20261121.json`](stop-decision-20261121.json) | The card-55 stop fix: per-frame cause traces (eos excluded from both nuclei), the two engine changes, before/after arms and byte-identity, and the issue-32 link |
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
 `eq-3ref` reference voice with guidance γ 1.5 batched or the built-in voice; failed = capped, WER > 0.2 or a quiet

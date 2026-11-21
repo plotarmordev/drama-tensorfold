@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import NamedTuple
 import urllib.error
 import urllib.request
 
@@ -22,24 +23,87 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import weight_selection  # noqa: E402
 
 GIB = 1024**3
+MEMINFO = Path('/proc/meminfo')
+CUDA_HOME = Path(os.environ.get('CUDA_HOME', '/usr/local/cuda'))
+
+# A GB10's 128 GiB pool is shared by the host and the device: these are the figures measured for it.
 HEADROOM = 30 * GIB
 STOP_MARGIN = 4 * GIB
 CGROUP_CAP = 54 * GIB
-CUDA_HOME = Path(os.environ.get('CUDA_HOME', '/usr/local/cuda'))
+GB10_RESERVE_GIB = 34
+# A discrete card keeps the weights in device memory. The driver and its libraries hold 1 GiB of the card, and the
+# engine's fit check keeps 0.5 GiB back: issue #68 loaded the 14.5 GB int3 build on a 16 GB card with 0.5 GiB. The
+# host pins buffers and caches checkpoint pages, inside a quarter of its RAM (at least 8 GiB), with 4 GiB of
+# headroom and a 2 GiB stop margin.
+DISCRETE_DRIVER_RESERVE = 1 * GIB
+DISCRETE_RESERVE_GIB = 0.5
+DISCRETE_CGROUP_MIN = 8 * GIB
+DISCRETE_HEADROOM = 4 * GIB
+DISCRETE_STOP_MARGIN = 2 * GIB
+
+
+class Sizing(NamedTuple):
+    """Host and device memory figures the launcher admits, caps and reserves against."""
+    unified: bool
+    cgroup_cap: int
+    headroom: int
+    admission_floor: int
+    abort_below: int
+    reserve_gib: float
+    cuda_limit_gib: float
+
+
+GB10_SIZING = Sizing(True, CGROUP_CAP, HEADROOM, CGROUP_CAP + HEADROOM + STOP_MARGIN, HEADROOM + STOP_MARGIN,
+                     GB10_RESERVE_GIB, CGROUP_CAP / GIB)
+
+
+def meminfo(field: str) -> int:
+    for line in MEMINFO.read_text().splitlines():
+        if line.startswith(f'{field}:'):
+            return int(line.split()[1]) * 1024
+    raise RuntimeError(f'{field} is unavailable; refusing an unguarded load')
 
 
 def memory_available() -> int:
-    for line in Path('/proc/meminfo').read_text().splitlines():
-        if line.startswith('MemAvailable:'):
-            return int(line.split()[1]) * 1024
-    raise RuntimeError('MemAvailable is unavailable; refusing an unguarded load')
+    return meminfo('MemAvailable')
 
 
-def guard(weights: int, external_admission: bool) -> tuple[int | None, int | None]:
+def gpu() -> tuple[str, int]:
+    """GPU 0's name and device memory, as nvidia-smi reports them."""
+    try:
+        query = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits',
+                                '-i', '0'], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f'nvidia-smi is unavailable or did not answer, so the launcher cannot size memory: '
+                           f'{exc}') from exc
+    name, comma, total = query.stdout.partition('\n')[0].rpartition(',')
+    if query.returncode != 0 or not comma or not total.strip().isdigit():
+        raise RuntimeError('nvidia-smi did not report GPU 0\'s name and memory')
+    return name.strip(), int(total) * 1024**2
+
+
+def sizing() -> Sizing:
+    """The machine's memory figures: a GB10's unified pool, or a discrete card's device memory and the host's RAM."""
+    name, device_memory = gpu()
+    if 'GB10' in name.upper():
+        return GB10_SIZING
+    cuda_limit = device_memory - DISCRETE_DRIVER_RESERVE
+    if cuda_limit <= 0:
+        raise RuntimeError(f'{name} reports {device_memory / GIB:.2f} GiB of device memory, '
+                           'less than the driver reserve')
+    cgroup_cap = max(DISCRETE_CGROUP_MIN, meminfo('MemTotal') // 4)
+    return Sizing(False, cgroup_cap, DISCRETE_HEADROOM, cgroup_cap + DISCRETE_HEADROOM + DISCRETE_STOP_MARGIN,
+                  DISCRETE_HEADROOM + DISCRETE_STOP_MARGIN, DISCRETE_RESERVE_GIB, cuda_limit / GIB)
+
+
+def guard(weights: int, machine: Sizing, external_admission: bool) -> tuple[int | None, int | None]:
     """MemAvailable required before loading and the abort threshold; neither when the caller admits the load."""
     if external_admission:
         return None, None
-    return max(weights + HEADROOM, CGROUP_CAP + HEADROOM + STOP_MARGIN), HEADROOM + STOP_MARGIN
+    floor = machine.admission_floor
+    if machine.unified:
+        floor = max(weights + HEADROOM, floor)
+    return floor, machine.abort_below
 
 
 def main() -> int:
@@ -67,8 +131,9 @@ def main() -> int:
     parser.add_argument('--parent-pid', type=int, default=None,
                         help='Stop the unit, as for SIGTERM, once this process is no longer the parent '
                              '(for a supervisor that cannot set a parent-death signal on the launcher)')
-    parser.add_argument('--reserve-gib', type=float, default=34,
-                        help='TENSORFOLD_MEMORY_RESERVE_GIB passed to the native server (not a hard cap)')
+    parser.add_argument('--reserve-gib', type=float, default=None,
+                        help='TENSORFOLD_MEMORY_RESERVE_GIB passed to the native server (not a hard cap; default '
+                             '34 GiB on a GB10 and 0.5 GiB on a discrete card)')
     parser.add_argument('--external-admission', action='store_true',
                         help='A supervisor that budgets host memory admits this load: skip the MemAvailable '
                              'admission and the abort threshold; the cgroup and allocator caps and the lock stay')
@@ -79,13 +144,23 @@ def main() -> int:
         parser.error('Port must be between 1 and 65535')
     if args.parent_pid is not None and os.getppid() != args.parent_pid:
         parser.error(f'--parent-pid {args.parent_pid} is not this launcher\'s parent')
-    if not (math.isfinite(args.reserve_gib) and args.reserve_gib >= 0):
+    if args.reserve_gib is not None and not (math.isfinite(args.reserve_gib) and args.reserve_gib >= 0):
         parser.error('--reserve-gib must be finite and non-negative')
     if args.weights is None and args.checkpoint is None:
         args.weights = weight_selection.DEFAULT_WEIGHTS
     engine = args.weights and weight_selection.WEIGHTS[args.weights]['engine']
     if engine == 'nvfp4' and args.backend != 'native':
         parser.error('Only the native backend serves the NVFP4 weights')
+    if args.backend == 'native':
+        try:
+            machine = sizing()
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        reserve_gib = machine.reserve_gib if args.reserve_gib is None else args.reserve_gib
+    else:
+        # The reference backend serves on a GB10 only.
+        machine = GB10_SIZING
+        reserve_gib = args.reserve_gib
     root = args.runtime_dir.resolve()
     checkpoint = weight_selection.checkpoint_path(args.weights, args.checkpoint)
     evidence = args.evidence_dir.resolve()
@@ -97,13 +172,13 @@ def main() -> int:
             executable, checkpoint, '127.0.0.1', args.port,
             weight_selection.serve_arguments(args.weights, args.serve_args))
         working_directory = root
-        backend_environment = [f'TENSORFOLD_MEMORY_RESERVE_GIB={args.reserve_gib:g}',
-                               'TENSORFOLD_CUDA_MEMORY_LIMIT_GB=54',
+        backend_environment = [f'TENSORFOLD_MEMORY_RESERVE_GIB={reserve_gib:g}',
+                               f'TENSORFOLD_CUDA_MEMORY_LIMIT_GB={machine.cuda_limit_gib:g}',
                                *weight_selection.native_environment(args.weights)]
-        allocator_caps = {'tracked_cuda_and_pinned_host_buffers': 54}
+        allocator_caps = {'tracked_cuda_and_pinned_host_buffers': machine.cuda_limit_gib}
     elif args.serve_args:
         parser.error('Extra serve flags apply to the native backend only')
-    elif args.reserve_gib != 34:
+    elif args.reserve_gib is not None:
         parser.error('--reserve-gib applies to the native backend only')
     else:
         executable = root / 'venv/bin/sgl-omni'
@@ -142,7 +217,7 @@ def main() -> int:
         except BlockingIOError:
             parser.error('Another workload owns the GPU slot; no model was started')
         available = memory_available()
-        required, abort_below = guard(weights, args.external_admission)
+        required, abort_below = guard(weights, machine, args.external_admission)
         if required is not None and available < required:
             parser.error(f'Need {required/GIB:.2f} GiB available, have {available/GIB:.2f}; no model was started')
         try:
@@ -162,7 +237,7 @@ def main() -> int:
         worker = None
         watcher = None
         command = ['systemd-run', '--user', f'--unit={unit}', '--wait', '--pipe', '--collect',
-                   f'--property=MemoryMax={CGROUP_CAP}', '--property=MemorySwapMax=0',
+                   f'--property=MemoryMax={machine.cgroup_cap}', '--property=MemorySwapMax=0',
                    '--property=KillMode=control-group', '--property=OOMPolicy=kill',
                    '--property=TimeoutStopSec=10', f'--working-directory={working_directory}',
                    '/usr/bin/env', '-i', f'HOME={Path.home()}',
@@ -176,15 +251,19 @@ def main() -> int:
                    f'FLASHINFER_WORKSPACE_BASE={root / "runtime-cache/flashinfer"}',
                    *backend_environment,
                    *server_command]
+        if args.external_admission:
+            admission = 'external: the caller admits the load by its own memory budget'
+        elif machine.unified:
+            admission = 'operator-approved weights + 30 GiB; additional cgroup-cap reserve'
+        else:
+            admission = 'operator-approved host floor for a discrete card; the weights stay on the device'
         initial = {**provenance, 'backend': args.backend, 'weights_bytes': weights, 'initial_memavailable_bytes': available,
-                   'required_memavailable_bytes': required, 'cgroup_memory_max_bytes': CGROUP_CAP,
-                   'headroom_floor_bytes': HEADROOM, 'abort_threshold_bytes': abort_below,
+                   'required_memavailable_bytes': required, 'cgroup_memory_max_bytes': machine.cgroup_cap,
+                   'headroom_floor_bytes': machine.headroom, 'abort_threshold_bytes': abort_below,
                    'unit': unit, 'server_command': server_command, 'launch_command': command,
                    'started_at_epoch': started_at_epoch, 'parent_pid': args.parent_pid,
-                   'admission': ('external: the caller admits the load by its own memory budget'
-                                 if args.external_admission
-                                 else 'operator-approved weights + 30 GiB; additional cgroup-cap reserve'),
-                   'engine_memory_reserve_gib': args.reserve_gib,
+                   'admission': admission,
+                   'engine_memory_reserve_gib': reserve_gib,
                    'allocator_caps_gib': allocator_caps,
                    'allocation_cap_excludes_driver_and_library_private_memory': True}
         (evidence / 'session.json').write_text(json.dumps(initial, indent=2) + '\n')

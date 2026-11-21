@@ -39,7 +39,7 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
   3.5 s. After it, [`stop-decision-20261121.json`](stop-decision-20261121.json): no take caps, `medium-05` ends
   naturally on both salts, all 44 passing built-in takes and 47 of 48 reference takes are byte-identical, the
   reference holds 0 failed and 1.78 % / 0.97 %; the 4 built-in failures stay (two speak partial text, one stalls
-  3.1 s inside speech) — model quality, with per-frame traces in the JSON.
+  3.1 s inside speech) — model quality, per-frame traces in `trace-20261121/`.
 
 | File | What it holds |
 |---|---|
@@ -55,7 +55,8 @@ The 24 corpus texts, salts 0 and 1: 48 takes per build and voice.
 | [`gb10-speed-stage.sh`](gb10-speed-stage.sh) | `bottom shell`: the published int3 revision from the Hub, checked, with the pilot's FP32 codec swapped in and its `SHA256SUMS` |
 | [`gb10-speed.sh`](gb10-speed.sh), [`spark_speed.py`](spark_speed.py) | The GB10 job for the card's Spark rows: both builds, both voices, one engine binary (`engine/nvfp4`, built by [`prebuild-spark.sh`](../exl3-spark/prebuild-spark.sh) with `PIN=engine/nvfp4 OUT=drama3-int3-engine`), warm p50 RTF, load and peak memory |
 | [`spark-speed.json`](spark-speed.json) | Its run on TOP (job `top-1fa2dfce6839`): the four rows and what was checked |
-| [`stop-decision-20261121.json`](stop-decision-20261121.json) | The card-55 stop fix: per-frame cause traces (eos excluded from both nuclei), the two engine changes, before/after arms and byte-identity, and the issue-32 link |
+| [`stop-decision-20261121.json`](stop-decision-20261121.json) | The card-55 stop fix: per-frame cause traces (eos excluded from both nuclei), the two engine changes, before/after arms and byte-identity, and the issue-32 hypothesis |
+| [`trace-20261121/`](trace-20261121/), [`trace_eos.py`](trace_eos.py) | The card-55 per-frame evidence: prompt rows, chosen tokens and eos standing per frame for the failing and passing takes, and the tool that derives it |
 
 Same protocol and failure rule as [`full-vs-quant-01`](../full-vs-quant-01/README.md): `--max-frames 1024`, the
 `eq-3ref` reference voice with guidance γ 1.5 batched or the built-in voice; failed = capped, WER > 0.2 or a quiet

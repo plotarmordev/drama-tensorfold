@@ -5,4 +5,4 @@ fc67a51edb3a92a1e1fa696f8336e3f9bbf9b472ff69488e8229e4bbb5ce055c  0004-drama-rea
 e3d099698a1a909f68715e0d8fe67de2b18f2c336518eab88d8faa12645bd5ab  0005-int3-routed-experts.patch
 c3a331f45f874e59c5932d4a6d31f1e6bec54257c8caab8668392090f4f5cfa8  0006-exl3-routed-experts.patch
 c253c85cc2c45ab44bcb2c4b0baa51b79dcf6b6617ecf13396155fec27bba106  0007-speech-holds-gpu-turn.patch
-f06b21d58028389af9323353bb96a8f971a6acfaafd579cbb76f9745ecfbff60  0008-drama3-eos-in-every-nucleus-default-silence-guard.patch
+e24f9b51983de216b039c37e8e4082d5b0ce02818a64aadf71e5dccab2d95b05  0008-drama3-eos-in-every-nucleus-default-silence-guard.patch

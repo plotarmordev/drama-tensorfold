@@ -1,5 +1,27 @@
+From 9868cd94814f528d3bc349098541364cdde8747f Mon Sep 17 00:00:00 2001
+From: drama-agent <agent@plotarmor.dev>
+Date: Sat, 21 Nov 2026 12:58:16 +0800
+Subject: [PATCH] drama3 metal: eos in every nucleus and a serve silence
+ default stop the built-in run-on
+
+After the speech the model wants to end, one token can hold ~96.6% of the
+candidate mass with eos rank 1 at 2-22%, so eos's cumulative probability
+exceeds both top_p cutoffs (0.9 request draw, 0.95 RAS redraw) and both
+truncated draws exclude the stop every frame; the take runs to the frame
+cap. Keep the eos candidate slot in every nucleus of both main-token draws
+and fill an unset serve guard at -40 dBFS / 3.5 s to end the trailing quiet
+the same collapse produces; --silence-seconds 0 still disables it.
+---
+ zig/build/drama3_host.zig                 |  2 +-
+ zig/kernels/metal/drama3/sample.metal     | 20 +++++----
+ zig/src/families/drama3/metal/forward.zig |  2 +-
+ zig/src/families/drama3/metal/kernels.zig | 32 +++++++++++---
+ zig/src/families/drama3/shards.zig        | 28 +++++++++++++
+ zig/src/native/drama_host.zig             | 51 ++++++++++++++++++++++-
+ 6 files changed, 117 insertions(+), 18 deletions(-)
+
 diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
-index 52e892fb1..eafabbcd2 100644
+index 52e892fb1..98fd15815 100644
 --- a/zig/build/drama3_host.zig
 +++ b/zig/build/drama3_host.zig
 @@ -51,7 +51,7 @@ pub fn metal(b: *std.Build, core: *std.Build.Module, api: *std.Build.Module) voi
@@ -7,7 +29,7 @@ index 52e892fb1..eafabbcd2 100644
      const quant = b.addRunArtifact(b.addTest(.{
          .root_module = family,
 -        .filters = &.{ "NVFP4", "expert metadata", "compact head", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
-+        .filters = &.{ "NVFP4", "expert metadata", "compact head", "eosCandidate", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
++        .filters = &.{ "NVFP4", "expert metadata", "compact head", "eosCandidate", "draw_top", "EXL3 admission", "codebook marker", "independent scalar reference", "CFG" },
      }));
      b.step("test-drama-metal-quant-host", "Packed expert formats, pruning and CFG state without GPU execution").dependOn(&quant.step);
  }
@@ -85,7 +107,7 @@ index cbecdd10e..9980862ea 100644
      var hin = e.hlast;
      for (0..cfg.tower_layers) |ti| {
 diff --git a/zig/src/families/drama3/metal/kernels.zig b/zig/src/families/drama3/metal/kernels.zig
-index 0b5814de5..04cfe8f25 100644
+index 0b5814de5..f662bcaf6 100644
 --- a/zig/src/families/drama3/metal/kernels.zig
 +++ b/zig/src/families/drama3/metal/kernels.zig
 @@ -133,14 +133,14 @@ pub fn argmax(g: *Gpu, logits: u64, count: usize, cand_ids: u64, frame: u64, sem
@@ -107,8 +129,32 @@ index 0b5814de5..04cfe8f25 100644
  }
  
  pub fn finishFrame(g: *Gpu, frame: u64, frames_out: u64, next_input: u64, window: u64, pos: u64, step: u64, count: u64) void {
-@@ -157,5 +157,5 @@ pub fn copyI32(g: *Gpu, src: u64, dst: u64, n: usize) void {
+@@ -155,7 +155,29 @@ pub fn copyI32(g: *Gpu, src: u64, dst: u64, n: usize) void {
+     g.go(.d3_copy_i32, .{ 1, 1, 1 }, 64, &.{ src, dst }, @as(u32, u(n)));
+ }
  
++/// The sampler's keep rule, mirrored from `draw_top` in `sample.metal` so the host test pins it: rank 0, the
++/// eos slot, or the top_k/top_p nucleus. eos is exempt from the truncation, or a silence-dominant distribution —
++/// one token near the whole mass with eos second — can never stop.
++pub fn drawKeeps(rank: usize, id: i32, eos: i32, top_k: usize, cum: f64, top_p: f64) bool {
++    return rank == 0 or id == eos or (rank < top_k and cum <= top_p);
++}
++
++test "draw_top keeps the eos slot past both truncations" {
++    const eos: i32 = 3175;
++    // eos sits at rank 5 with cumulative 0.99: past top_p 0.9 (request) and 0.95 (RAS) alike.
++    try std.testing.expect(drawKeeps(5, eos, eos, 30, 0.99, 0.9));
++    try std.testing.expect(drawKeeps(5, eos, eos, 30, 0.99, 0.95));
++    // A plain token at the same rank is dropped by both; rank 0 and an in-nucleus rank stay.
++    try std.testing.expect(!drawKeeps(5, 3174, eos, 30, 0.99, 0.9));
++    try std.testing.expect(!drawKeeps(5, 3174, eos, 30, 0.99, 0.95));
++    try std.testing.expect(drawKeeps(0, 3174, eos, 30, 0.99, 0.9));
++    try std.testing.expect(drawKeeps(2, 3174, eos, 30, 0.92, 0.95));
++    // With eos off the board (code heads pass -1) the truncation rules alone.
++    try std.testing.expect(!drawKeeps(5, 3175, -1, 30, 0.99, 0.9));
++    try std.testing.expect(drawKeeps(1, 3175, -1, 2, 0.80, 0.9));
++}
++
  test "argument structs match the kernels' layouts" {
      try std.testing.expectEqual(@as(usize, 24), @sizeOf(Sampling));
 -    try std.testing.expectEqual(@as(usize, 40), @sizeOf(SampleArgs));
@@ -240,3 +286,6 @@ index 6c2177874..b337717ce 100644
  test "native silence guard: a finished job publishes its reason and mid trip alike in whole and stream" {
      if (!is_cuda) return error.SkipZigTest;
      const Fake = struct {
+-- 
+2.54.0 (Apple Git-157)
+

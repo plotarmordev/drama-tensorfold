@@ -1,11 +1,11 @@
 {
   "date": "2026-11-21",
-  "purpose": "Why the built-in voice of Drama 3 ran to the 1024-frame cap instead of stopping, and the fix: eos kept in every nucleus plus a serve-side default silence guard. Cause-level per-frame evidence and the before/after protocol arms.",
+  "purpose": "Why the built-in voice of Drama 3 ran to the 1024-frame cap instead of stopping, and the fix: eos kept in every nucleus plus a serve-side default silence guard. Per-frame evidence in trace-20261121/, protocol arms below.",
   "engine": {
     "build": "trim-bf16-int3 (14.50 GiB), Mac NVFP4 engine, scripts/build-engine.sh --weights nvfp4",
     "patch": "0008-drama3-eos-in-every-nucleus-default-silence-guard.patch",
-    "patch_sha256": "f06b21d58028389af9323353bb96a8f971a6acfaafd579cbb76f9745ecfbff60",
-    "before": "the same tree without patch 0008"
+    "patch_sha256": "e24f9b51983de216b039c37e8e4082d5b0ce02818a64aadf71e5dccab2d95b05",
+    "before": "the same tree through patch 0007"
   },
   "hardware": {
     "gpu": "Apple M5 Ultra (Metal)",
@@ -13,43 +13,85 @@
     "zig": "0.17.0"
   },
   "protocol": "smaller-builds: 24 texts, salts 0/1, built-in and eq-3ref voices, --max-frames 1024; failed = capped, WER > 0.2 or a quiet run >= 3 s inside speech (Whisper large-v3)",
-  "cause": {
-    "summary": "After sentence 1 of medium-05, token 251273 (candidate 3175) carries ~96.6 % of the candidate mass and eos is rank 1 at 2-22 %. eos cumulative probability then sits above both top_p cutoffs (0.9 request draw, 0.95 RAS redraw), so both truncated draws exclude eos: a stop the model asks for every frame cannot be drawn, and the take holds silence to the cap.",
-    "failing_traces": [
+  "per_frame_evidence": {
+    "files": "trace-20261121/: <take>.rows (prompt rows), <take>.frames (chosen main token and 9 codes per frame), <take>.per-frame.json (eos rank/p/cumulative, top candidate share, each nucleus keeps-eos, drawn main token). Made by trace_eos.py; its analyze mode replays the pre-patch draws and matches 925/1024 frames on medium-05 s0 (the attractor frames wide margins; close speech races expose the replay as an approximation, e.g. 56/208 on medium-04 s0).",
+    "tool": "drama3-generate with a --logits-out tracer (a scratch edit of generate.zig, not part of the patch); the tables and frames in trace-20261121/ are the committed record",
+    "failing_takes": [
       {
-        "take": "medium-05 s0",
+        "take": "m05s0",
         "seed": 959314696024462267,
-        "frames_before": 1024,
-        "finish_before": "length",
-        "eos_excluded_at_rank1_from_frame": 342,
-        "worst_eos_p": 0.22,
-        "frames_after_fix": 357,
-        "finish_after": "stop"
+        "prompt_rows": 50,
+        "frames": 1024,
+        "eos_stop_frame": null,
+        "frames_eos_excluded_p_over_2pct": 679,
+        "first_excluded_frame": 342,
+        "worst_excluded_eos_p": 0.1817
       },
       {
-        "take": "medium-05 s1",
+        "take": "m05s1",
         "seed": 7969080441724871728,
-        "frames_before": 1024,
-        "finish_before": "length",
-        "eos_excluded_at_rank1_from_frame": 342,
-        "worst_eos_p": 0.22,
-        "frames_after_fix": 350,
-        "finish_after": "stop"
+        "prompt_rows": 50,
+        "frames": 1024,
+        "eos_stop_frame": null,
+        "frames_eos_excluded_p_over_2pct": 686,
+        "first_excluded_frame": 335,
+        "worst_excluded_eos_p": 0.2219
       }
     ],
-    "passing_contrast": "m04 s0, short-01 s0, long-01 s1 (all EOS-stopped): eos is never nucleus-excluded above 1.3 % before the stop; after the fix their token streams are prefix-identical and end 1, 43 and 1 frames earlier (the exemption lets eos win an end-game race it was truncated from).",
+    "passing_takes": [
+      {
+        "take": "m04s0",
+        "seed": 920501170455181836,
+        "prompt_rows": 47,
+        "frames": 208,
+        "eos_stop_frame": 207,
+        "frames_eos_excluded_p_over_2pct": 0,
+        "first_excluded_frame": null,
+        "worst_excluded_eos_p": 0.0
+      },
+      {
+        "take": "s01s0",
+        "seed": 5893052343669152918,
+        "prompt_rows": 30,
+        "frames": 515,
+        "eos_stop_frame": 514,
+        "frames_eos_excluded_p_over_2pct": 0,
+        "first_excluded_frame": null,
+        "worst_excluded_eos_p": 0.0
+      },
+      {
+        "take": "l01s1",
+        "seed": 3909785410715579302,
+        "prompt_rows": 84,
+        "frames": 496,
+        "eos_stop_frame": 495,
+        "frames_eos_excluded_p_over_2pct": 0,
+        "first_excluded_frame": null,
+        "worst_excluded_eos_p": 0.0
+      }
+    ],
+    "reading": "On both medium-05 salts eos is rank 1 at p 2-22 % for ~680 frames from frame ~340, and its cumulative probability sits above both top_p cutoffs (0.9 request, 0.95 RAS), so both truncated draws exclude the stop the model asks for every frame; the take holds quiet to the cap. On the passing takes eos is never excluded above 2 % before the stop."
+  },
+  "cause": {
+    "mechanism": "After sentence 1 of medium-05, token 251273 (candidate 3175) carries ~96.6 % of the candidate mass with eos rank 1 at 2-22 %: nucleus truncation removes eos from both main-token draws, a stop the model asks for cannot be drawn, and the take runs to the frame cap.",
     "sentence2_unreachable": "From frame ~250 the mass on resuming sentence 2 is under 0.5 %: medium-05 WER 0.68 is model quality, not stopping; no stop rule heals it without inventing speech."
   },
   "fix": [
-    "sample.metal draw_top keeps the eos candidate slot in both main-token draws (request top_p 0.9 and RAS top_p 0.95); kernels.zig forwards it, forward.zig passes shards.eosCandidate(e.c, e.w.n_cand); code heads pass -1.",
-    "drama_host fills an unset silence guard with floor -40 dBFS / 3.5 s: the same collapse trails sub-floor quiet or murmur around a late eos. 3.5 s clears the longest quiet stretch inside any passing take (2.06 s built-in, 1.43 s reference), so a trip never cuts speech the take goes on to speak; --silence-seconds 0 still disables it."
+    "sample.metal draw_top keeps the eos candidate slot in both main-token draws (request top_p 0.9 and RAS top_p 0.95); kernels.zig forwards it and mirrors the keep rule in drawKeeps, forward.zig passes shards.eosCandidate(e.c, e.w.n_cand); code heads pass -1.",
+    "drama_host fills an unset silence guard with floor -40 dBFS / 3.5 s: the same collapse trails sub-floor quiet or murmur around a late eos. 3.5 s clears the longest quiet stretch inside any passing take (2.06 s built-in, 1.43 s reference), so a trip never cuts speech a take goes on to speak; --silence-seconds 0 still disables it."
   ],
-  "before_after": {
+  "verification": {
+    "sampler_alone_stops_medium_05": "With the patched sampler and no guard (drama3-generate, bare prompt, same seeds), medium-05 draws eos at frames 357 (s0) and 350 (s1) instead of capping: the eos exemption ends the runaway by itself. The committed <take>-after.frames hold those token streams; the three passing takes re-trace prefix-identical and end 1, 43 and 1 frames earlier.",
+    "serve_arms_note": "Through serve the shipped guard fires first - 3.5 s of sub-floor quiet after the speech - so the protocol arms below record finish=silence for medium-05. Both paths end the take before the cap; the guard is tail hygiene, the exemption the cause fix.",
     "builtin": {
       "takes": 48,
       "failed": [
         4,
         4
+      ],
+      "capped": [
+        2,
+        0
       ],
       "wer_mean": [
         0.05777,
@@ -58,10 +100,6 @@
       "wer_pooled": [
         0.03731,
         0.03731
-      ],
-      "capped": [
-        2,
-        0
       ],
       "passing_in_both": 44,
       "passing_byte_identical": 44,
@@ -73,6 +111,10 @@
         0,
         0
       ],
+      "capped": [
+        0,
+        0
+      ],
       "wer_mean": [
         0.01782,
         0.01782
@@ -80,10 +122,6 @@
       "wer_pooled": [
         0.0097,
         0.0097
-      ],
-      "capped": [
-        0,
-        0
       ],
       "passing_in_both": 48,
       "passing_byte_identical": 47,
@@ -178,9 +216,9 @@
       }
     ]
   },
-  "issue_32": "The full-model tagged-dialogue cap of issue #32 shows the same signature (takes run to the cap while the model wants to stop): the same nucleus-exclusion mechanism under a silence-dominant distribution. The Metal fix ports to the CUDA sampler (one kept-rule term, one slot argument, one default); the full-model line needs the same exemption in its sampler.",
+  "issue_32": "Hypothesis, not a traced fact: the full-model tagged-dialogue cap of issue #32 is consistent with this mechanism (a take runs to the cap while the model wants to stop), but no full-model trace was taken on this card. The Metal fix ports to the CUDA sampler (one kept-rule term, one slot argument, one default).",
   "limits": [
-    "Built-in failed takes stay 4 of 48: medium-05 both salts and short-01 s0 speak only part of the text (WER 0.68 / 0.71), long-01 s1 stalls 3.1 s inside speech - a quiet-run failure; traces show no stop rule heals these without cutting speech.",
-    "The CUDA nvfp4 sampler (engine/nvfp4/patches) shares the mechanism but is not ported here: no CUDA window on this Mac. The same three changes apply."
+    "Built-in failed takes stay 4 of 48; what the stop fix could move did move: capped 2 -> 0, medium-05 ends naturally on both salts. The rest is outside stopping: medium-05 both salts and short-01 s0 speak only part of the text (WER 0.68 / 0.71) and long-01 s1 stalls 3.13 s inside speech (quiet-run failure; its audio is byte-identical before and after).",
+    "The CUDA nvfp4 sampler (engine/nvfp4/patches) shares the mechanism but is not ported here: no CUDA window on this Mac. The same two changes apply."
   ]
 }

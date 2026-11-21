@@ -56,6 +56,7 @@ class BuildEngineTests(unittest.TestCase):
             (patches / 'SHA256SUMS').write_text(f'{digest}  0001-fixture.patch\n')
         self.executable('uname', '#!/bin/sh\nprintf "%s\\n" "$TEST_PLATFORM"\n')
         self.executable('nvcc', '#!/bin/sh\nexit 0\n')
+        self.executable('nvidia-smi', '#!/bin/sh\nprintf "%s\\n" "$TEST_COMPUTE_CAP"\n')
         self.executable('zig', '''#!/usr/bin/env python3
 import json
 from pathlib import Path
@@ -81,14 +82,38 @@ else:
         path.write_text(content)
         path.chmod(0o755)
 
-    def build(self, platform, weights, name='build'):
+    def build(self, platform, weights, name='build', arguments=(), capability='12.1'):
         target = self.root / name
         selection = ['--weights', weights] if weights else []
         result = subprocess.run(
-            ['bash', str(self.repo / 'scripts/build-engine.sh'), *selection, str(target)],
-            env=dict(self.env, TEST_PLATFORM=platform, ZIG=str(self.bin / 'zig'), NVCC=str(self.bin / 'nvcc')),
+            ['bash', str(self.repo / 'scripts/build-engine.sh'), *selection, *arguments, str(target)],
+            env=dict(self.env, TEST_PLATFORM=platform, TEST_COMPUTE_CAP=capability,
+                     ZIG=str(self.bin / 'zig'), NVCC=str(self.bin / 'nvcc')),
             capture_output=True, text=True, timeout=30)
         return result, target
+
+    def test_cuda_architecture_comes_from_gpu_0_and_sm_overrides_it(self):
+        for capability, sm in (('12.1', '121'), ('12.0', '120'), ('8.6', '86'), ('10.0', '100')):
+            with self.subTest(capability=capability):
+                result, target = self.build('Linux', 'nvfp4', f'build-sm-{sm}', capability=capability)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'-Dsm={sm}', json.loads((target / 'build-args.json').read_text()))
+        result, target = self.build('Linux', 'nvfp4', 'build-sm-override', ['--sm=120'], capability='12.1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('-Dsm=120', json.loads((target / 'build-args.json').read_text()))
+
+    def test_linux_build_needs_a_gpu_or_an_sm_and_metal_refuses_sm(self):
+        result, target = self.build('Linux', 'nvfp4', 'build-no-gpu', capability='')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('pass --sm', result.stderr)
+        self.assertFalse(target.exists())
+        result, target = self.build('Linux', 'nvfp4', 'build-sm-only', ['--sm', '121'], capability='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('-Dsm=121', json.loads((target / 'build-args.json').read_text()))
+        result, target = self.build('Darwin', 'nvfp4', 'build-metal-sm', ['--sm', '121'])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no SASS targets', result.stderr)
+        self.assertFalse(target.exists())
 
     def test_each_platform_applies_only_its_selected_patch_series(self):
         for platform, weights, selected in [('Linux', 'nvfp4', 'cuda'), ('Darwin', 'nvfp4', 'metal'),

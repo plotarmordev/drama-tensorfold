@@ -82,12 +82,13 @@
   "fix": [
     "sample.metal draw_top keeps the eos candidate slot in both main-token draws (request top_p 0.9 and RAS top_p 0.95); kernels.zig forwards it and mirrors the keep rule in drawKeeps, forward.zig passes shards.eosCandidate(e.c, e.w.n_cand); code heads pass -1.",
     "drama_host fills an unset silence guard with floor -40 dBFS / 3.5 s: the same collapse trails sub-floor quiet or murmur around a late eos. 3.5 s clears the longest quiet stretch inside any passing take (2.06 s built-in, 1.43 s reference), so a trip never cuts speech a take goes on to speak; --silence-seconds 0 still disables it.",
-    "serve redraws a buffered Drama take the guard silenced, up to twice, with the next prompt-derived seed (salt + attempt); a take that stops on eos or is streamed is never redrawn, so every take the guard does not trip is byte-identical. --silence-redraws 0 keeps the first take."
+    "serve redraws a Drama take the guard silenced, up to twice, with the next prompt-derived seed (salt + attempt); a take that stops on eos is never redrawn, so every take the guard does not trip is byte-identical. With redraws on, a streamed reply is held until its take is chosen, then sent as one chunk under that take's finish reason, so a silenced take is never streamed as the reply while a redraw remains. --silence-redraws 0 keeps the first take and live streaming."
   ],
   "verification": {
     "sampler_alone_stops_medium_05": "With the patched sampler and no guard (drama3-generate, bare prompt, same seeds), medium-05 draws eos at frames 357 (s0) and 350 (s1) instead of capping: the eos exemption ends the runaway by itself. The committed <take>-after.frames hold those token streams; the three other traced takes keep every main token of their before trace and stop one frame earlier (m04s0, l01s1: the frame before the recorded eos) or 43 frames earlier (s01s0, an earlier eos the exemption lets through).",
     "serve_arms_note": "Through serve the guard ends each collapsed first take - 3.5 s of sub-floor quiet after the speech - and the redraw speaks it again: medium-05 s0 on its second redraw, s1 and short-01 s0 on their first, each finishing on eos (finish=stop). The after arm is the round-1 serve arm with those three takes replaced by the redraw build's (the only takes the guard trips). Controls: short-02 s0 and short-01 s1 re-spoken on the redraw build are byte-identical to the round-1 arm, and medium-05 s0 and short-01 s0 re-spoken on the final build byte-identical to the scored redraws.",
     "builtin": {
+      "after_arm": "not a full rerun: the round-1 serve arm with the 3 redrawn takes swapped in from the redraw build (see serve_arms_note for the 4 control takes)",
       "takes": 48,
       "failed": [
         4,
@@ -232,7 +233,7 @@
   "limits": [
     "Built-in failed takes go 4 -> 1 of 48: long-01 s1 stalls 3.13 s inside speech (a quiet-run failure under the 3.5 s guard, so no redraw; its audio is byte-identical before and after).",
     "The two medium-05 redraws land on the same seed (s0's second, salt 0 + 2, and s1's first, salt 1 + 1) and speak the same bytes: redraw seeds overlap across salts by design of salt + attempt.",
-    "The redraw costs a collapsed take's time again (medium-05 s0: 11.75 s instead of ~4 s); streamed replies cannot redraw and still end in silence.",
+    "The redraw costs a collapsed take's time again (medium-05 s0: 11.75 s instead of ~4 s); with redraws on, a streamed reply's first audio waits for its whole take.",
     "The CUDA nvfp4 sampler (engine/nvfp4/patches) shares the mechanism but is not ported here: no CUDA window on this Mac. The same changes apply."
   ]
 }
